@@ -1,11 +1,71 @@
 /* You can add global styles to this file, and also import other style files */
-@import "@angular/material/prebuilt-themes/indigo-pink.css";
+@import "@angular/material/prebuilt-themes/azure-blue.css";
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap');
 
 html, body {
-    font-family: 'Roboto', sans-serif;
+    font-family: 'Manrope', sans-serif;
     height: 100%;
+    overflow: hidden;
+}
+
+:root {
+    --zwei-ink: #172033;
+    --zwei-ink-soft: #273552;
+    --zwei-canvas: #f6f8fc;
+    --zwei-surface: #ffffff;
+    --zwei-line: #dce3ef;
+    --zwei-muted: #667085;
+    --zwei-accent: #c45d3f;
+    --zwei-accent-soft: #f9e4dc;
+    --zwei-success: #2f8f68;
+    --chat-canvas: #182330;
+    --chat-surface: #202c3b;
+    --chat-surface-raised: #263546;
+    --chat-line: #2a394a;
+    --chat-text: #edf2fa;
+    --chat-muted: #aebdd0;
+}
+
+html.light-theme {
+    --zwei-ink: #172033;
+    --zwei-canvas: #f6f8fc;
+    --chat-canvas: #f6f8fc;
+    --chat-surface: #fff;
+    --chat-surface-raised: #fff;
+    --chat-line: #dce3ef;
+    --chat-text: #172033;
+    --chat-muted: #667085;
+    --mat-sys-surface: #fff;
+    --mat-sys-surface-container: #fff;
+    --mat-sys-on-surface: #172033;
+    --mdc-outlined-text-field-input-text-color: #172033;
+    --mdc-outlined-text-field-label-text-color: #667085;
 }
 
 body {
     margin: 0;
+    color: var(--zwei-ink);
+    background: var(--zwei-canvas);
 }
+
+.light-theme .topbar { background: #fff; color: var(--zwei-ink); box-shadow: 0 1px 0 var(--zwei-line); }
+.light-theme .connection-pill { color: var(--zwei-muted); }
+.light-theme .account-avatar { border-color: #c7d0df; color: var(--zwei-accent); }
+.light-theme .workspace { background: var(--chat-canvas); color: var(--chat-text); }
+.light-theme .conversation-rail, .light-theme .chat-header { border-color: var(--chat-line); background: var(--chat-surface); }
+.light-theme .rail-heading h1, .light-theme .chat-header h2, .light-theme .chat-empty h3 { color: var(--chat-text); }
+.light-theme .search-field .mat-mdc-text-field-wrapper { background: var(--chat-canvas); }
+.light-theme .search-field .mdc-notched-outline > * { border-color: var(--chat-line) !important; }
+.light-theme .person-option { color: var(--chat-text); }
+.light-theme .person-option:hover { background: #f1f4f9; }
+.light-theme .conversation-copy strong { color: var(--chat-text); }
+.light-theme .conversation-copy small, .light-theme .conversation-time, .light-theme .rail-label { color: var(--chat-muted); }
+.light-theme .chat-panel, .light-theme .message-history { background: var(--chat-canvas); }
+.light-theme .message-history { background: radial-gradient(circle at 30% 20%, rgba(69, 100, 133, .08), transparent 36%), var(--chat-canvas); }
+.light-theme .message-bubble { background: var(--chat-surface-raised); box-shadow: 0 2px 8px rgba(23, 32, 51, .08); }
+.light-theme .message-bubble p { color: var(--chat-text); }
+.light-theme .composer { border-color: var(--chat-line); background: var(--chat-surface); }
+.light-theme .composer textarea, .light-theme .composer .mdc-floating-label { color: var(--chat-text) !important; }
+.light-theme .composer-action { color: var(--chat-muted); }
+
+app-root { display: block; height: 100dvh; overflow: hidden; }

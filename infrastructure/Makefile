@@ -25,10 +25,18 @@ build: check_dist_files ## - build all docker containers from compose file
 	@bash scripts/build.sh $(APP_NAME)
 
 .PHONY: exec
-exec: ## - Exec some docker container e.g. make exec backend sh (backend just a service name from compose file)
-	docker-compose -p $(APP_NAME) exec $(RUN_ARGS)
+exec: ## - Exec some docker container e.g. make exec auth sh
+	docker compose -p $(APP_NAME) exec $(RUN_ARGS)
 
 .PHONY: check_dist_files
 check_dist_files:
 	cp -n .env.dist .env || true
 	cp -n docker-compose.override.dist.yml docker-compose.override.yml || true
+
+.PHONY: trust-local-ca
+trust-local-ca: ## - Trust the Docker-generated local CA on macOS
+	@bash scripts/trust-local-ca.sh
+
+.PHONY: migrate
+migrate: check_dist_files ## - Run PostgreSQL migrations inside the database container
+	@bash scripts/migrate.sh $(APP_NAME)

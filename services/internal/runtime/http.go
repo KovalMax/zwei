@@ -1,0 +1,84 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+type HealthResponse struct {
+	Service string `json:"service"`
+	Status  string `json:"status"`
+}
+
+func NewHealthHandler(service string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, HealthResponse{Service: service, Status: "ok"})
+	})
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, HealthResponse{Service: service, Status: "ok"})
+	})
+	return mux
+}
+
+func RunHTTP(ctx context.Context, logger *slog.Logger, server *http.Server) error {
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info("http server started", "address", server.Addr)
+		serverErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	}
+}
+
+func NewLogger() *slog.Logger {
+	return slog.Default()
+}
+
+func WriteJSON(w http.ResponseWriter, status int, value any) {
+	writeJSON(w, status, value)
+}
+
+func WithCORS(next http.Handler, allowedOrigins map[string]struct{}) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if _, allowed := allowedOrigins[origin]; allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			if _, allowed := allowedOrigins[origin]; !allowed && origin != "" {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Printf("write JSON response: %v", err)
+	}
+}

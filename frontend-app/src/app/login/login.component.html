@@ -1,37 +1,12 @@
-<section class="login-container">
-    <div *ngIf="isLoading" style="text-align: center;">
-        <app-loading-spinner></app-loading-spinner>
-    </div>
-    <form
-        (ngSubmit)="onSubmit()"
-        *ngIf="!isLoading"
-        [formGroup]="loginForm"
-        fxLayout="column"
-        fxLayoutAlign="center center"
-        fxLayoutGap="1em"
-    >
-        <mat-form-field>
-            <input
-                formControlName="email"
-                matInput
-                placeholder="Your email"
-                type="email"
-            >
-            <mat-hint *ngIf="email.untouched">Please enter a valid email.</mat-hint>
-            <mat-error *ngIf="email.errors?.['required']">Field is required!</mat-error>
-            <mat-error *ngIf="email.errors?.['email']">Invalid email.</mat-error>
-        </mat-form-field>
-
-        <mat-form-field>
-            <input
-                formControlName="password"
-                matInput
-                placeholder="Your password"
-                type="password"
-            >
-            <mat-hint *ngIf="password.untouched">Please enter your password.</mat-hint>
-            <mat-error *ngIf="password.errors?.['required']">Field is required!</mat-error>
-        </mat-form-field>
-        <button [disabled]="loginForm.invalid" color="primary" mat-raised-button type="submit">Sign In</button>
-    </form>
-</section>
+<main class="auth-page">
+    <section class="auth-card" aria-labelledby="login-title">
+        <div class="auth-intro"><span class="eyebrow">Welcome back</span><h1 id="login-title">Sign in to zwei</h1><p>Your private conversations are waiting for you.</p></div>
+        <div *ngIf="isLoading" class="auth-loading"><app-loading-spinner></app-loading-spinner></div>
+        <form (ngSubmit)="onSubmit()" *ngIf="!isLoading" [formGroup]="loginForm" class="auth-form">
+            <mat-form-field appearance="outline"><mat-label>Email address</mat-label><input formControlName="email" matInput type="email" autocomplete="email"><mat-icon matPrefix>mail</mat-icon><mat-error *ngIf="email.errors?.['required']">Email is required.</mat-error><mat-error *ngIf="email.errors?.['email']">Enter a valid email.</mat-error></mat-form-field>
+            <mat-form-field appearance="outline"><mat-label>Password</mat-label><input formControlName="password" matInput type="password" autocomplete="current-password"><mat-icon matPrefix>lock</mat-icon><mat-error *ngIf="password.errors?.['required']">Password is required.</mat-error></mat-form-field>
+            <button class="submit-button" [disabled]="loginForm.invalid" color="primary" mat-flat-button type="submit">Sign in</button>
+        </form>
+        <p class="auth-switch">Don't have an account? <a routerLink="/sign-up">Create one</a></p>
+    </section>
+</main>

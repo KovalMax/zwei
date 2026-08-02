@@ -4,10 +4,8 @@ import {AppRoutingModule} from './app-routing.module';
 import {AppComponent} from './app.component';
 import {BrowserAnimationsModule} from '@angular/platform-browser/animations';
 import {AppMaterialModule} from './app-material.module';
-import {FlexLayoutModule} from '@angular/flex-layout';
 import {FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {HeaderComponent} from './navigation/header/header.component';
-import {SideComponent} from './navigation/side/side.component';
 import {HomeComponent} from './home/home.component';
 import {LoginComponent} from './login/login.component';
 import {RegistrationComponent} from './registration/registration.component';
@@ -22,7 +20,6 @@ import {RegistrationService} from './registration/registration.service';
     declarations: [
         AppComponent,
         HeaderComponent,
-        SideComponent,
         HomeComponent,
         LoginComponent,
         RegistrationComponent,
@@ -33,14 +30,12 @@ import {RegistrationService} from './registration/registration.service';
         BrowserAnimationsModule,
         AppRoutingModule,
         AppMaterialModule,
-        FlexLayoutModule,
         FormsModule,
         ReactiveFormsModule,
         HttpClientModule,
     ],
     providers: [
         RegistrationService,
-        AuthService,
         TokenStorageService,
         {
             provide: HTTP_INTERCEPTORS,

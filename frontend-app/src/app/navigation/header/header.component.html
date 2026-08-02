@@ -1,23 +1,7 @@
-<mat-toolbar color="primary">
-    <div fxHide.gt-xs>
-        <button (click)="onToggleSidenav()" mat-icon-button>
-            <mat-icon>menu</mat-icon>
-        </button>
-    </div>
-    <div>
-        <a routerLink="/">Home</a>
-    </div>
-    <div fxFlex fxHide.xs fxLayout fxLayoutAlign="flex-end">
-        <ul class="navigation-items" fxLayout fxLayoutGap="10px">
-            <li *ngIf="!isAuthenticated">
-                <a routerLink="/sign-up">Sign Up</a>
-            </li>
-            <li *ngIf="!isAuthenticated">
-                <a routerLink="/login">Sign In</a>
-            </li>
-            <li *ngIf="isAuthenticated">
-                <a (click)="onLogout()" style="cursor: pointer;">Sign Out</a>
-            </li>
-        </ul>
-    </div>
+<mat-toolbar class="topbar">
+    <a class="brand" routerLink="/" aria-label="zwei home"><span class="brand-mark">Z</span><span>zwei</span></a>
+    <span class="topbar-spacer"></span>
+    <span class="connection-pill" *ngIf="isAuthenticated"><span class="status-dot"></span>Secure session</span>
+    <button class="account-button" *ngIf="isAuthenticated" mat-icon-button [matMenuTriggerFor]="accountMenu" aria-label="Account menu"><span class="account-avatar">{{ profile?.display_name?.slice(0, 2)?.toUpperCase() || 'ME' }}</span></button>
+    <mat-menu #accountMenu="matMenu"><div class="account-menu-name" mat-menu-item disabled>{{ profile?.display_name || 'Account' }}</div><div class="account-menu-email" mat-menu-item disabled>{{ profile?.email }}</div><button mat-menu-item (click)="toggleTheme()"><mat-icon>{{ isDarkTheme ? 'light_mode' : 'dark_mode' }}</mat-icon><span>Switch to {{ isDarkTheme ? 'light' : 'dark' }} theme</span></button><button mat-menu-item (click)="onLogout()"><mat-icon>logout</mat-icon><span>Sign out</span></button></mat-menu>
 </mat-toolbar>

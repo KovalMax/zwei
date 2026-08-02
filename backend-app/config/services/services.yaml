@@ -1,7 +1,0 @@
-parameters:
-  app.crypto.key: '%env(string:CRYPTO_KEY)%'
-  app.crypto.nonce: '%env(string:CRYPTO_NONCE)%'
-
-imports:
-  - { resource: app/services.yaml }
-  - { resource: default_definitions.yaml }

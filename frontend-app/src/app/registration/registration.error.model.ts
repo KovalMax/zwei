@@ -1,6 +1,7 @@
 export interface RegistrationErrorResponse {
     status: number;
     invalidParams: InvalidParam[];
+    error?: {error?: string};
 }
 
 export interface InvalidParam {

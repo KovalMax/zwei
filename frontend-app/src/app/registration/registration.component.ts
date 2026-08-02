@@ -9,6 +9,7 @@ import {finalize} from 'rxjs/operators';
 import {ControlsOf} from '../shared/model/controlOf';
 
 @Component({
+    standalone: false,
     selector: 'app-registration',
     templateUrl: './registration.component.html',
     styleUrls: ['./registration.component.css']
@@ -32,33 +33,24 @@ export class RegistrationComponent {
             return;
         }
 
-        this.toggleFormLoading();
-        this.service
-            .registration(RegistrationModel.createFrom(this.registrationForm.getRawValue()))
-            .pipe(finalize(() => this.toggleFormLoading()))
-            .subscribe(
-                () => {
+        let model: RegistrationModel;
+        try {
+            model = RegistrationModel.createFrom(this.registrationForm.getRawValue()) as RegistrationModel;
+        } catch {
+            this.showError('Please check the registration details and try again.');
+            return;
+        }
+
+        this.isLoading = true;
+        this.service.registration(model)
+            .pipe(finalize(() => this.isLoading = false))
+            .subscribe({
+                next: () => {
                     this.snackBar.dismiss();
                     this.router.navigate(['login']);
                 },
-                (error: RegistrationErrorResponse) => {
-                    if (error.status === 400) {
-                        let msg = '';
-                        error.invalidParams.forEach(param => {
-                            msg += msg.concat(param.reason, '\n');
-                        });
-                        this.snackBar.open(
-                            msg,
-                            'Close',
-                            {
-                                duration: 60 * 1000,
-                                horizontalPosition: 'center',
-                                verticalPosition: 'top',
-                            }
-                        );
-                    }
-                }
-            );
+                error: (error: RegistrationErrorResponse) => this.showError(this.registrationErrorMessage(error)),
+            });
     }
 
     public get email() {
@@ -85,7 +77,31 @@ export class RegistrationComponent {
         return this.registrationForm.controls.confirmPassword;
     }
 
-    private toggleFormLoading(): void {
-        this.isLoading = !this.isLoading;
+    public get passwordsMatch(): boolean {
+        return this.password.value.length > 0
+            && this.confirmPassword.value.length > 0
+            && this.password.value === this.confirmPassword.value;
+    }
+
+    private registrationErrorMessage(error: RegistrationErrorResponse): string {
+        if (error?.status === 409) {
+            return 'An account with this email already exists. Try signing in instead.';
+        }
+        if (error?.status === 400 && error.invalidParams?.length) {
+            return error.invalidParams.map(param => param.reason).join('\n');
+        }
+        if (typeof error?.error?.error === 'string') {
+            return error.error.error;
+        }
+        return 'We could not create your account. Please try again.';
+    }
+
+    private showError(message: string): void {
+        this.isLoading = false;
+        this.snackBar.open(message, 'Close', {
+            duration: 60 * 1000,
+            horizontalPosition: 'center',
+            verticalPosition: 'top',
+        });
     }
 }

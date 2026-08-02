@@ -1,27 +1,33 @@
-## P2P web chat
-### Simple implementation of P2P messaging web-application
-### Technologies used:
+# Zwei
 
-- golang + gorilla-websocket - for real time communication
-- angular - for frontend part
-- php8 + symfony5 - for authentication, registration and DB related part
+Private, server-mediated one-to-one messaging. Users can register, sign in, find other users, create conversations, and exchange messages in real time.
 
-### Local development using docker-compose
-#### Building the project using make commands from root of project
-#### Run `make help` for full list of commands
-#### `infrastructure/.env` - for configuration of applications
-#### `infrastructure/.env.dist` - example with all needed values for startup
-#### `infrastructure/docker-compose.override.yml` - for custom container settings volumes, port bindings, etc
-#### `infrastructure/docker-compose.override.dist.yml` - example with all needed values for local development
+## Stack
 
-P.S.
-During `make start` or `make build` - `.env` and `docker-compose.override.yml` will be copied from dist files if not exists in infrastructure folder
+- Angular 22 frontend
+- Go services for authentication, chat, real-time messaging, and background work
+- PostgreSQL for persistent data
+- Redis for future ephemeral coordination and fan-out
+- Traefik with local TLS
+- Docker Compose for local development
 
-### Development plan :dart:
+## Run Locally
 
-- Authentication :white_check_mark:
-- Registration :white_check_mark:
-- Users online :white_check_mark:
-- Room with 1-1/p2p messaging :x:
-- Storing messages :x:
-- Loading history for chat rooms :x:
+Requirements: Docker Desktop and `make`.
+
+```sh
+make build
+make migrate
+make trust-local-ca   # macOS, once
+```
+
+Open `https://chat.localhost` and restart the browser after trusting the local CA. The local environment and Docker Compose override files are created automatically from their `.dist` files.
+
+The application uses these local hosts:
+
+- `chat.localhost` - frontend
+- `auth.localhost` - authentication API
+- `api.chat.localhost` - chat API
+- `ws.chat.localhost` - WebSocket messaging
+
+Run browser tests with `make e2e` and stop the stack with `make stop`.

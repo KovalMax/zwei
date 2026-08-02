@@ -1,36 +1,37 @@
-version: '3.7'
-
 services:
-  websocket:
-    build:
-      target: dev
+  auth:
     volumes:
-      - ../websocket-app:/app
-    ports:
-      - '8080:8080'
+      - ../services:/app/services
 
-  webserver:
+  chat:
     volumes:
-      - ../backend-app/assets:/var/www/assets
-    ports:
-      - '8099:8081'
+      - ../services:/app/services
 
-  backend:
+  realtime:
     volumes:
-      - ../backend-app:/var/www
+      - ../services:/app/services
+
+  worker:
+    volumes:
+      - ../services:/app/services
 
   frontend:
     volumes:
       - ../frontend-app:/app
       - messenger-node-modules:/app/node_modules
     ports:
-      - '4200:4200'
+      - "4200:4200"
 
   database:
     volumes:
-      - messenger-db:/var/lib/postgresql/data
+      - ../migrations:/migrations:ro
+      - messenger-db:/var/lib/postgresql
     ports:
-      - '3379:5432'
+      - "3379:5432"
+
+  redis:
+    ports:
+      - "6380:6379"
 
 volumes:
   messenger-db:

@@ -45,7 +45,6 @@ export class RegistrationService {
                         Validators.required,
                         Validators.minLength(8),
                         Validators.maxLength(64),
-                        ApplicationValidators.valuesAreEqual('password', 'confirmPassword'),
                     ],
                     nonNullable: true,
                 }
@@ -83,6 +82,9 @@ export class RegistrationService {
                     nonNullable: true,
                 }
             )
+        },
+        {
+            validators: ApplicationValidators.valuesAreEqual('password', 'confirmPassword'),
         }
     );
 
@@ -90,7 +92,11 @@ export class RegistrationService {
         return this.client
             .post<RegistrationResponse>(backends.registration, model)
             .pipe(
-                catchError((err: HttpErrorResponse) => throwError(err.error))
+                catchError((err: HttpErrorResponse) => throwError(() => ({
+                    status: err.status,
+                    invalidParams: err.error?.invalidParams ?? [],
+                    error: err.error,
+                })))
             );
     }
 

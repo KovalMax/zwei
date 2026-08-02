@@ -1,34 +1,30 @@
-FROM golang:1.18-alpine3.16 AS base
+FROM golang:1.26.5-alpine AS base
 
 # Do not rebuild C libs, no need to use gcc for building Go code
-ENV CGO_ENABLED 0
+ENV CGO_ENABLED=0
 # Do not supress stack trace gives more info about errors in runtime
-ENV GOTRACEBACK system
+ENV GOTRACEBACK=system
 # Build for linux os
-ENV GOOS linux
+ENV GOOS=linux
 
 WORKDIR /app
 
-COPY . .
+COPY go.mod go.work ./
+COPY services ./services
 
 RUN go mod download
 
-RUN go build -a -installsuffix cgo -o /usr/bin/go_websocket cmd/main.go
+ARG SERVICE
+RUN test -n "$SERVICE" && go build -trimpath -ldflags="-s -w" -o /usr/bin/service ./services/$SERVICE
 
-FROM base as dev
+FROM base AS dev
 
-RUN go install github.com/githubnemo/CompileDaemon@latest
+CMD ["/usr/bin/service"]
 
-ENTRYPOINT [ \
-    "CompileDaemon", \
-    "--build", "go build -a -installsuffix cgo -o /usr/bin/go_websocket cmd/main.go", \
-    "--command", "/usr/bin/go_websocket" \
-]
-
-FROM alpine:3.16 as prod
+FROM alpine:3.20 AS prod
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /usr/bin
-COPY --from=base /usr/bin/go_websocket .
+COPY --from=base /usr/bin/service .
 
-CMD /usr/bin/go_websocket
+CMD ["/usr/bin/service"]

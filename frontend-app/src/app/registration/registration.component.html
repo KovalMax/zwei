@@ -1,118 +1,15 @@
-<section class="registration-container">
-    <div *ngIf="isLoading" style="text-align: center;">
-        <app-loading-spinner></app-loading-spinner>
-    </div>
-    <form
-        (ngSubmit)="onSubmit()"
-        *ngIf="!isLoading"
-        [formGroup]="registrationForm"
-        fxLayout="column"
-        fxLayoutAlign="center center"
-        fxLayoutGap="1em"
-    >
-        <mat-form-field>
-            <input
-                formControlName="email"
-                matInput
-                placeholder="Your email"
-                type="email"
-            >
-            <mat-hint *ngIf="email.untouched">Please enter a valid email.</mat-hint>
-            <mat-error *ngIf="email.errors?.['required']">Field is required!</mat-error>
-            <mat-error *ngIf="email.errors?.['email']">Invalid email.</mat-error>
-            <mat-error *ngIf="email.errors?.['maxlength']">
-                Field should be no longer than 180 characters
-            </mat-error>
-        </mat-form-field>
-
-        <mat-form-field>
-            <input
-                formControlName="password"
-                matInput
-                placeholder="Your password"
-                type="password"
-            >
-            <mat-hint *ngIf="password.untouched">Please enter your password.</mat-hint>
-            <mat-error *ngIf="password.errors?.['required']">Field is required!</mat-error>
-            <mat-error *ngIf="password.errors?.['maxlength']">
-                Field should be no longer than 64 characters.
-            </mat-error>
-            <mat-error *ngIf="password.errors?.['minlength']">
-                Field should be at least 8 characters long.
-            </mat-error>
-        </mat-form-field>
-
-        <mat-form-field>
-            <input
-                formControlName="confirmPassword"
-                matInput
-                placeholder="Confirm your password"
-                type="password"
-            >
-            <mat-hint *ngIf="confirmPassword.untouched">Please enter again your password.</mat-hint>
-            <mat-error *ngIf="confirmPassword.errors?.['maxlength']">
-                Field should be no longer than 64 characters.
-            </mat-error>
-            <mat-error *ngIf="confirmPassword.errors?.['minlength']">
-                Field should be at least 8 characters long.
-            </mat-error>
-            <mat-error *ngIf="confirmPassword.errors?.['required']">Field is required!</mat-error>
-            <mat-error *ngIf="confirmPassword.errors?.['mustMatch']">
-                Password mismatched! Double check your passwords.
-            </mat-error>
-        </mat-form-field>
-
-        <mat-form-field>
-            <input
-                formControlName="firstName"
-                matInput
-                placeholder="Your First name"
-                type="text"
-            >
-            <mat-hint *ngIf="firstName.untouched">Please enter your First name.</mat-hint>
-            <mat-error *ngIf="firstName.errors?.['maxlength']">
-                Field should be no longer than 60 characters.
-            </mat-error>
-            <mat-error *ngIf="firstName.errors?.['minlength']">
-                Field should be at least 1 characters long.
-            </mat-error>
-            <mat-error *ngIf="firstName.errors?.['required']">Field is required!</mat-error>
-        </mat-form-field>
-
-        <mat-form-field>
-            <input
-                formControlName="lastName"
-                matInput
-                placeholder="Your Last name"
-                type="text"
-            >
-            <mat-hint *ngIf="lastName.untouched">Please enter your Last name.</mat-hint>
-            <mat-error *ngIf="lastName.errors?.['maxlength']">
-                Field should be no longer than 60 characters.
-            </mat-error>
-            <mat-error *ngIf="lastName.errors?.['minlength']">
-                Field should be at least 1 characters long.
-            </mat-error>
-            <mat-error *ngIf="lastName.errors?.['required']">Field is required!</mat-error>
-        </mat-form-field>
-
-        <mat-form-field>
-            <input
-                formControlName="nickName"
-                matInput
-                placeholder="Your Nick name"
-                type="text"
-            >
-            <mat-hint *ngIf="nickName.untouched">Please enter your Last name.</mat-hint>
-            <mat-error *ngIf="nickName.errors?.['maxlength']">
-                Field should be no longer than 60 characters.
-            </mat-error>
-            <mat-error *ngIf="nickName.errors?.['minlength']">
-                Field should be at least 1 characters long.
-            </mat-error>
-            <mat-error *ngIf="nickName.errors?.['required']">Field is required!</mat-error>
-        </mat-form-field>
-
-        <button [disabled]="registrationForm.invalid" color="primary" mat-raised-button type="submit">Sign Up</button>
-    </form>
-</section>
+<main class="auth-page">
+    <section class="auth-card registration-card" aria-labelledby="registration-title">
+        <div class="auth-intro"><span class="eyebrow">Make room for better conversations</span><h1 id="registration-title">Create your account</h1><p>A private space for the people you actually want to hear from.</p></div>
+        <div *ngIf="isLoading" class="auth-loading"><app-loading-spinner></app-loading-spinner></div>
+        <form (ngSubmit)="onSubmit()" *ngIf="!isLoading" [formGroup]="registrationForm" class="auth-form">
+            <mat-form-field appearance="outline"><mat-label>Email address</mat-label><input formControlName="email" matInput type="email" autocomplete="email"><mat-icon matPrefix>mail</mat-icon><mat-error *ngIf="email.errors?.['required']">Email is required.</mat-error><mat-error *ngIf="email.errors?.['email']">Enter a valid email.</mat-error><mat-error *ngIf="email.errors?.['maxlength']">Email is too long.</mat-error></mat-form-field>
+            <div class="field-row"><mat-form-field appearance="outline"><mat-label>First name</mat-label><input formControlName="firstName" matInput autocomplete="given-name"><mat-error *ngIf="firstName.errors?.['required']">Required.</mat-error></mat-form-field><mat-form-field appearance="outline"><mat-label>Last name</mat-label><input formControlName="lastName" matInput autocomplete="family-name"><mat-error *ngIf="lastName.errors?.['required']">Required.</mat-error></mat-form-field></div>
+            <mat-form-field appearance="outline"><mat-label>Nickname</mat-label><input formControlName="nickName" matInput autocomplete="nickname"><mat-icon matPrefix>badge</mat-icon><mat-error *ngIf="nickName.errors?.['required']">Nickname is required.</mat-error></mat-form-field>
+            <mat-form-field appearance="outline"><mat-label>Password</mat-label><input formControlName="password" matInput type="password" autocomplete="new-password"><mat-icon matPrefix>lock</mat-icon><mat-error *ngIf="password.errors?.['required']">Password is required.</mat-error><mat-error *ngIf="password.errors?.['minlength']">Use at least 8 characters.</mat-error></mat-form-field>
+            <mat-form-field appearance="outline"><mat-label>Confirm password</mat-label><input formControlName="confirmPassword" matInput type="password" autocomplete="new-password"><mat-icon matPrefix>lock_reset</mat-icon><mat-error *ngIf="confirmPassword.errors?.['required']">Please confirm your password.</mat-error><mat-error *ngIf="registrationForm.errors?.['mustMatch'] && confirmPassword.dirty">Passwords do not match.</mat-error></mat-form-field>
+            <button class="submit-button" [disabled]="registrationForm.invalid || !passwordsMatch" color="primary" mat-flat-button type="submit">Create account</button>
+        </form>
+        <p class="auth-switch">Already have an account? <a routerLink="/login">Sign in</a></p>
+    </section>
+</main>

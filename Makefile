@@ -24,8 +24,38 @@ build: ## - build all docker containers from compose file
 	make -C infrastructure build
 
 .PHONY: exec
-exec: ## - Exec some docker container e.g. make exec backend sh (for list of containers see infrastructure/docker-compose.yml)
+exec: ## - Exec a service command, for example make exec auth sh
 	make -C infrastructure exec $(RUN_ARGS)
 
-copy_node_modules: ## - Copying node modules from container to your host machine(since angular app have a dedicated volume for that)
-	@docker cp messenger_frontend:/app/node_modules frontend-app/
+.PHONY: logs
+logs: ## - Follow logs for all services
+	docker compose -p messenger -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml logs -f
+
+.PHONY: migrate
+migrate: ## - Run database migrations inside the migration container
+	make -C infrastructure migrate
+
+.PHONY: seed
+seed: ## - Seed development data inside containers
+	@echo "Seed data is introduced with the auth and chat milestones"
+
+.PHONY: test
+test: ## - Run Go tests in containers
+	make -C infrastructure exec auth sh -lc 'go test ./...'
+
+.PHONY: e2e
+e2e: ## - Run Playwright browser E2E tests in Docker
+	docker compose -p messenger -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml run --rm e2e
+
+.PHONY: trust-local-ca
+trust-local-ca: ## - Trust the Docker-generated local CA on macOS
+	make -C infrastructure trust-local-ca
+
+.PHONY: format
+format: ## - Format all Go source files in containers
+	make -C infrastructure exec auth sh -lc 'go list -f "{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}" ./... | xargs gofmt -w'
+
+
+.PHONY: lint
+lint: ## - Run Go vet in containers
+	make -C infrastructure exec auth sh -lc 'go vet ./...'

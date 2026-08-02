@@ -8,12 +8,10 @@ export class ApplicationValidators {
             if (!compareControl || !compareAgainstControl) {
                 return null;
             }
-
-            if (compareAgainstControl.errors && !compareAgainstControl.errors.mustMatch) {
+            if (!compareControl.value || !compareAgainstControl.value) {
                 return null;
             }
-
-            return compareControl.value !== compareAgainstControl.value ? {mustMatch: true} : null;
+            return compareControl.value === compareAgainstControl.value ? null : {mustMatch: true};
         };
     }
 }
