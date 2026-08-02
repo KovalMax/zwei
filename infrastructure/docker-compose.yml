@@ -74,6 +74,7 @@ services:
       BASE_URL: https://chat.localhost
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
     extra_hosts:
+      - "host.docker.internal:host-gateway"
       - "chat.localhost:host-gateway"
       - "auth.localhost:host-gateway"
       - "api.chat.localhost:host-gateway"
