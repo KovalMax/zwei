@@ -1,12 +1,15 @@
 import {Injectable} from '@angular/core';
 import {HttpHandler, HttpHeaders, HttpInterceptor, HttpRequest} from '@angular/common/http';
-import {exhaustMap, take} from 'rxjs/operators';
+import {catchError, exhaustMap, take} from 'rxjs/operators';
+import {HttpErrorResponse} from '@angular/common/http';
+import {Router} from '@angular/router';
+import {throwError} from 'rxjs';
 
 import {AuthService} from './auth.service';
 
 @Injectable()
 export class AuthInterceptorService implements HttpInterceptor {
-    constructor(private authService: AuthService) {
+    constructor(private authService: AuthService, private router: Router) {
     }
 
     intercept(req: HttpRequest<any>, next: HttpHandler) {
@@ -24,7 +27,15 @@ export class AuthInterceptorService implements HttpInterceptor {
                             token.token_type.concat(' ', token.access_token)
                         )
                     })
-                );
+                ).pipe(catchError((error: HttpErrorResponse) => {
+                    if (error.status === 401) {
+                        this.authService.logout();
+                        if (!req.url.includes('/login') && !req.url.includes('/register')) {
+                            void this.router.navigate(['/login']);
+                        }
+                    }
+                    return throwError(() => error);
+                }));
             })
         );
     }

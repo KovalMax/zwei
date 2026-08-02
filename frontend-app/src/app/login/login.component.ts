@@ -4,10 +4,12 @@ import {AuthService} from '../auth/auth.service';
 import {Router} from '@angular/router';
 import {MatSnackBar} from '@angular/material/snack-bar';
 import {finalize} from 'rxjs/operators';
+import {HttpErrorResponse} from '@angular/common/http';
 import {ControlsOf} from '../shared/model/controlOf';
-import {Login} from './login';
+import {getDeviceID, Login} from './login';
 
 @Component({
+    standalone: false,
     selector: 'app-login',
     templateUrl: './login.component.html',
     styleUrls: ['./login.component.css']
@@ -45,27 +47,21 @@ export class LoginComponent {
             return;
         }
 
-        this.toggleFormLoading();
+        this.isLoading = true;
         this.client
-            .login(this.loginForm.getRawValue())
-            .pipe(finalize(() => this.toggleFormLoading()))
-            .subscribe(
-                () => {
+            .login({
+                ...this.loginForm.getRawValue(),
+                device_id: getDeviceID(),
+                device_name: 'Browser',
+            })
+            .pipe(finalize(() => this.isLoading = false))
+            .subscribe({
+                next: () => {
                     this.snackBar.dismiss();
                     this.router.navigate(['home']);
                 },
-                error => {
-                    this.snackBar.open(
-                        error,
-                        'Close',
-                        {
-                            duration: 60 * 1000,
-                            horizontalPosition: 'center',
-                            verticalPosition: 'top',
-                        }
-                    );
-                }
-            );
+                error: (error: string | HttpErrorResponse) => this.showError(this.loginErrorMessage(error)),
+            });
     }
 
     public get email() {
@@ -76,7 +72,25 @@ export class LoginComponent {
         return this.loginForm.controls.password;
     }
 
-    private toggleFormLoading(): void {
-        this.isLoading = !this.isLoading;
+    private loginErrorMessage(error: string | HttpErrorResponse): string {
+        if (typeof error === 'string') {
+            return error;
+        }
+        if (error.status === 401) {
+            return 'Email or password is incorrect.';
+        }
+        if (typeof error.error?.error === 'string') {
+            return error.error.error;
+        }
+        return 'We could not sign you in. Please try again.';
+    }
+
+    private showError(message: string): void {
+        this.isLoading = false;
+        this.snackBar.open(message, 'Close', {
+            duration: 60 * 1000,
+            horizontalPosition: 'center',
+            verticalPosition: 'top',
+        });
     }
 }

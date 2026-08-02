@@ -1,7 +1,9 @@
-mat-sidenav-container, mat-sidenav-content, mat-sidenav {
-    height: 100%;
+.app-shell {
+    height: 100dvh;
+    overflow: hidden;
 }
 
-mat-sidenav {
-    width: 25em;
-}
+.app-shell { background: var(--zwei-canvas); }
+.app-content { height: calc(100dvh - 72px); min-height: 0; overflow: hidden; }
+
+@media (max-width: 600px) { .app-content { height: calc(100dvh - 64px); } }

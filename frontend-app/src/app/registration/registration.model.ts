@@ -1,3 +1,5 @@
+import {getDeviceID} from '../login/login';
+
 export interface RegistrationForm {
     email: string;
     password: string;
@@ -10,10 +12,9 @@ export interface RegistrationForm {
 export interface Registration {
     email: string;
     password: string;
-    firstName: string;
-    lastName: string;
-    nickName: string;
-    timezone: string;
+    display_name: string;
+    device_id: string;
+    device_name?: string;
 }
 
 export interface RegistrationResponse {
@@ -23,11 +24,9 @@ export interface RegistrationResponse {
 export class RegistrationModel implements Registration {
     constructor(
         public email: string,
-        public firstName: string,
-        public lastName: string,
-        public nickName: string,
         public password: string,
-        public timezone: string,
+        public display_name: string,
+        public device_id: string,
     ) {
     }
 
@@ -50,11 +49,9 @@ export class RegistrationModel implements Registration {
 
         return new RegistrationModel(
             values.email,
-            values.firstName,
-            values.lastName,
-            values.nickName,
             values.password,
-            Intl.DateTimeFormat().resolvedOptions().timeZone,
+            values.nickName,
+            getDeviceID(),
         );
     }
 }

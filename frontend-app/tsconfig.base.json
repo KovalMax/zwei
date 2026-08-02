@@ -1,20 +1,18 @@
 {
     "compileOnSave": false,
     "compilerOptions": {
-        "baseUrl": "./",
         "outDir": "./dist/out-tsc",
         "sourceMap": true,
         "declaration": false,
-        "downlevelIteration": true,
         "experimentalDecorators": true,
         "strict": true,
         "strictNullChecks": true,
         "forceConsistentCasingInFileNames": true,
         "noFallthroughCasesInSwitch": true,
         "module": "es2020",
-        "moduleResolution": "node",
+        "moduleResolution": "bundler",
         "importHelpers": true,
-        "target": "es2015",
+        "target": "es2022",
         "lib": [
             "es2018",
             "dom"
@@ -23,6 +21,7 @@
     "angularCompilerOptions": {
         "fullTemplateTypeCheck": true,
         "strictInjectionParameters": true,
-        "strictTemplates": true
+        "strictTemplates": true,
+        "compilationMode": "full"
     }
 }

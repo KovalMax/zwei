@@ -1,68 +1,148 @@
-version: '3.7'
-
 services:
+  auth:
+    build:
+      context: ..
+      dockerfile: infrastructure/golang/Dockerfile
+      target: dev
+      args:
+        SERVICE: auth
+    environment:
+      AUTH_PORT: 8081
+      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
+      ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME:-15m}
+      REFRESH_TOKEN_LIFETIME: ${REFRESH_TOKEN_LIFETIME:-720h}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [messenger-network]
+
+  chat:
+    build:
+      context: ..
+      dockerfile: infrastructure/golang/Dockerfile
+      target: dev
+      args:
+        SERVICE: chat
+    environment:
+      CHAT_PORT: 8082
+      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-local-development-key-change-me}
+      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [messenger-network]
+
+  realtime:
+    build:
+      context: ..
+      dockerfile: infrastructure/golang/Dockerfile
+      target: dev
+      args:
+        SERVICE: realtime
+    environment:
+      REALTIME_PORT: 8083
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://chat.localhost,https://auth.localhost,https://api.chat.localhost,https://ws.chat.localhost,https://host.docker.internal}
+      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-local-development-key-change-me}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [messenger-network]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infrastructure/golang/Dockerfile
+      target: dev
+      args:
+        SERVICE: worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [messenger-network]
+
+  e2e:
+    build:
+      context: ../e2e
+      dockerfile: ../infrastructure/playwright/Dockerfile
+    environment:
+      BASE_URL: https://chat.localhost
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    extra_hosts:
+      - "chat.localhost:host-gateway"
+      - "auth.localhost:host-gateway"
+      - "api.chat.localhost:host-gateway"
+      - "ws.chat.localhost:host-gateway"
+      - "traefik.localhost:host-gateway"
+    depends_on:
+      - traefik
+    networks: [messenger-network]
+
   frontend:
-    container_name: messenger_frontend
     build:
       context: ../frontend-app
       dockerfile: ../infrastructure/node/Dockerfile
       args:
-        UID: ${UID}
-        GID: ${GID}
-        NODE_USER_NAME: ${NODE_USER_NAME}
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        NODE_USER_NAME: ${NODE_USER_NAME:-node}
     environment:
-      NODE_ENV: ${NODE_ENV}
-    networks:
-      - messenger-network
+      NODE_ENV: ${NODE_ENV:-development}
+    networks: [messenger-network]
 
-  backend:
-    container_name: messenger_backend
+  traefik-certgen:
     build:
-      context: php
-      args:
-        UID: ${UID}
-        GID: ${GID}
-        FPM_USER_NAME: ${FPM_USER_NAME}
-        JWT_KEY_PASS: ${JWT_KEY_PASS}
-        JWT_KEY_PATH: ${JWT_KEY_PATH}
-    env_file:
-      - .env
+      context: traefik
+      dockerfile: Dockerfile
+    volumes:
+      - ./traefik-certs:/certs
+    networks: [messenger-network]
+
+  traefik:
+    image: traefik:v3.5
+    command:
+      - --api.dashboard=true
+      - --api.insecure=false
+      - --entrypoints.websecure.address=:443
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./traefik-certs:/certs:ro
     depends_on:
-      - database
-    networks:
-      - messenger-network
-
-  websocket:
-    container_name: messenger_websocket
-    build:
-      context: ../websocket-app
-      dockerfile: ../infrastructure/golang/Dockerfile
-    environment:
-      SOCKET_PORT: ${SOCKET_PORT}
-      SOCKET_ROUTE: ${SOCKET_ROUTE}
-    networks:
-      - messenger-network
-
-  webserver:
-    container_name: messenger_webserver
-    build:
-      context: nginx
-      args:
-        SERVER_NAME: ${SERVER_NAME}
-    depends_on:
-      - backend
-    networks:
-      - messenger-network
+      traefik-certgen:
+        condition: service_completed_successfully
+    networks: [messenger-network]
 
   database:
-    container_name: messenger_db
-    image: postgres:${APP_DB_VERSION}-alpine
+    image: postgres:${APP_DB_VERSION:-18.4}-alpine
     environment:
-      POSTGRES_DB: ${APP_DB_NAME}
-      POSTGRES_USER: ${APP_DB_USER}
-      POSTGRES_PASSWORD: ${APP_DB_PASSWORD}
-    networks:
-      - messenger-network
+      POSTGRES_DB: ${APP_DB_NAME:-messenger}
+      POSTGRES_USER: ${APP_DB_USER:-messenger_user}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-user-password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [messenger-network]
+
+  redis:
+    image: redis:${REDIS_VERSION:-8.2.1}-alpine
+    command: redis-server --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [messenger-network]
 
 networks:
   messenger-network:

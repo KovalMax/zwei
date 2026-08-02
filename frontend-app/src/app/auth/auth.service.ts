@@ -4,6 +4,7 @@ import {Token} from './token';
 import {backends} from '../../environments/environment';
 import {Injectable} from '@angular/core';
 import {TokenStorageService} from './token-storage.service';
+import {Profile} from './profile.model';
 import {BehaviorSubject, Observable, throwError} from 'rxjs';
 import {catchError, tap} from 'rxjs/operators';
 
@@ -40,13 +41,20 @@ export class AuthService {
             return;
         }
 
-        this.handleToken(this.storage.getToken());
+        const token = this.storage.getToken();
+        if (token.expires_in && Number(token.expires_in) <= Date.now()) {
+            this.logout();
+            return;
+        }
+        this.handleToken(token);
     }
 
     public logout(): void {
         this.tokenSubject.next(null);
         this.storage.removeToken();
     }
+
+    public profile(): Observable<Profile> { return this.http.get<Profile>(`${backends.auth}/api/auth/me`); }
 
     private handleToken(token: Token): void {
         if (!token) {

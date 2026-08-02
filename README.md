@@ -1,27 +1,24 @@
-## P2P web chat
-### Simple implementation of P2P messaging web-application
-### Technologies used:
+# P2P Web Chat
 
-- golang + gorilla-websocket - for real time communication
-- angular - for frontend part
-- php8 + symfony5 - for authentication, registration and DB related part
+Private server-mediated one-to-one chat. “P2P” describes the conversation model, not browser-to-browser transport.
 
-### Local development using docker-compose
-#### Building the project using make commands from root of project
-#### Run `make help` for full list of commands
-#### `infrastructure/.env` - for configuration of applications
-#### `infrastructure/.env.dist` - example with all needed values for startup
-#### `infrastructure/docker-compose.override.yml` - for custom container settings volumes, port bindings, etc
-#### `infrastructure/docker-compose.override.dist.yml` - example with all needed values for local development
+## Stack
 
-P.S.
-During `make start` or `make build` - `.env` and `docker-compose.override.yml` will be copied from dist files if not exists in infrastructure folder
+- Angular 22 frontend
+- Go auth, chat, realtime, and worker services
+- PostgreSQL for durable state
+- Redis reserved for ephemeral coordination and future realtime fan-out
+- Traefik with local TLS for development routing
 
-### Development plan :dart:
+## Local Development
 
-- Authentication :white_check_mark:
-- Registration :white_check_mark:
-- Users online :white_check_mark:
-- Room with 1-1/p2p messaging :x:
-- Storing messages :x:
-- Loading history for chat rooms :x:
+Docker Compose is the supported workflow. Copying the local environment and override files is handled automatically by `make start` and `make build`.
+
+```sh
+make build
+make start
+make migrate
+make e2e
+```
+
+Open `https://chat.localhost`. Run `make trust-local-ca` once on macOS, then fully restart the browser. See `make help` for all commands and `docs/REVIVAL_PLAN.md` for architecture, scope, and remaining work.
