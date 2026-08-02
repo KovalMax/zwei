@@ -1,10 +1,10 @@
 {
-  "name": "p2p-webchat-e2e",
+  "name": "zwei-e2e",
   "private": true,
   "scripts": {
     "test": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "1.55.0"
+    "@playwright/test": "1.62.1"
   }
 }

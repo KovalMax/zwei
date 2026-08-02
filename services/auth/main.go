@@ -6,14 +6,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/application"
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/infrastructure/config"
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/infrastructure/password"
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/infrastructure/token"
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/persistence/postgres"
-	httptransport "github.com/maxkoval/p2p-webchat/services/auth/internal/transport/http"
-	"github.com/maxkoval/p2p-webchat/services/internal/runtime"
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
+	"github.com/KovalMax/zwei/services/auth/internal/application"
+	"github.com/KovalMax/zwei/services/auth/internal/infrastructure/config"
+	"github.com/KovalMax/zwei/services/auth/internal/infrastructure/password"
+	"github.com/KovalMax/zwei/services/auth/internal/infrastructure/token"
+	"github.com/KovalMax/zwei/services/auth/internal/persistence/postgres"
+	httptransport "github.com/KovalMax/zwei/services/auth/internal/transport/http"
+	"github.com/KovalMax/zwei/services/internal/runtime"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
 
 func main() {

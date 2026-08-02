@@ -5,7 +5,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
 
 type JWTIssuer struct {

@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/application"
-	"github.com/maxkoval/p2p-webchat/services/internal/runtime"
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
+	"github.com/KovalMax/zwei/services/auth/internal/application"
+	"github.com/KovalMax/zwei/services/internal/runtime"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
 
 type Handler struct {

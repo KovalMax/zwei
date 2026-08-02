@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
-	"github.com/maxkoval/p2p-webchat/services/shared/messaging"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
+	"github.com/KovalMax/zwei/services/shared/messaging"
 )
 
 type Client interface {

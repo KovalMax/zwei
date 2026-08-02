@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/maxkoval/p2p-webchat/services/chat/internal/domain/conversation"
-	"github.com/maxkoval/p2p-webchat/services/chat/internal/persistence/postgres"
-	"github.com/maxkoval/p2p-webchat/services/internal/runtime"
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
-	"github.com/maxkoval/p2p-webchat/services/shared/messaging"
+	"github.com/KovalMax/zwei/services/chat/internal/domain/conversation"
+	"github.com/KovalMax/zwei/services/chat/internal/persistence/postgres"
+	"github.com/KovalMax/zwei/services/internal/runtime"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
+	"github.com/KovalMax/zwei/services/shared/messaging"
 )
 
 type Handler struct {

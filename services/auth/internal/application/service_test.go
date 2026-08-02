@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/maxkoval/p2p-webchat/services/auth/internal/domain/user"
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
+	"github.com/KovalMax/zwei/services/auth/internal/domain/user"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
 
 func TestLoginDoesNotRequireDisplayName(t *testing.T) {

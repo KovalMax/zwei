@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    name: Go unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go tests
+        run: go test ./services/...
+
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare local Compose files
+        run: make -C infrastructure check_dist_files
+
+      - name: Start application stack
+        run: >-
+          docker compose -p messenger
+          -f infrastructure/docker-compose.yml
+          -f infrastructure/docker-compose.override.yml
+          up -d --build database auth chat realtime worker frontend traefik
+
+      - name: Apply database migrations
+        run: make migrate
+
+      - name: Wait for frontend
+        run: >-
+          curl --fail --silent --show-error --insecure
+          --retry 30 --retry-all-errors --retry-delay 2
+          --resolve chat.localhost:443:127.0.0.1
+          https://chat.localhost/
+
+      - name: Prepare Playwright artifacts
+        run: mkdir -p e2e/test-results
+
+      - name: Run Playwright tests
+        run: >-
+          docker compose -p messenger
+          -f infrastructure/docker-compose.yml
+          -f infrastructure/docker-compose.override.yml
+          run --rm
+          -v "$PWD/e2e/test-results:/e2e/test-results"
+          e2e
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: e2e/test-results/
+          if-no-files-found: ignore
+
+      - name: Stop application stack
+        if: always()
+        run: docker compose -p messenger -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml down -v
