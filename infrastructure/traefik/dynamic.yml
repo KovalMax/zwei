@@ -7,29 +7,29 @@ http:
   middlewares:
   routers:
     dashboard:
-      rule: Host(`traefik.localhost`) || Host(`traefik.127.0.0.1.nip.io`)
+      rule: Host(`traefik.localhost`)
       entryPoints: [websecure]
       service: api@internal
       tls: {}
     frontend:
-      rule: Host(`chat.localhost`) || Host(`host.docker.internal`) || Host(`chat.127.0.0.1.nip.io`)
+      rule: Host(`chat.localhost`)
       entryPoints: [websecure]
       service: frontend
       tls: {}
     auth:
-      rule: Host(`auth.localhost`) || Host(`host.docker.internal`) || Host(`auth.127.0.0.1.nip.io`) || (Host(`chat.localhost`) && PathPrefix(`/api/auth`))
+      rule: Host(`auth.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/api/auth`))
       entryPoints: [websecure]
       service: auth
       priority: 100
       tls: {}
     chat-api:
-      rule: Host(`api.chat.localhost`) || Host(`host.docker.internal`) || Host(`api.chat.127.0.0.1.nip.io`) || (Host(`chat.localhost`) && PathPrefix(`/api/chat`))
+      rule: Host(`api.chat.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/api/chat`))
       entryPoints: [websecure]
       service: chat
       priority: 100
       tls: {}
     realtime:
-      rule: Host(`ws.chat.localhost`) || Host(`host.docker.internal`) || Host(`ws.chat.127.0.0.1.nip.io`) || (Host(`chat.localhost`) && PathPrefix(`/ws`))
+      rule: Host(`ws.chat.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/ws`))
       entryPoints: [websecure]
       service: realtime
       priority: 100

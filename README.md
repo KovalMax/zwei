@@ -1,24 +1,33 @@
-# P2P Web Chat
+# Zwei
 
-Private server-mediated one-to-one chat. “P2P” describes the conversation model, not browser-to-browser transport.
+Private, server-mediated one-to-one messaging. Users can register, sign in, find other users, create conversations, and exchange messages in real time.
 
 ## Stack
 
 - Angular 22 frontend
-- Go auth, chat, realtime, and worker services
-- PostgreSQL for durable state
-- Redis reserved for ephemeral coordination and future realtime fan-out
-- Traefik with local TLS for development routing
+- Go services for authentication, chat, real-time messaging, and background work
+- PostgreSQL for persistent data
+- Redis for future ephemeral coordination and fan-out
+- Traefik with local TLS
+- Docker Compose for local development
 
-## Local Development
+## Run Locally
 
-Docker Compose is the supported workflow. Copying the local environment and override files is handled automatically by `make start` and `make build`.
+Requirements: Docker Desktop and `make`.
 
 ```sh
 make build
-make start
 make migrate
-make e2e
+make trust-local-ca   # macOS, once
 ```
 
-Open `https://chat.localhost`. Run `make trust-local-ca` once on macOS, then fully restart the browser. See `make help` for all commands and `docs/REVIVAL_PLAN.md` for architecture, scope, and remaining work.
+Open `https://chat.localhost` and restart the browser after trusting the local CA. The local environment and Docker Compose override files are created automatically from their `.dist` files.
+
+The application uses these local hosts:
+
+- `chat.localhost` - frontend
+- `auth.localhost` - authentication API
+- `api.chat.localhost` - chat API
+- `ws.chat.localhost` - WebSocket messaging
+
+Run browser tests with `make e2e` and stop the stack with `make stop`.

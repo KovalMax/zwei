@@ -1,6 +1,6 @@
 # Frontend
 
-Angular 22 client for P2P Web Chat. Use the repository Docker Compose commands rather than host-installed Node tooling.
+Angular 22 client for Zwei. Use the repository Docker Compose commands rather than host-installed Node tooling.
 
 ```sh
 make build
