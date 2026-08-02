@@ -1,0 +1,12 @@
+#!/bin/sh
+
+set -eu
+
+echo "Checking Go formatting..."
+if [ -n "$(gofmt -l services)" ]; then
+  echo "Go files need formatting. Run: gofmt -w services" >&2
+  exit 1
+fi
+
+echo "Running go vet..."
+go vet ./services/...

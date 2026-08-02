@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sharedmessage "github.com/maxkoval/p2p-webchat/services/shared/message"
+	sharedmessage "github.com/KovalMax/zwei/services/shared/message"
 )
 
 // Sender coordinates the durable, idempotent message-send workflow.

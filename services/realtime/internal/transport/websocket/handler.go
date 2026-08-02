@@ -10,8 +10,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/maxkoval/p2p-webchat/services/realtime/internal/application"
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
+	"github.com/KovalMax/zwei/services/realtime/internal/application"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
 
 const (

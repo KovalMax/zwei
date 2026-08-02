@@ -7,11 +7,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/maxkoval/p2p-webchat/services/internal/runtime"
-	"github.com/maxkoval/p2p-webchat/services/realtime/internal/application"
-	websockettransport "github.com/maxkoval/p2p-webchat/services/realtime/internal/transport/websocket"
-	sharedauth "github.com/maxkoval/p2p-webchat/services/shared/auth"
-	"github.com/maxkoval/p2p-webchat/services/shared/messaging"
+	"github.com/KovalMax/zwei/services/internal/runtime"
+	"github.com/KovalMax/zwei/services/realtime/internal/application"
+	websockettransport "github.com/KovalMax/zwei/services/realtime/internal/transport/websocket"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
+	"github.com/KovalMax/zwei/services/shared/messaging"
 )
 
 func main() {

@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/maxkoval/p2p-webchat/services/chat/internal/domain/conversation"
-	sharedmessage "github.com/maxkoval/p2p-webchat/services/shared/message"
+	"github.com/KovalMax/zwei/services/chat/internal/domain/conversation"
+	sharedmessage "github.com/KovalMax/zwei/services/shared/message"
 )
 
 type HistoryRepository struct {

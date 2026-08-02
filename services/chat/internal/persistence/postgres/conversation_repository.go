@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/maxkoval/p2p-webchat/services/chat/internal/domain/conversation"
+	"github.com/KovalMax/zwei/services/chat/internal/domain/conversation"
 )
 
 var ErrNotFound = errors.New("conversation or user not found")
