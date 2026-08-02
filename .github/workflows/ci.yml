@@ -10,8 +10,31 @@ permissions:
   contents: read
 
 jobs:
+  go-quality:
+    name: Go format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Format Go code
+        run: gofmt -w services
+
+      - name: Check formatting changes
+        run: git diff --exit-code -- services
+
+      - name: Run Go linter
+        run: go vet ./services/...
+
   go-test:
     name: Go unit tests
+    needs: go-quality
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -28,6 +51,7 @@ jobs:
 
   e2e:
     name: Playwright E2E
+    needs: go-test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
