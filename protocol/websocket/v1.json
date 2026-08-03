@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "clientEvents": {
+    "message.send": ["request_id", "payload.conversation_id", "payload.client_message_id", "payload.body"],
+    "typing.start": ["payload.conversation_id"],
+    "typing.stop": ["payload.conversation_id"],
+    "presence.refresh": [],
+    "conversation.read": ["payload.conversation_id", "payload.sequence"]
+  },
+  "serverEvents": [
+    "message.accepted",
+    "message.created",
+    "message.rejected",
+    "presence.snapshot",
+    "presence.changed",
+    "typing.started",
+    "typing.stopped",
+    "conversation.created",
+    "conversation.read"
+  ]
+}

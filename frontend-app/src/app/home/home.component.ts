@@ -1,5 +1,4 @@
 import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, OnDestroy, OnInit, ViewChild} from '@angular/core';
-import {HttpClient} from '@angular/common/http';
 import {BehaviorSubject} from 'rxjs';
 import {Conversation} from './conversation.model';
 import {ConversationService} from './conversation.service';
@@ -9,13 +8,15 @@ import {DataProviderService, MessageSocketEvent} from './data-provider.service';
 import {createRandomID} from '../login/login';
 import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
+import {toMessage} from './wire.mapper';
 
 @Component({
     standalone: false,
     changeDetection: ChangeDetectionStrategy.OnPush,
     selector: 'app-home',
     templateUrl: './home.component.html',
-    styleUrls: ['./home.component.css']
+    styleUrls: ['./home.component.css'],
+    providers: [DataProviderService],
 })
 export class HomeComponent implements OnInit, OnDestroy {
     private readonly selectedConversationKey = 'zwei_selected_conversation';
@@ -26,19 +27,24 @@ export class HomeComponent implements OnInit, OnDestroy {
     public historyCursor?: string;
     public isHistoryLoading = false;
     public draft = '';
-    public isSending = false;
     public searchQuery = '';
     public searchResults: UserSearchResult[] = [];
     public socketError = false;
     public socketReady = false;
+    public presenceReady = false;
     public sendStatus = '';
     public profile?: Profile;
-    private dataProvider: DataProviderService;
-    private acknowledgementTimeout?: number;
+    private typingTimeout?: number;
+    private remoteTypingTimeout?: number;
+    private readonly pendingRequests = new Map<string, {clientMessageID: string; timeout: number}>();
+    private historyLoadID = 0;
+    private onlineUserIDs = new Set<string>();
+    private typingConversationID?: string;
+    private isTyping = false;
+    private readonly peerReadSequences = new Map<string, number>();
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
 
-    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, http: HttpClient) {
-        this.dataProvider = new DataProviderService(http);
+    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService) {
     }
 
     public ngOnInit(): void {
@@ -49,7 +55,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.conversationService.list().subscribe({
             next: conversations => {
                 this.conversations.next(conversations);
-                window.localStorage.removeItem(this.selectedConversationKey);
+                this.restoreSelectedConversation(conversations);
             },
             error: () => { this.isLoading = false; this.changeDetector.markForCheck(); },
             complete: () => this.isLoading = false,
@@ -60,12 +66,16 @@ export class HomeComponent implements OnInit, OnDestroy {
         });
         this.dataProvider.readyChanges.subscribe(ready => {
             this.socketReady = ready;
+            if (!ready) this.presenceReady = false;
+            if (ready) this.markSelectedConversationRead();
             this.changeDetector.markForCheck();
         });
     }
 
     public ngOnDestroy(): void {
-        window.clearTimeout(this.acknowledgementTimeout);
+        for (const pending of this.pendingRequests.values()) window.clearTimeout(pending.timeout);
+        window.clearTimeout(this.typingTimeout);
+        window.clearTimeout(this.remoteTypingTimeout);
         this.dataProvider.close();
     }
 
@@ -90,8 +100,42 @@ export class HomeComponent implements OnInit, OnDestroy {
         return message.senderId === this.profile?.id;
     }
 
+    public isLatestReadMessage(message: Message): boolean {
+        const readSequence = this.peerReadSequences.get(message.conversationId) || 0;
+        if (message.pending || !this.isOwnMessage(message) || message.sequence > readSequence) return false;
+        return !this.messages.some(item => this.isOwnMessage(item) && item.conversationId === message.conversationId && item.sequence > message.sequence && item.sequence <= readSequence);
+    }
+
     public senderName(message: Message): string {
         return this.isOwnMessage(message) ? (this.profile?.display_name || 'You') : (this.selectedConversation?.otherDisplayName || 'Conversation member');
+    }
+
+    public peerPresenceLabel(): string {
+        if (!this.selectedConversation) return this.socketReady ? 'Live connection' : 'Connecting…';
+        if (!this.socketReady) return 'Connection unavailable';
+        if (!this.presenceReady) return 'Checking presence…';
+        return this.onlineUserIDs.has(this.selectedConversation.otherUserId) ? 'Online' : 'Offline';
+    }
+
+    public isSelectedUserOffline(): boolean {
+        return !!this.selectedConversation && this.presenceReady && !this.onlineUserIDs.has(this.selectedConversation.otherUserId);
+    }
+
+    public isSelectedUserTyping(): boolean {
+        return !!this.selectedConversation && this.typingConversationID === this.selectedConversation.id;
+    }
+
+    public onDraftChange(): void {
+        if (!this.selectedConversation || !this.socketReady) return;
+        if (!this.draft.trim()) {
+            this.stopTyping();
+            return;
+        }
+        if (!this.isTyping) {
+            this.isTyping = this.dataProvider.send({type: 'typing.start', payload: {conversation_id: this.selectedConversation.id}});
+        }
+        window.clearTimeout(this.typingTimeout);
+        this.typingTimeout = window.setTimeout(() => this.stopTyping(), 2_000);
     }
 
     public searchUsers(): void {
@@ -107,21 +151,26 @@ export class HomeComponent implements OnInit, OnDestroy {
             this.searchResults = [];
             this.searchQuery = '';
             this.selectConversation(conversation);
+            this.dataProvider.send({type: 'presence.refresh'});
         });
     }
 
     public selectConversation(conversation: Conversation): void {
-        this.selectedConversation = conversation;
+        const selectedConversation = {...conversation, unreadCount: 0};
+        this.selectedConversation = selectedConversation;
         window.localStorage.setItem(this.selectedConversationKey, conversation.id);
+        this.conversations.next(this.conversations.getValue().map(item => item.id === conversation.id ? selectedConversation : item));
         this.messages = [];
         this.historyCursor = undefined;
         this.loadHistory();
     }
 
     public closeConversation(): void {
+        this.historyLoadID++;
         this.selectedConversation = undefined;
         this.messages = [];
         this.historyCursor = undefined;
+        this.isHistoryLoading = false;
         window.localStorage.removeItem(this.selectedConversationKey);
     }
 
@@ -136,18 +185,16 @@ export class HomeComponent implements OnInit, OnDestroy {
             this.sendStatus = 'Write a message before sending.';
             return;
         }
-        if (this.isSending) {
-            this.sendStatus = 'Waiting for the previous message to be acknowledged.';
-            return;
-        }
         if (!this.socketReady) {
             this.sendStatus = 'Secure connection is not ready. Wait a moment and try again.';
             return;
         }
         const clientMessageId = createRandomID();
+        const requestID = createRandomID();
+        this.stopTyping();
         const sent = this.dataProvider.send({
             type: 'message.send',
-            request_id: createRandomID(),
+            request_id: requestID,
             payload: {conversation_id: this.selectedConversation.id, client_message_id: clientMessageId, body},
         });
         if (!sent) {
@@ -156,53 +203,97 @@ export class HomeComponent implements OnInit, OnDestroy {
             this.changeDetector.markForCheck();
             return;
         }
-        this.isSending = true;
-        this.sendStatus = 'Sending…';
+        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: this.selectedConversation.id, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body, createdAt: new Date().toISOString(), pending: true}];
+        this.sendStatus = '';
         this.draft = '';
         console.info('Sending chat message', {conversationId: this.selectedConversation.id, clientMessageId});
-        window.clearTimeout(this.acknowledgementTimeout);
-        this.acknowledgementTimeout = window.setTimeout(() => {
-            if (this.isSending) {
-                this.isSending = false;
-                this.sendStatus = 'No acknowledgement received. Refresh and try again.';
-                this.changeDetector.markForCheck();
-            }
-        }, 10_000);
+        const timeout = window.setTimeout(() => this.rejectPendingMessage(requestID, 'No acknowledgement received. Try again.'), 10_000);
+        this.pendingRequests.set(requestID, {clientMessageID: clientMessageId, timeout});
         this.changeDetector.markForCheck();
     }
 
     public handleSocketEvent(event: MessageSocketEvent): void {
-        if (event.type === 'message.rejected') {
-            this.isSending = false;
-            this.sendStatus = `Message rejected: ${String((event.payload as {error?: string}).error || 'unknown error')}`;
-            window.clearTimeout(this.acknowledgementTimeout);
+        if (event.type === 'conversation.created') {
+            this.refreshConversations();
+            return;
+        }
+        if (event.type === 'conversation.read') {
+            const sequence = this.peerReadSequences.get(event.payload.conversation_id) || 0;
+            if (event.payload.sequence > sequence) this.peerReadSequences.set(event.payload.conversation_id, event.payload.sequence);
             this.changeDetector.markForCheck();
             return;
         }
-        const message = this.normalizeMessage(event.payload as Record<string, unknown>);
-        if (!message || !this.selectedConversation || message.conversationId !== this.selectedConversation.id) return;
-        if (!this.messages.some(item => item.id === message.id)) {
+        if (event.type === 'presence.snapshot') {
+            this.onlineUserIDs = new Set(event.payload.user_ids);
+            this.presenceReady = true;
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (event.type === 'presence.changed') {
+            if (event.payload.online) this.onlineUserIDs.add(event.payload.user_id);
+            else this.onlineUserIDs.delete(event.payload.user_id);
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (event.type === 'typing.started') {
+            if (event.payload.conversation_id === this.selectedConversation?.id && event.payload.user_id === this.selectedConversation.otherUserId) {
+                this.typingConversationID = event.payload.conversation_id;
+                window.clearTimeout(this.remoteTypingTimeout);
+                this.remoteTypingTimeout = window.setTimeout(() => {
+                    this.typingConversationID = undefined;
+                    this.changeDetector.markForCheck();
+                }, 5_000);
+                this.changeDetector.markForCheck();
+            }
+            return;
+        }
+        if (event.type === 'typing.stopped') {
+            if (event.payload.conversation_id === this.typingConversationID && event.payload.user_id === this.selectedConversation?.otherUserId) {
+                this.typingConversationID = undefined;
+                window.clearTimeout(this.remoteTypingTimeout);
+                this.changeDetector.markForCheck();
+            }
+            return;
+        }
+        if (event.type === 'message.rejected') {
+            if (event.request_id) this.rejectPendingMessage(event.request_id, `Message rejected: ${String((event.payload as {error?: string}).error || 'unknown error')}`);
+            return;
+        }
+        if (event.type !== 'message.accepted' && event.type !== 'message.created') return;
+        const message = toMessage(event.payload);
+        if (event.type === 'message.accepted' && event.request_id) this.resolvePendingMessage(event.request_id);
+        if (!message) return;
+        if (!this.selectedConversation || message.conversationId !== this.selectedConversation.id) {
+            this.updateBackgroundConversationActivity(message.conversationId, message.createdAt, event.type === 'message.created');
+            this.changeDetector.markForCheck();
+            return;
+        }
+        const pendingIndex = this.messages.findIndex(item => item.pending && item.clientMessageId === message.clientMessageId);
+        if (pendingIndex >= 0) {
+            this.messages = this.messages.map((item, index) => index === pendingIndex ? message : item);
+        } else if (!this.messages.some(item => item.id === message.id)) {
             this.messages = [...this.messages, message];
         }
+        if (event.type === 'message.created' && !this.isOwnMessage(message)) this.markSelectedConversationRead();
         this.updateConversationActivity(message.createdAt);
-        this.isSending = false;
-        this.sendStatus = '';
-        window.clearTimeout(this.acknowledgementTimeout);
         this.changeDetector.markForCheck();
         this.scrollToLatest();
     }
 
-    private normalizeMessage(payload: Record<string, unknown>): Message | null {
-        if (typeof payload.id !== 'string' || typeof payload.conversation_id !== 'string') return null;
-        return {
-            id: payload.id,
-            conversationId: payload.conversation_id,
-            senderId: String(payload.sender_id || ''),
-            clientMessageId: String(payload.client_message_id || ''),
-            sequence: Number(payload.sequence),
-            body: String(payload.body || ''),
-            createdAt: String(payload.created_at || ''),
-        };
+    private refreshConversations(): void {
+        this.conversationService.list().subscribe({
+            next: conversations => {
+                this.conversations.next(conversations);
+                this.changeDetector.markForCheck();
+            },
+        });
+    }
+
+    private stopTyping(): void {
+        window.clearTimeout(this.typingTimeout);
+        if (!this.isTyping || !this.selectedConversation) return;
+        this.dataProvider.send({type: 'typing.stop', payload: {conversation_id: this.selectedConversation.id}});
+        this.isTyping = false;
     }
 
     public loadOlderMessages(): void {
@@ -215,18 +306,68 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.selectedConversation) {
             return;
         }
+        const conversationID = this.selectedConversation.id;
+        const historyLoadID = ++this.historyLoadID;
         this.isHistoryLoading = true;
-        this.conversationService.history(this.selectedConversation.id, before).subscribe({
+        this.conversationService.history(conversationID, before).subscribe({
             next: history => {
+                if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
                 const messages = [...history.messages].reverse();
                 this.messages = prepend ? [...messages, ...this.messages] : messages;
                 this.historyCursor = history.nextCursor;
+                if (!prepend) this.markSelectedConversationRead();
                 this.changeDetector.markForCheck();
                 if (!prepend) this.scrollToLatest();
             },
-            error: () => { this.isHistoryLoading = false; this.changeDetector.markForCheck(); },
-            complete: () => this.isHistoryLoading = false,
+            error: () => {
+                if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
+                this.isHistoryLoading = false;
+                this.changeDetector.markForCheck();
+            },
+            complete: () => {
+                if (this.isCurrentHistoryLoad(historyLoadID, conversationID)) this.isHistoryLoading = false;
+            },
         });
+    }
+
+    private isCurrentHistoryLoad(historyLoadID: number, conversationID: string): boolean {
+        return this.historyLoadID === historyLoadID && this.selectedConversation?.id === conversationID;
+    }
+
+    private markSelectedConversationRead(): void {
+        if (!this.socketReady || !this.selectedConversation || this.messages.length === 0) return;
+        const sequence = Math.max(...this.messages.map(message => message.sequence));
+        if (sequence < 1) return;
+        this.dataProvider.send({type: 'conversation.read', payload: {conversation_id: this.selectedConversation.id, sequence}});
+    }
+
+    private resolvePendingMessage(requestID: string): void {
+        const pending = this.pendingRequests.get(requestID);
+        if (!pending) return;
+        window.clearTimeout(pending.timeout);
+        this.pendingRequests.delete(requestID);
+        this.sendStatus = '';
+    }
+
+    private rejectPendingMessage(requestID: string, status: string): void {
+        const pending = this.pendingRequests.get(requestID);
+        if (!pending) return;
+        window.clearTimeout(pending.timeout);
+        this.pendingRequests.delete(requestID);
+        this.messages = this.messages.filter(message => message.clientMessageId !== pending.clientMessageID);
+        this.sendStatus = status;
+        this.changeDetector.markForCheck();
+    }
+
+    private restoreSelectedConversation(conversations: Conversation[]): void {
+        const selectedConversationID = window.localStorage.getItem(this.selectedConversationKey);
+        if (!selectedConversationID) return;
+        const selectedConversation = conversations.find(item => item.id === selectedConversationID);
+        if (selectedConversation) {
+            this.selectConversation(selectedConversation);
+            return;
+        }
+        window.localStorage.removeItem(this.selectedConversationKey);
     }
 
     private scrollToLatest(): void {
@@ -242,5 +383,13 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.selectedConversation = updated;
         const conversations = this.conversations.getValue();
         this.conversations.next([updated, ...conversations.filter(item => item.id !== updated.id)]);
+    }
+
+    private updateBackgroundConversationActivity(conversationID: string, lastMessageAt: string, incrementUnread: boolean): void {
+        const conversations = this.conversations.getValue();
+        const conversation = conversations.find(item => item.id === conversationID);
+        if (!conversation) return;
+        const updated = {...conversation, lastMessageAt, unreadCount: conversation.unreadCount + (incrementUnread ? 1 : 0)};
+        this.conversations.next([updated, ...conversations.filter(item => item.id !== conversationID)]);
     }
 }

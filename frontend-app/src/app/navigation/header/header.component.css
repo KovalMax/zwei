@@ -11,7 +11,7 @@
 .account-menu-name { color: var(--zwei-ink); font-weight: 700; }.account-menu-email { color: var(--zwei-muted); font-size: 11px; }
 @media (max-width: 600px) { .topbar { height: 64px; padding: 0 16px; } .connection-pill { display: none; } }
 
-:host-context(.light-theme) .topbar { background: #fff; color: #172033; box-shadow: 0 1px 0 #dce3ef; }
+:host-context(.light-theme) .topbar { border-bottom: 1px solid #dce3ef; background: #fff; color: #172033; box-shadow: 0 8px 24px rgba(23, 32, 51, .06); }
 :host-context(.light-theme) .connection-pill { color: #667085; }
 :host-context(.light-theme) .account-avatar { border-color: #c7d0df; color: #c45d3f; }
 :host-context(.light-theme) .account-button:hover { background: #f1f3f6; }

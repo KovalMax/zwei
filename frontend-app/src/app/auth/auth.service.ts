@@ -1,18 +1,17 @@
-import {HttpClient, HttpErrorResponse} from '@angular/common/http';
+import {HttpClient, HttpErrorResponse, HttpHeaders} from '@angular/common/http';
 import {Login} from '../login/login';
 import {Token} from './token';
 import {backends} from '../../environments/environment';
 import {Injectable} from '@angular/core';
-import {TokenStorageService} from './token-storage.service';
 import {Profile} from './profile.model';
-import {BehaviorSubject, Observable, throwError} from 'rxjs';
+import {BehaviorSubject, Observable, of, throwError} from 'rxjs';
 import {catchError, tap} from 'rxjs/operators';
 
 @Injectable({providedIn: 'root'})
 export class AuthService {
     private tokenSubject: BehaviorSubject<Token | null> = new BehaviorSubject<Token | null>(null);
 
-    constructor(private http: HttpClient, private storage: TokenStorageService) {
+    constructor(private http: HttpClient) {
     }
 
     get token(): BehaviorSubject<Token | null> {
@@ -20,38 +19,32 @@ export class AuthService {
     }
 
     public login(login: Login): Observable<Token> {
-        return this.http.post<Token>(backends.login, login)
+        return this.http.post<Token>(backends.login, login, {withCredentials: true})
             .pipe(
-                catchError((res: HttpErrorResponse) => {
-                    return throwError(
-                        res.error && res.error.message
-                            ? res.error.message
-                            : 'Unexpected error.'
-                    );
-                }),
+                catchError((res: HttpErrorResponse) => throwError(() => res)),
                 tap((token: Token) => {
                     this.handleToken(token);
-                    this.storage.setToken(token);
                 })
             );
     }
 
-    public autoLogin(): void {
-        if (!this.storage.hasToken()) {
-            return;
-        }
-
-        const token = this.storage.getToken();
-        if (token.expires_in && Number(token.expires_in) <= Date.now()) {
-            this.logout();
-            return;
-        }
-        this.handleToken(token);
+    public restore(): Observable<Token | null> {
+        const token = this.tokenSubject.value;
+        if (token) return of(token);
+        return this.http.post<Token>(backends.refresh, {}, {withCredentials: true}).pipe(
+            tap(restored => this.handleToken(restored)),
+            catchError(() => of(null)),
+        );
     }
 
-    public logout(): void {
+    public logout(revoke = true): Observable<void> {
+        const token = this.tokenSubject.value;
         this.tokenSubject.next(null);
-        this.storage.removeToken();
+        if (!revoke) return of(void 0);
+        const headers = token ? new HttpHeaders().set('Authorization', token.token_type.concat(' ', token.access_token)) : undefined;
+        return this.http.post<void>(backends.logout, {}, {withCredentials: true, headers}).pipe(
+            catchError(() => of(void 0)),
+        );
     }
 
     public profile(): Observable<Profile> { return this.http.get<Profile>(`${backends.auth}/api/auth/me`); }

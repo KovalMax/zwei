@@ -11,10 +11,10 @@ import {LoginComponent} from './login/login.component';
 import {RegistrationComponent} from './registration/registration.component';
 import {HTTP_INTERCEPTORS, HttpClientModule} from '@angular/common/http';
 import {AuthService} from './auth/auth.service';
-import {TokenStorageService} from './auth/token-storage.service';
 import {AuthInterceptorService} from './auth/auth-interceptor.service';
 import {LoadingSpinnerComponent} from './shared/loading-spinner/loading-spinner.component';
 import {RegistrationService} from './registration/registration.service';
+import {ProfileComponent} from './profile/profile.component';
 
 @NgModule({
     declarations: [
@@ -23,6 +23,7 @@ import {RegistrationService} from './registration/registration.service';
         HomeComponent,
         LoginComponent,
         RegistrationComponent,
+        ProfileComponent,
         LoadingSpinnerComponent,
     ],
     imports: [
@@ -36,7 +37,6 @@ import {RegistrationService} from './registration/registration.service';
     ],
     providers: [
         RegistrationService,
-        TokenStorageService,
         {
             provide: HTTP_INTERCEPTORS,
             useClass: AuthInterceptorService,

@@ -1,4 +1,4 @@
-import {Component, OnDestroy, OnInit} from '@angular/core';
+import {ChangeDetectorRef, Component, OnDestroy, OnInit} from '@angular/core';
 import {AuthService} from '../../auth/auth.service';
 import {Router} from '@angular/router';
 import {Subscription} from 'rxjs';
@@ -14,29 +14,39 @@ export class HeaderComponent implements OnInit, OnDestroy {
     public isAuthenticated = false;
     public profile?: Profile;
     public isDarkTheme = true;
-    private tokenSubscription!: Subscription;
+    private readonly subscriptions = new Subscription();
     private readonly themeKey = 'zwei_theme';
 
-    constructor(private authService: AuthService, private router: Router) {
+    constructor(private authService: AuthService, private router: Router, private changeDetector: ChangeDetectorRef) {
     }
 
     public ngOnInit(): void {
         this.isDarkTheme = window.localStorage.getItem(this.themeKey) !== 'light';
         this.applyTheme();
-        this.tokenSubscription = this.authService.token.subscribe(token => this.isAuthenticated = !!token);
-        this.authService.token.subscribe(token => {
-            if (token) this.authService.profile().subscribe({next: profile => this.profile = profile});
-            else this.profile = undefined;
-        });
+        this.subscriptions.add(this.authService.token.subscribe(token => {
+            this.isAuthenticated = !!token;
+            this.changeDetector.markForCheck();
+        }));
+        this.subscriptions.add(this.authService.token.subscribe(token => {
+            if (token) this.subscriptions.add(this.authService.profile().subscribe({
+                next: profile => {
+                    this.profile = profile;
+                    this.changeDetector.markForCheck();
+                }
+            }));
+            else {
+                this.profile = undefined;
+                this.changeDetector.markForCheck();
+            }
+        }));
     }
 
     public ngOnDestroy(): void {
-        this.tokenSubscription.unsubscribe();
+        this.subscriptions.unsubscribe();
     }
 
     public onLogout(): void {
-        this.authService.logout();
-        this.router.navigate(['login']);
+        this.authService.logout().subscribe(() => void this.router.navigate(['login']));
     }
 
     public toggleTheme(): void {

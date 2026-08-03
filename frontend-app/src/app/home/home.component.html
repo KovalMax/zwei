@@ -10,7 +10,7 @@
             <input matInput placeholder="Name or email" [(ngModel)]="searchQuery" name="userSearch" (input)="searchUsers()">
         </mat-form-field>
         <div class="search-results" *ngIf="searchResults.length">
-            <button class="search-result" *ngFor="let user of searchResults" (click)="startConversation(user)">
+            <button class="search-result" *ngFor="let user of searchResults" type="button" [attr.aria-label]="'Start a conversation with ' + user.display_name" (click)="startConversation(user)">
                 <span class="person-avatar">{{ user.display_name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><mat-icon>arrow_forward</mat-icon>
             </button>
         </div>
@@ -19,7 +19,7 @@
         <div class="people-list" *ngIf="conversations | async as items; else loadingPeople">
             <button class="person-option" *ngFor="let conversation of items" type="button" [class.selected]="selectedConversation?.id === conversation.id" (click)="selectConversation(conversation)">
                 <span class="person-avatar">{{ initials(conversation) }}</span>
-                <span class="conversation-copy"><strong>{{ conversation.otherDisplayName }}</strong><small>{{ conversation.otherEmail }}</small></span><span class="conversation-time">{{ conversationTime(conversation) }}</span>
+                <span class="conversation-copy"><strong>{{ conversation.otherDisplayName }}</strong><small>{{ conversation.otherEmail }}</small></span><span class="conversation-time">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
             </button>
         </div>
         <ng-template #loadingPeople>
@@ -32,9 +32,8 @@
             <div class="chat-identity">
                 <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><mat-icon>arrow_back</mat-icon></button>
                 <div class="hero-avatar">{{ selectedConversation ? initials(selectedConversation) : 'L' }}</div>
-                <div><h2>{{ selectedConversation ? selectedConversation.otherDisplayName : 'Choose a conversation' }}</h2><span class="chat-presence">{{ socketReady ? 'online' : 'connecting…' }}</span></div>
+                <div><h2>{{ selectedConversation ? selectedConversation.otherDisplayName : 'Choose a conversation' }}</h2><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedUserOffline()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
             </div>
-            <div class="chat-actions"><button mat-icon-button aria-label="Search conversation"><mat-icon>search</mat-icon></button><button mat-icon-button aria-label="Conversation options"><mat-icon>more_horiz</mat-icon></button></div>
         </header>
         <div class="socket-warning" *ngIf="socketError"><mat-icon>cloud_off</mat-icon> Live connection lost. Refresh to reconnect.</div>
         <div class="socket-connecting" *ngIf="!socketError && !socketReady && selectedConversation"><mat-icon>sync</mat-icon> Connecting securely…</div>
@@ -48,21 +47,18 @@
                 <mat-icon *ngIf="isHistoryLoading">hourglass_top</mat-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
             <div class="message-list" *ngIf="messages.length; else emptyMessages">
-                <article class="message-bubble" *ngFor="let message of messages" [class.message-own]="isOwnMessage(message)">
+                <article class="message-bubble" *ngFor="let message of messages" [class.message-own]="isOwnMessage(message)" [class.message-pending]="message.pending">
                     <span class="message-sender">{{ senderName(message) }}</span>
-                    <p>{{ message.body }}</p><time>{{ message.createdAt | date:'shortTime' }}</time>
+                    <p>{{ message.body }}</p><time>{{ message.createdAt | date:'shortTime' }}</time><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-read" *ngIf="isLatestReadMessage(message)">Read</span>
                 </article>
             </div>
             <ng-template #emptyMessages><div class="empty-messages"><mat-icon>mark_chat_unread</mat-icon><p>No messages yet.</p></div></ng-template>
         </section>
         <form class="composer" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
-            <button class="composer-action" mat-icon-button type="button" aria-label="Attach file" [disabled]="!selectedConversation"><mat-icon>attach_file</mat-icon></button>
             <mat-form-field appearance="outline">
-                <mat-label>{{ !selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting securely…') }}</mat-label>
-                <textarea matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" [disabled]="!selectedConversation || isSending || !socketReady" (keydown.enter)="sendMessage($event)"></textarea>
+                <textarea matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown.enter)="sendMessage($event)"></textarea>
             </mat-form-field>
-            <button mat-icon-button class="composer-action" type="button" aria-label="Emoji" [disabled]="!selectedConversation"><mat-icon>sentiment_satisfied</mat-icon></button>
-            <button mat-fab color="primary" type="submit" aria-label="Send message" [disabled]="!selectedConversation || !draft.trim() || isSending || !socketReady"><mat-icon>send</mat-icon></button>
+            <button mat-fab color="primary" type="submit" aria-label="Send message" [disabled]="!selectedConversation || !draft.trim() || !socketReady"><mat-icon>send</mat-icon></button>
         </form>
     </main>
 </section>

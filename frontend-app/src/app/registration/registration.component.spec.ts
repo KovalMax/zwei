@@ -1,6 +1,7 @@
 import {waitForAsync, ComponentFixture, TestBed} from '@angular/core/testing';
 
 import {RegistrationComponent} from './registration.component';
+import {AppModule} from '../app.module';
 
 describe('RegistrationComponent', () => {
     let component: RegistrationComponent;
@@ -8,7 +9,7 @@ describe('RegistrationComponent', () => {
 
     beforeEach(waitForAsync(() => {
         TestBed.configureTestingModule({
-            declarations: [RegistrationComponent]
+            imports: [AppModule]
         })
             .compileComponents();
     }));
@@ -16,7 +17,6 @@ describe('RegistrationComponent', () => {
     beforeEach(() => {
         fixture = TestBed.createComponent(RegistrationComponent);
         component = fixture.componentInstance;
-        fixture.detectChanges();
     });
 
     it('should create', () => {

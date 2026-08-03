@@ -1,6 +1,7 @@
 import {waitForAsync, ComponentFixture, TestBed} from '@angular/core/testing';
 
 import {LoginComponent} from './login.component';
+import {AppModule} from '../app.module';
 
 describe('LoginComponent', () => {
     let component: LoginComponent;
@@ -8,7 +9,7 @@ describe('LoginComponent', () => {
 
     beforeEach(waitForAsync(() => {
         TestBed.configureTestingModule({
-            declarations: [LoginComponent]
+            imports: [AppModule]
         })
             .compileComponents();
     }));
@@ -16,7 +17,6 @@ describe('LoginComponent', () => {
     beforeEach(() => {
         fixture = TestBed.createComponent(LoginComponent);
         component = fixture.componentInstance;
-        fixture.detectChanges();
     });
 
     it('should create', () => {
