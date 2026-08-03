@@ -177,10 +177,10 @@ func (h *Hub) publishPresence(peers []uuid.UUID, userID uuid.UUID, online bool) 
 }
 
 func (h *Hub) publishPresenceChange(ctx context.Context, userID uuid.UUID, online bool) {
-	if h.coord != nil && h.coord.Publish(ctx, userID, online) == nil {
-		return
-	}
 	h.publishPresence(h.peerIDs(ctx, userID), userID, online)
+	if h.coord != nil {
+		_ = h.coord.Publish(ctx, userID, online)
+	}
 }
 
 func (h *Hub) NotifyPresenceChanged(ctx context.Context, userID uuid.UUID, online bool) {
@@ -267,10 +267,10 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 		if request.Type == "typing.stop" {
 			eventType = "typing.stopped"
 		}
-		if coordinator, ok := h.coord.(TypingCoordinator); ok && coordinator.PublishTyping(ctx, request.Payload.ConversationID, client.Identity().UserID, request.Type == "typing.start") == nil {
-			return nil
-		}
 		h.DeliverTyping(eventType, request.Payload.ConversationID, client.Identity().UserID, recipientID)
+		if coordinator, ok := h.coord.(TypingCoordinator); ok {
+			_ = coordinator.PublishTyping(ctx, request.Payload.ConversationID, client.Identity().UserID, request.Type == "typing.start")
+		}
 		return nil
 	}
 	if request.Type != "message.send" {
