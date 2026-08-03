@@ -36,6 +36,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public profile?: Profile;
     private typingTimeout?: number;
     private remoteTypingTimeout?: number;
+    private lastTypingStartAt = 0;
     private readonly pendingRequests = new Map<string, {clientMessageID: string; timeout: number}>();
     private historyLoadID = 0;
     private onlineUserIDs = new Set<string>();
@@ -131,8 +132,9 @@ export class HomeComponent implements OnInit, OnDestroy {
             this.stopTyping();
             return;
         }
-        if (!this.isTyping) {
+        if (!this.isTyping || Date.now() - this.lastTypingStartAt >= 1_200) {
             this.isTyping = this.dataProvider.send({type: 'typing.start', payload: {conversation_id: this.selectedConversation.id}});
+            if (this.isTyping) this.lastTypingStartAt = Date.now();
         }
         window.clearTimeout(this.typingTimeout);
         this.typingTimeout = window.setTimeout(() => this.stopTyping(), 2_000);
@@ -294,6 +296,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.isTyping || !this.selectedConversation) return;
         this.dataProvider.send({type: 'typing.stop', payload: {conversation_id: this.selectedConversation.id}});
         this.isTyping = false;
+        this.lastTypingStartAt = 0;
     }
 
     public loadOlderMessages(): void {

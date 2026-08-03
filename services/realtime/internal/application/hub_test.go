@@ -74,6 +74,56 @@ func TestHubReplaysAndMarksPendingMessagesOnConnection(t *testing.T) {
 	}
 }
 
+func TestHubDeliversPresenceChangeLocallyWhenPublishingSucceeds(t *testing.T) {
+	userID := uuid.New()
+	peerID := uuid.New()
+	coord := &recordingPresenceCoordinator{}
+	hub := NewHub(nil, peerPresence{peerIDs: []uuid.UUID{peerID}}, coord, nil, nil)
+	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
+	hub.Add(context.Background(), peer)
+	peer.events = nil
+
+	hub.publishPresenceChange(context.Background(), userID, true)
+
+	if len(peer.events) != 1 {
+		t.Fatalf("peer events = %d, want 1", len(peer.events))
+	}
+	event, ok := peer.events[0].(serverEvent)
+	if !ok || event.Type != "presence.changed" {
+		t.Fatalf("presence event = %#v", peer.events[0])
+	}
+	if coord.userID != userID || !coord.online {
+		t.Fatalf("published presence = user %s online %t", coord.userID, coord.online)
+	}
+}
+
+func TestHubDeliversTypingLocallyWhenPublishingSucceeds(t *testing.T) {
+	conversationID := uuid.New()
+	senderID := uuid.New()
+	peerID := uuid.New()
+	coord := &recordingPresenceCoordinator{}
+	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, coord, nil, nil)
+	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
+	hub.Add(context.Background(), peer)
+	peer.events = nil
+
+	err := hub.Handle(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: senderID, DeviceID: uuid.NewString()}}, []byte(`{"version":1,"type":"typing.start","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(peer.events) != 1 {
+		t.Fatalf("peer events = %d, want 1", len(peer.events))
+	}
+	event, ok := peer.events[0].(serverEvent)
+	if !ok || event.Type != "typing.started" {
+		t.Fatalf("typing event = %#v", peer.events[0])
+	}
+	if coord.typingConversationID != conversationID || coord.typingUserID != senderID || !coord.typingStarted {
+		t.Fatalf("published typing = conversation %s user %s started %t", coord.typingConversationID, coord.typingUserID, coord.typingStarted)
+	}
+}
+
 func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	conversationID := uuid.New()
 	readerID := uuid.New()
@@ -146,6 +196,42 @@ type authorizedPresence struct{ recipientID uuid.UUID }
 func (authorizedPresence) PeerIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) { return nil, nil }
 func (p authorizedPresence) RecipientID(context.Context, uuid.UUID, uuid.UUID) (uuid.UUID, error) {
 	return p.recipientID, nil
+}
+
+type peerPresence struct{ peerIDs []uuid.UUID }
+
+func (p peerPresence) PeerIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) { return p.peerIDs, nil }
+func (peerPresence) RecipientID(context.Context, uuid.UUID, uuid.UUID) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+type recordingPresenceCoordinator struct {
+	userID               uuid.UUID
+	online               bool
+	typingConversationID uuid.UUID
+	typingUserID         uuid.UUID
+	typingStarted        bool
+}
+
+func (*recordingPresenceCoordinator) Connect(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+func (*recordingPresenceCoordinator) Disconnect(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+func (*recordingPresenceCoordinator) Online(context.Context, []uuid.UUID) (map[uuid.UUID]bool, error) {
+	return nil, nil
+}
+func (c *recordingPresenceCoordinator) Publish(_ context.Context, userID uuid.UUID, online bool) error {
+	c.userID = userID
+	c.online = online
+	return nil
+}
+func (c *recordingPresenceCoordinator) PublishTyping(_ context.Context, conversationID, userID uuid.UUID, started bool) error {
+	c.typingConversationID = conversationID
+	c.typingUserID = userID
+	c.typingStarted = started
+	return nil
 }
 
 type fakeReadCursors struct {

@@ -1,4 +1,4 @@
-import {waitForAsync, ComponentFixture, TestBed} from '@angular/core/testing';
+import {fakeAsync, tick, waitForAsync, ComponentFixture, TestBed} from '@angular/core/testing';
 import {ChangeDetectorRef} from '@angular/core';
 import {of, Subject} from 'rxjs';
 
@@ -129,6 +129,31 @@ describe('HomeComponent', () => {
         historyComponent.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.changed', payload: {user_id: 'user-peer', online: false}});
         expect(historyComponent.peerPresenceLabel()).toBe('Offline');
     });
+
+    it('refreshes typing while composing so the peer indicator does not expire', fakeAsync(() => {
+        const send = jasmine.createSpy('send').and.returnValue(true);
+        const historyComponent = new HomeComponent(
+            {} as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {send, close: () => undefined} as unknown as DataProviderService,
+        );
+        historyComponent.selectedConversation = conversation('peer');
+        historyComponent.socketReady = true;
+        historyComponent.draft = 'First';
+
+        historyComponent.onDraftChange();
+        tick(1_200);
+        historyComponent.draft = 'First continued';
+        historyComponent.onDraftChange();
+
+        expect(send).toHaveBeenCalledTimes(2);
+        expect(send.calls.allArgs()).toEqual([
+            [{type: 'typing.start', payload: {conversation_id: 'peer'}}],
+            [{type: 'typing.start', payload: {conversation_id: 'peer'}}],
+        ]);
+        historyComponent.ngOnDestroy();
+    }));
 
     it('keeps multiple sent messages pending until their matching acknowledgements arrive', () => {
         const historyComponent = new HomeComponent(
