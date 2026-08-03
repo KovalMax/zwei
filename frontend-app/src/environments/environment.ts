@@ -13,6 +13,8 @@ export const backends = {
     login: 'https://auth.localhost/api/auth/login',
     registration: 'https://auth.localhost/api/auth/register',
     websocketTicket: 'https://auth.localhost/api/auth/ws-ticket',
+    refresh: 'https://auth.localhost/api/auth/refresh',
+    logout: 'https://auth.localhost/api/auth/logout',
 };
 
 /*

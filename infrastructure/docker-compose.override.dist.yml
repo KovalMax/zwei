@@ -11,10 +11,6 @@ services:
     volumes:
       - ../services:/app/services
 
-  worker:
-    volumes:
-      - ../services:/app/services
-
   frontend:
     volumes:
       - ../frontend-app:/app

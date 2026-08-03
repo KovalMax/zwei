@@ -112,7 +112,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayNa
 }
 
 func (s *Service) WebSocketTicket(identity sharedauth.Identity) (string, error) {
-	return s.tokens.IssueWebSocketTicket(identity, time.Minute)
+	return s.tokens.IssueWebSocketTicket(identity, 30*time.Second)
 }
 
 func (s *Service) issueTokens(ctx context.Context, userID, deviceID uuid.UUID, version int64) (Tokens, error) {

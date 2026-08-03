@@ -24,7 +24,7 @@ jobs:
           cache: true
 
       - name: Format Go code
-        run: gofmt -w services
+        run: go fmt ./services/...
 
       - name: Check formatting changes
         run: git diff --exit-code -- services
@@ -46,12 +46,46 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run Go tests
-        run: go test ./services/...
+      - name: Run Go tests with race detection
+        run: go test -race ./services/...
+
+  frontend-quality:
+    name: Angular tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Angular unit tests with coverage
+        run: npm test -- --watch=false --browsers=ChromeHeadless --code-coverage
+
+      - name: Build Angular application
+        run: npm run build
+
+      - name: Upload Angular coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: angular-coverage
+          path: frontend-app/coverage/
+          if-no-files-found: error
 
   e2e:
     name: Playwright E2E
-    needs: go-test
+    needs: [go-test, frontend-quality]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -66,7 +100,7 @@ jobs:
           docker compose -p messenger
           -f infrastructure/docker-compose.yml
           -f infrastructure/docker-compose.override.yml
-          up -d --build database auth chat realtime worker frontend traefik
+          up -d --build database auth chat realtime frontend traefik
 
       - name: Apply database migrations
         run: make migrate

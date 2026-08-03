@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"time"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/KovalMax/zwei/services/internal/runtime"
 	"github.com/KovalMax/zwei/services/realtime/internal/application"
+	postgresinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/postgres"
+	redisinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/redis"
 	websockettransport "github.com/KovalMax/zwei/services/realtime/internal/transport/websocket"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 	"github.com/KovalMax/zwei/services/shared/messaging"
@@ -36,8 +39,44 @@ func main() {
 		panic(err)
 	}
 	encryptionSecret := getenv("MESSAGE_ENCRYPTION_KEY", "local-development-key-change-me")
-	hub := application.NewHub(messaging.NewSender(db, encryptionSecret))
-	handler := websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), origins)
+	coordination, err := redisinfra.NewPresenceCoordinator(getenv("REDIS_URL", "redis://redis:6379/0"))
+	if err != nil {
+		panic(err)
+	}
+	defer coordination.Close()
+	if err := coordination.Ping(ctx); err != nil {
+		panic(err)
+	}
+	presence := postgresinfra.NewPresenceRepository(db)
+	hub := application.NewHub(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db))
+	go coordination.StartHeartbeat(ctx)
+	go func() {
+		_ = coordination.Consume(ctx, func(change redisinfra.Change) { hub.NotifyPresenceChanged(ctx, change.UserID, change.Online) })
+	}()
+	go func() {
+		_ = coordination.ConsumeConversations(ctx, func(change redisinfra.ConversationChange) {
+			hub.DeliverConversationCreated(change.ConversationID, change.UserIDs)
+		})
+	}()
+	go func() {
+		_ = coordination.ConsumeTyping(ctx, func(change redisinfra.TypingChange) {
+			recipientID, err := presence.RecipientID(ctx, change.UserID, change.ConversationID)
+			if err != nil {
+				return
+			}
+			eventType := "typing.stopped"
+			if change.Started {
+				eventType = "typing.started"
+			}
+			hub.DeliverTyping(eventType, change.ConversationID, change.UserID, recipientID)
+		})
+	}()
+	go func() {
+		_ = coordination.ConsumeMessages(ctx, func(change redisinfra.MessageChange) { hub.DeliverMessageCreated(change.Message) })
+	}()
+	outbox := postgresinfra.NewOutboxRepository(db)
+	go consumeConversationEvents(ctx, outbox, hub)
+	handler := websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins)
 	mux := runtime.NewHealthHandler("realtime")
 	mux.Handle("GET /ws", handler)
 	server := &http.Server{
@@ -47,6 +86,25 @@ func main() {
 	}
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {
 		panic(err)
+	}
+}
+
+func consumeConversationEvents(ctx context.Context, outbox *postgresinfra.OutboxRepository, hub *application.Hub) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			events, err := outbox.ClaimConversationCreated(ctx, 100)
+			if err != nil {
+				continue
+			}
+			for _, event := range events {
+				hub.NotifyConversationCreated(event.ConversationID, event.UserIDs)
+			}
+		}
 	}
 }
 

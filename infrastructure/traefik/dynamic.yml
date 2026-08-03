@@ -5,35 +5,67 @@ tls:
 
 http:
   middlewares:
+    security-headers:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+        permissionsPolicy: geolocation=(), microphone=(), camera=()
+        customResponseHeaders:
+          Content-Security-Policy: "default-src 'self'; connect-src 'self' https://auth.localhost https://api.chat.localhost wss://ws.chat.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+          Cross-Origin-Opener-Policy: same-origin
+          X-Permitted-Cross-Domain-Policies: none
+    auth-rate-limit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 100
+    search-rate-limit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 40
   routers:
     dashboard:
       rule: Host(`traefik.localhost`)
       entryPoints: [websecure]
       service: api@internal
       tls: {}
+      middlewares: [security-headers]
     frontend:
       rule: Host(`chat.localhost`)
       entryPoints: [websecure]
       service: frontend
       tls: {}
+      middlewares: [security-headers]
     auth:
       rule: Host(`auth.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/api/auth`))
       entryPoints: [websecure]
       service: auth
       priority: 100
       tls: {}
+      middlewares: [security-headers, auth-rate-limit]
+    user-search:
+      rule: Host(`api.chat.localhost`) && Path(`/api/chat/users/search`)
+      entryPoints: [websecure]
+      service: chat
+      priority: 110
+      tls: {}
+      middlewares: [security-headers, search-rate-limit]
     chat-api:
       rule: Host(`api.chat.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/api/chat`))
       entryPoints: [websecure]
       service: chat
       priority: 100
       tls: {}
+      middlewares: [security-headers]
     realtime:
       rule: Host(`ws.chat.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/ws`))
       entryPoints: [websecure]
       service: realtime
       priority: 100
       tls: {}
+      middlewares: [security-headers]
 
   services:
     frontend:

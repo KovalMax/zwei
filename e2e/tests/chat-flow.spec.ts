@@ -34,6 +34,73 @@ async function login(page: import('@playwright/test').Page, email: string): Prom
 test('register, create conversation, and deliver a message', async ({ browser }) => {
   const aliceEmail = uniqueEmail('alice');
   const bobEmail = uniqueEmail('bob');
+  const desktop = { viewport: { width: 2560, height: 1440 } };
+  const aliceContext = await browser.newContext(desktop);
+  const bobContext = await browser.newContext(desktop);
+  const alice = await aliceContext.newPage();
+  const bob = await bobContext.newPage();
+
+  await register(alice, aliceEmail, 'Alice');
+  await register(bob, bobEmail, 'Bob');
+  await login(alice, aliceEmail);
+  await login(bob, bobEmail);
+  await expect(alice.getByRole('button', { name: 'Account menu' })).toBeVisible();
+  await expect(alice.locator('.conversation-rail')).toBeVisible();
+  await expect(alice.getByText(/is typing/)).not.toBeVisible();
+
+   await alice.getByPlaceholder('Name or email').fill(bobEmail);
+   await expect(alice.getByText(bobEmail)).toBeVisible();
+   await alice.getByText(bobEmail).click();
+  await expect(alice.getByText('No messages yet.')).toBeVisible();
+  await expect(alice.getByText('Online', { exact: true })).toBeVisible();
+  await expect(alice.locator('.message-history')).toBeVisible();
+  await expect(alice.getByLabel('Message composer')).toBeVisible();
+
+  const aliceConversation = bob.locator('.person-option').filter({ hasText: 'Alice' });
+  await expect(aliceConversation).toBeVisible();
+  await aliceConversation.click();
+
+  await alice.getByPlaceholder('Write a message…').fill('typing');
+  await expect(bob.getByText('Alice is typing…')).toBeVisible();
+  await expect(bob.getByText('Alice is typing…')).not.toBeVisible({ timeout: 3_000 });
+
+  const messages = [`hello-${Date.now()}`, `follow-up-${Date.now()}`];
+  const started = Date.now();
+  await alice.getByPlaceholder('Write a message…').fill(messages[0]);
+  await expect(alice.getByRole('button', { name: 'Send message' })).toBeEnabled();
+  await alice.getByPlaceholder('Write a message…').press('Enter');
+  await expect(alice.getByText(messages[0])).toBeVisible({ timeout: 5_000 });
+  await expect(bob.getByText(messages[0])).toBeVisible({ timeout: 5_000 });
+  await expect(alice.getByText('Read', {exact: true})).toBeVisible({ timeout: 5_000 });
+
+  await alice.getByPlaceholder('Write a message…').fill(messages[1]);
+  await expect(alice.getByRole('button', { name: 'Send message' })).toBeEnabled();
+  await alice.getByRole('button', { name: 'Send message' }).click();
+  await expect(alice.getByText(messages[1])).toBeVisible({ timeout: 5_000 });
+  await expect(bob.getByText(messages[1])).toBeVisible({ timeout: 5_000 });
+
+  const reply = `reply-${Date.now()}`;
+  await bob.getByPlaceholder('Write a message…').fill(reply);
+  await bob.getByRole('button', { name: 'Send message' }).click();
+  await expect(alice.getByText(reply)).toBeVisible({ timeout: 5_000 });
+
+  await alice.reload();
+  await expect(alice.getByRole('heading', { name: 'Bob' })).toBeVisible();
+  await expect(alice.getByText(messages[0])).toBeVisible();
+  await expect(alice.getByText(reply)).toBeVisible();
+  await expect(alice.getByText(messages[0]).locator('xpath=ancestor::article')).toHaveClass(/message-own/);
+  await expect(alice.getByText(reply).locator('xpath=ancestor::article')).not.toHaveClass(/message-own/);
+  const messageColumn = await alice.locator('.message-list').boundingBox();
+  expect(messageColumn?.width).toBeLessThanOrEqual(980);
+  expect(Date.now() - started).toBeLessThan(5_000);
+
+  await aliceContext.close();
+  await bobContext.close();
+});
+
+test('replays a message sent while the recipient is offline', async ({ browser }) => {
+  const aliceEmail = uniqueEmail('offline-alice');
+  const bobEmail = uniqueEmail('offline-bob');
   const aliceContext = await browser.newContext();
   const bobContext = await browser.newContext();
   const alice = await aliceContext.newPage();
@@ -43,44 +110,22 @@ test('register, create conversation, and deliver a message', async ({ browser })
   await register(bob, bobEmail, 'Bob');
   await login(alice, aliceEmail);
   await login(bob, bobEmail);
-
   await alice.getByPlaceholder('Name or email').fill(bobEmail);
-  await expect(alice.getByText(bobEmail)).toBeVisible();
   await alice.getByText(bobEmail).click();
-  await expect(alice.getByText('No messages yet.')).toBeVisible();
+  const bobConversation = bob.locator('.person-option').filter({hasText: 'Alice'});
+  await expect(bobConversation).toBeVisible();
+  await bobConversation.click();
 
-  await bob.reload();
-  const aliceConversation = bob.locator('.person-option').filter({ hasText: 'Alice' });
-  await expect(aliceConversation).toBeVisible();
-  await aliceConversation.click();
+  await bob.goto('/profile');
+  await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
+  const offlineMessage = `offline-${Date.now()}`;
+  await alice.getByPlaceholder('Write a message…').fill(offlineMessage);
+  await alice.getByPlaceholder('Write a message…').press('Enter');
+  await expect(alice.getByText(offlineMessage)).toBeVisible();
 
-  const messages = [`hello-${Date.now()}`, `follow-up-${Date.now()}`];
-  const started = Date.now();
-  await alice.getByLabel('Write a message').fill(messages[0]);
-  await expect(alice.getByRole('button', { name: 'Send message' })).toBeEnabled();
-  await alice.getByLabel('Write a message').press('Enter');
-  await expect(alice.getByText(messages[0])).toBeVisible({ timeout: 5_000 });
-  await expect(bob.getByText(messages[0])).toBeVisible({ timeout: 5_000 });
-
-  await alice.getByLabel('Write a message').fill(messages[1]);
-  await expect(alice.getByRole('button', { name: 'Send message' })).toBeEnabled();
-  await alice.getByRole('button', { name: 'Send message' }).click();
-  await expect(alice.getByText(messages[1])).toBeVisible({ timeout: 5_000 });
-  await expect(bob.getByText(messages[1])).toBeVisible({ timeout: 5_000 });
-
-  const reply = `reply-${Date.now()}`;
-  await bob.getByLabel('Write a message').fill(reply);
-  await bob.getByRole('button', { name: 'Send message' }).click();
-  await expect(alice.getByText(reply)).toBeVisible({ timeout: 5_000 });
-
-  await alice.reload();
-  await expect(alice.getByText('Your messages, your space')).toBeVisible();
-  await alice.locator('.person-option').filter({ hasText: 'Bob' }).click();
-  await expect(alice.getByText(messages[0])).toBeVisible();
-  await expect(alice.getByText(reply)).toBeVisible();
-  await expect(alice.getByText(messages[0]).locator('xpath=ancestor::article')).toHaveClass(/message-own/);
-  await expect(alice.getByText(reply).locator('xpath=ancestor::article')).not.toHaveClass(/message-own/);
-  expect(Date.now() - started).toBeLessThan(5_000);
+  await bob.goto('/home');
+  await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled({timeout: 10_000});
+  await expect(bob.getByText(offlineMessage)).toBeVisible({timeout: 10_000});
 
   await aliceContext.close();
   await bobContext.close();

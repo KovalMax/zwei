@@ -38,9 +38,6 @@ type credentialsRequest struct {
 	DeviceID    string `json:"device_id"`
 	DeviceName  string `json:"device_name"`
 }
-type refreshRequest struct {
-	RefreshToken string `json:"refresh_token"`
-}
 type profileUpdateRequest struct {
 	DisplayName     *string `json:"display_name"`
 	RetentionPeriod *string `json:"retention_period"`
@@ -65,6 +62,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusInternalServerError, "could not create user")
 		return
 	}
+	tokens.RefreshToken = ""
 	runtime.WriteJSON(w, http.StatusCreated, tokens)
 }
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -86,15 +84,10 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	runtime.WriteJSON(w, http.StatusOK, tokens)
+	h.writeTokens(w, http.StatusOK, tokens)
 }
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
-	var request refreshRequest
-	if !decodeJSON(w, r, &request) {
-		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
-		return
-	}
-	tokens, err := h.auth.Refresh(r.Context(), request.RefreshToken)
+	tokens, err := h.auth.Refresh(r.Context(), refreshToken(r))
 	if errors.Is(err, application.ErrInvalidInput) {
 		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
 		return
@@ -107,7 +100,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusInternalServerError, "could not rotate refresh token")
 		return
 	}
-	runtime.WriteJSON(w, http.StatusOK, tokens)
+	h.writeTokens(w, http.StatusOK, tokens)
 }
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
@@ -118,7 +111,30 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusInternalServerError, "could not revoke sessions")
 		return
 	}
+	clearRefreshCookie(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) writeTokens(w http.ResponseWriter, status int, tokens application.Tokens) {
+	setRefreshCookie(w, tokens.RefreshToken)
+	tokens.RefreshToken = ""
+	runtime.WriteJSON(w, status, tokens)
+}
+
+func refreshToken(r *http.Request) string {
+	cookie, err := r.Cookie("zwei_refresh")
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func setRefreshCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{Name: "zwei_refresh", Value: token, Path: "/api/auth", HttpOnly: true, Secure: true, SameSite: http.SameSiteNoneMode, MaxAge: 30 * 24 * 60 * 60})
+}
+
+func clearRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: "zwei_refresh", Value: "", Path: "/api/auth", HttpOnly: true, Secure: true, SameSite: http.SameSiteNoneMode, MaxAge: -1})
 }
 func (h *Handler) websocketTicket(w http.ResponseWriter, r *http.Request) {
 	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))

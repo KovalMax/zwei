@@ -5,4 +5,5 @@ export interface Conversation {
     otherEmail: string;
     createdAt: string;
     lastMessageAt: string;
+    unreadCount: number;
 }

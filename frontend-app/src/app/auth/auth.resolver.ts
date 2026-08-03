@@ -2,7 +2,7 @@ import {Injectable} from '@angular/core';
 import {ActivatedRouteSnapshot, Resolve, Router, RouterStateSnapshot} from '@angular/router';
 import {AuthService} from './auth.service';
 import {Observable} from 'rxjs';
-import {map, take} from 'rxjs/operators';
+import {map} from 'rxjs/operators';
 
 @Injectable({providedIn: 'root'})
 export class AuthResolver implements Resolve<boolean> {
@@ -13,8 +13,7 @@ export class AuthResolver implements Resolve<boolean> {
     }
 
     resolve(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Observable<any> {
-        return this.authService.token.pipe(
-            take(1),
+        return this.authService.restore().pipe(
             map(token => {
                 const isAuth = token && token.access_token;
                 if (!isAuth) {

@@ -29,7 +29,7 @@ export class AuthInterceptorService implements HttpInterceptor {
                     })
                 ).pipe(catchError((error: HttpErrorResponse) => {
                     if (error.status === 401) {
-                        this.authService.logout();
+                        this.authService.logout(false);
                         if (!req.url.includes('/login') && !req.url.includes('/register')) {
                             void this.router.navigate(['/login']);
                         }

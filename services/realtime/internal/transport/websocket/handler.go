@@ -3,6 +3,7 @@ package websockettransport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -24,16 +25,21 @@ const (
 type Handler struct {
 	hub      *application.Hub
 	sessions *sharedauth.SessionValidator
+	tickets  TicketConsumer
 	origins  map[string]struct{}
 	context  context.Context
 }
 
-func NewHandler(ctx context.Context, hub *application.Hub, sessions *sharedauth.SessionValidator, origins map[string]struct{}) *Handler {
-	return &Handler{context: ctx, hub: hub, sessions: sessions, origins: origins}
+type TicketConsumer interface {
+	ConsumeWebSocketTicket(context.Context, string) (bool, error)
+}
+
+func NewHandler(ctx context.Context, hub *application.Hub, sessions *sharedauth.SessionValidator, tickets TicketConsumer, origins map[string]struct{}) *Handler {
+	return &Handler{context: ctx, hub: hub, sessions: sessions, tickets: tickets, origins: origins}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	identity, err := h.sessions.AuthenticateWebSocketTicket(r.Context(), r.URL.Query().Get("ticket"))
+	identity, err := h.authenticate(r.Context(), r.URL.Query().Get("ticket"))
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -44,9 +50,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16)}
-	h.hub.Add(client)
+	h.hub.Add(r.Context(), client)
 	go client.writePump(h.context)
 	client.readPump(h.context)
+}
+
+func (h *Handler) authenticate(ctx context.Context, ticket string) (sharedauth.Identity, error) {
+	identity, err := h.sessions.AuthenticateWebSocketTicket(ctx, ticket)
+	if err != nil {
+		return sharedauth.Identity{}, err
+	}
+	consumed, err := h.tickets.ConsumeWebSocketTicket(ctx, ticket)
+	if err != nil || !consumed {
+		return sharedauth.Identity{}, errors.New("invalid websocket ticket")
+	}
+	return identity, nil
 }
 
 type client struct {
@@ -58,7 +76,9 @@ type client struct {
 }
 
 func (c *client) Identity() sharedauth.Identity { return c.identity }
-func (c *client) Close()                        { c.once.Do(func() { c.hub.Remove(c); _ = c.socket.Close() }) }
+func (c *client) Close() {
+	c.once.Do(func() { c.hub.Remove(context.Background(), c); _ = c.socket.Close() })
+}
 func (c *client) SendJSON(value any) {
 	payload, err := json.Marshal(value)
 	if err != nil {
@@ -89,10 +109,17 @@ func (c *client) readPump(ctx context.Context) {
 		}
 		slog.Info("websocket message received", "user_id", c.identity.UserID, "bytes", len(payload))
 		if err := c.hub.Handle(ctx, c, payload); err != nil {
+			requestID := ""
+			var requestError *application.RequestError
+			if errors.As(err, &requestError) {
+				requestID = requestError.RequestID
+			}
 			c.SendJSON(struct {
-				Type    string            `json:"type"`
-				Payload map[string]string `json:"payload"`
-			}{Type: "message.rejected", Payload: map[string]string{"error": err.Error()}})
+				Version   int               `json:"version"`
+				Type      string            `json:"type"`
+				RequestID string            `json:"request_id,omitempty"`
+				Payload   map[string]string `json:"payload"`
+			}{Version: application.ProtocolVersion, Type: "message.rejected", RequestID: requestID, Payload: map[string]string{"error": err.Error()}})
 		}
 	}
 }

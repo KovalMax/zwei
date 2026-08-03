@@ -47,22 +47,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
       MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-local-development-key-change-me}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       database:
         condition: service_healthy
-    networks: [messenger-network]
-
-  worker:
-    build:
-      context: ..
-      dockerfile: infrastructure/golang/Dockerfile
-      target: dev
-      args:
-        SERVICE: worker
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
-    depends_on:
-      database:
+      redis:
         condition: service_healthy
     networks: [messenger-network]
 

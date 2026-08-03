@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -52,11 +53,29 @@ func (r *Repository) Create(ctx context.Context, userID, otherUserID uuid.UUID) 
 	}
 	low, high := conversation.OrderedUsers(userID, otherUserID)
 	var result conversation.Conversation
-	if err = tx.QueryRow(ctx, `INSERT INTO conversations (user_low_id, user_high_id) VALUES ($1, $2) ON CONFLICT (user_low_id, user_high_id) DO UPDATE SET user_low_id = EXCLUDED.user_low_id RETURNING id, created_at`, low, high).Scan(&result.ID, &result.CreatedAt); err != nil {
+	created := true
+	err = tx.QueryRow(ctx, `INSERT INTO conversations (user_low_id, user_high_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id, created_at`, low, high).Scan(&result.ID, &result.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		created = false
+		err = tx.QueryRow(ctx, `SELECT id, created_at FROM conversations WHERE user_low_id = $1 AND user_high_id = $2`, low, high).Scan(&result.ID, &result.CreatedAt)
+	}
+	if err != nil {
 		return conversation.Conversation{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2), ($1, $3) ON CONFLICT DO NOTHING`, result.ID, low, high); err != nil {
 		return conversation.Conversation{}, err
+	}
+	if created {
+		payload, err := json.Marshal(struct {
+			ConversationID uuid.UUID   `json:"conversation_id"`
+			UserIDs        []uuid.UUID `json:"user_ids"`
+		}{ConversationID: result.ID, UserIDs: []uuid.UUID{userID, otherUserID}})
+		if err != nil {
+			return conversation.Conversation{}, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type, payload) VALUES ('conversation.created', $1)`, payload); err != nil {
+			return conversation.Conversation{}, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return conversation.Conversation{}, err

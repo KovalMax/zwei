@@ -1,0 +1,15 @@
+<main class="profile-page" aria-labelledby="profile-title">
+    <section class="profile-card">
+        <a class="back-link" routerLink="/home"><mat-icon>arrow_back</mat-icon>Back to chats</a>
+        <span class="eyebrow">Your account</span>
+        <h1 id="profile-title">Profile</h1>
+        <p class="profile-description">Your identity and message-retention preference for this private space.</p>
+        <div class="profile-loading" *ngIf="!profile && !error">Loading profile…</div>
+        <p class="profile-error" *ngIf="error">We could not load your profile. Refresh and try again.</p>
+        <dl *ngIf="profile" class="profile-details">
+            <div><dt>Display name</dt><dd>{{ profile.display_name }}</dd></div>
+            <div><dt>Email address</dt><dd>{{ profile.email }}</dd></div>
+            <div><dt>Message retention</dt><dd>{{ profile.retention_period }}</dd></div>
+        </dl>
+    </section>
+</main>
