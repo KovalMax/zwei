@@ -1,0 +1,144 @@
+name: zwei
+
+services:
+  traefik:
+    image: traefik:v3.5
+    command:
+      - --api.dashboard=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --providers.file.watch=true
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - traefik-acme:/acme
+    networks: [edge]
+    restart: unless-stopped
+
+  frontend:
+    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-frontend:${IMAGE_TAG:?IMAGE_TAG is required}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [edge]
+    restart: unless-stopped
+
+  auth:
+    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-auth:${IMAGE_TAG:?IMAGE_TAG is required}
+    environment:
+      AUTH_PORT: 8081
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME:-15m}
+      REFRESH_TOKEN_LIFETIME: ${REFRESH_TOKEN_LIFETIME:-720h}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [edge, backend]
+    restart: unless-stopped
+
+  chat:
+    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-chat:${IMAGE_TAG:?IMAGE_TAG is required}
+    environment:
+      CHAT_PORT: 8082
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:?MESSAGE_ENCRYPTION_KEY is required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [edge, backend]
+    restart: unless-stopped
+
+  realtime:
+    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-realtime:${IMAGE_TAG:?IMAGE_TAG is required}
+    environment:
+      REALTIME_PORT: 8083
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:?MESSAGE_ENCRYPTION_KEY is required}
+      REDIS_URL: redis://redis:6379/0
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8083/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [edge, backend]
+    restart: unless-stopped
+
+  migrate:
+    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-migrator:${IMAGE_TAG:?IMAGE_TAG is required}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+    profiles: [migration]
+
+  database:
+    image: postgres:${APP_DB_VERSION:-18.4}-alpine
+    environment:
+      POSTGRES_DB: ${APP_DB_NAME:?APP_DB_NAME is required}
+      POSTGRES_USER: ${APP_DB_USER:?APP_DB_USER is required}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql
+
+  redis:
+    image: redis:${REDIS_VERSION:-8.2.1}-alpine
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+networks:
+  edge:
+  backend:
+    internal: true
+
+volumes:
+  postgres-data:
+  redis-data:
+  traefik-acme:

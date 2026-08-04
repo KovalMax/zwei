@@ -3,10 +3,12 @@ export const environment = {
 };
 
 export const backends = {
-    auth: 'https://auth.localhost',
-    chat: 'https://api.chat.localhost',
-    websocket: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`,
-    login: 'https://auth.localhost/api/auth/login',
-    registration: 'https://auth.localhost/api/auth/register',
-    websocketTicket: 'https://auth.localhost/api/auth/ws-ticket',
+    auth: 'https://auth.chat.false.tel',
+    chat: 'https://api.chat.false.tel',
+    websocket: 'wss://ws.chat.false.tel/ws',
+    login: 'https://auth.chat.false.tel/api/auth/login',
+    registration: 'https://auth.chat.false.tel/api/auth/register',
+    websocketTicket: 'https://auth.chat.false.tel/api/auth/ws-ticket',
+    refresh: 'https://auth.chat.false.tel/api/auth/refresh',
+    logout: 'https://auth.chat.false.tel/api/auth/logout',
 };

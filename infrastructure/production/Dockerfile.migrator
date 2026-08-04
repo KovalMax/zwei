@@ -1,0 +1,8 @@
+FROM postgres:18.4-alpine
+
+COPY migrations /migrations
+COPY infrastructure/production/migrations/migrate.sh /usr/local/bin/migrate
+
+RUN chmod +x /usr/local/bin/migrate
+
+ENTRYPOINT ["/usr/local/bin/migrate"]

@@ -1,0 +1,177 @@
+name: Release deployment
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  verify:
+    name: Verify release artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go tests
+        run: go test ./services/...
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend-app
+        run: npm ci
+
+      - name: Build Angular production bundle
+        working-directory: frontend-app
+        run: npm run build -- --configuration production
+
+  publish:
+    name: Publish ${{ matrix.image }} image
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: auth
+            dockerfile: infrastructure/golang/Dockerfile
+            target: prod
+            build-args: SERVICE=auth
+          - image: chat
+            dockerfile: infrastructure/golang/Dockerfile
+            target: prod
+            build-args: SERVICE=chat
+          - image: realtime
+            dockerfile: infrastructure/golang/Dockerfile
+            target: prod
+            build-args: SERVICE=realtime
+          - image: frontend
+            dockerfile: infrastructure/production/Dockerfile.frontend
+            target: ''
+            build-args: ''
+          - image: migrator
+            dockerfile: infrastructure/production/Dockerfile.migrator
+            target: ''
+            build-args: ''
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/zwei-${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ github.event.release.tag_name }}
+            type=sha,format=long,prefix=sha-
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-args: ${{ matrix.build-args }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+
+  deploy:
+    name: Deploy release
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      IMAGE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Synchronize production configuration
+        run: |
+          rsync --archive --compress --delete \
+            --exclude '.env' \
+            --exclude '.deploy.env' \
+            -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
+            infrastructure/production/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Select immutable release tag
+        run: |
+          case "$IMAGE_TAG" in
+            ''|*[!A-Za-z0-9._-]*)
+              echo 'Release tag contains unsupported characters.' >&2
+              exit 1
+              ;;
+          esac
+          printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" | \
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+              "umask 077 && cat > '$DEPLOY_PATH/.deploy.env'"
+
+      - name: Pull, migrate, and start services
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -eu
+            cd '$DEPLOY_PATH'
+            set -a
+            . ./.env
+            . ./.deploy.env
+            set +a
+            docker compose --profile migration pull
+            docker compose up -d --wait --wait-timeout 120 database redis
+            docker compose run --rm migrate
+            docker compose up -d --wait --wait-timeout 120 traefik frontend auth chat realtime"
+
+      - name: Verify public HTTPS endpoints
+        run: |
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://chat.false.tel/
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
