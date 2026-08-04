@@ -1,0 +1,76 @@
+http:
+  middlewares:
+    security-headers:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+        permissionsPolicy: geolocation=(), microphone=(), camera=()
+        customResponseHeaders:
+          Content-Security-Policy: "default-src 'self'; connect-src 'self' https://auth.chat.false.tel https://api.chat.false.tel wss://ws.chat.false.tel; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+          Cross-Origin-Opener-Policy: same-origin
+          X-Permitted-Cross-Domain-Policies: none
+    auth-rate-limit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 100
+    search-rate-limit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 40
+  routers:
+    frontend:
+      rule: Host(`chat.false.tel`)
+      entryPoints: [websecure]
+      service: frontend
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers]
+    auth:
+      rule: Host(`auth.chat.false.tel`)
+      entryPoints: [websecure]
+      service: auth
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers, auth-rate-limit]
+    user-search:
+      rule: Host(`api.chat.false.tel`) && Path(`/api/chat/users/search`)
+      entryPoints: [websecure]
+      service: chat
+      priority: 110
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers, search-rate-limit]
+    chat-api:
+      rule: Host(`api.chat.false.tel`)
+      entryPoints: [websecure]
+      service: chat
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers]
+    realtime:
+      rule: Host(`ws.chat.false.tel`)
+      entryPoints: [websecure]
+      service: realtime
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers]
+  services:
+    frontend:
+      loadBalancer:
+        servers:
+          - url: http://frontend:80
+    auth:
+      loadBalancer:
+        servers:
+          - url: http://auth:8081
+    chat:
+      loadBalancer:
+        servers:
+          - url: http://chat:8082
+    realtime:
+      loadBalancer:
+        servers:
+          - url: http://realtime:8083

@@ -4,7 +4,6 @@
 .serena
 backend-app
 websocket-app
-frontend-app
 e2e
 docs
 infrastructure/traefik-certs
@@ -12,4 +11,5 @@ infrastructure/.env
 infrastructure/docker-compose.override.yml
 node_modules
 **/node_modules
+**/.angular
 **/dist

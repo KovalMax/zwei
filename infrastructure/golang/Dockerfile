@@ -22,7 +22,7 @@ FROM base AS dev
 CMD ["/usr/bin/service"]
 
 FROM alpine:3.20 AS prod
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates wget
 
 WORKDIR /usr/bin
 COPY --from=base /usr/bin/service .
