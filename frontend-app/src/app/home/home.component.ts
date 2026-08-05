@@ -68,7 +68,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.dataProvider.readyChanges.subscribe(ready => {
             this.socketReady = ready;
             if (!ready) this.presenceReady = false;
-            if (ready) this.markSelectedConversationRead();
+            if (ready && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
             this.changeDetector.markForCheck();
         });
     }
@@ -158,7 +158,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public selectConversation(conversation: Conversation): void {
-        const selectedConversation = {...conversation, unreadCount: 0};
+        const selectedConversation = {...conversation};
         this.selectedConversation = selectedConversation;
         window.localStorage.setItem(this.selectedConversationKey, conversation.id);
         this.conversations.next(this.conversations.getValue().map(item => item.id === conversation.id ? selectedConversation : item));
@@ -318,7 +318,7 @@ export class HomeComponent implements OnInit, OnDestroy {
                 const messages = [...history.messages].reverse();
                 this.messages = prepend ? [...messages, ...this.messages] : messages;
                 this.historyCursor = history.nextCursor;
-                if (!prepend) this.markSelectedConversationRead();
+                if (!prepend && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
                 this.changeDetector.markForCheck();
                 if (!prepend) this.scrollToLatest();
             },
@@ -337,11 +337,18 @@ export class HomeComponent implements OnInit, OnDestroy {
         return this.historyLoadID === historyLoadID && this.selectedConversation?.id === conversationID;
     }
 
-    private markSelectedConversationRead(): void {
-        if (!this.socketReady || !this.selectedConversation || this.messages.length === 0) return;
+    private markSelectedConversationRead(): boolean {
+        if (!this.socketReady || !this.selectedConversation || this.messages.length === 0) return false;
         const sequence = Math.max(...this.messages.map(message => message.sequence));
-        if (sequence < 1) return;
-        this.dataProvider.send({type: 'conversation.read', payload: {conversation_id: this.selectedConversation.id, sequence}});
+        if (sequence < 1) return false;
+        return this.dataProvider.send({type: 'conversation.read', payload: {conversation_id: this.selectedConversation.id, sequence}});
+    }
+
+    private clearSelectedConversationUnreadCount(): void {
+        if (!this.selectedConversation || this.selectedConversation.unreadCount === 0) return;
+        const updated = {...this.selectedConversation, unreadCount: 0};
+        this.selectedConversation = updated;
+        this.conversations.next(this.conversations.getValue().map(item => item.id === updated.id ? updated : item));
     }
 
     private resolvePendingMessage(requestID: string): void {

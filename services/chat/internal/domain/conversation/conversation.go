@@ -14,4 +14,5 @@ type Conversation struct {
 	OtherEmail       string    `json:"other_email"`
 	CreatedAt        time.Time `json:"created_at"`
 	LastMessageAt    time.Time `json:"last_message_at"`
+	UnreadCount      int64     `json:"unread_count"`
 }

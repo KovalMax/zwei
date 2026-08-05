@@ -8,6 +8,7 @@ export interface ConversationWire {
     other_email: string;
     created_at: string;
     last_message_at?: string;
+    unread_count?: number;
 }
 
 export interface MessageWire {
@@ -26,6 +27,7 @@ export interface MessageHistoryWire {
 }
 
 export function toConversation(item: ConversationWire): Conversation {
+    const unreadCount = item.unread_count;
     return {
         id: item.id,
         otherUserId: item.other_user_id,
@@ -33,7 +35,7 @@ export function toConversation(item: ConversationWire): Conversation {
         otherEmail: item.other_email,
         createdAt: item.created_at,
         lastMessageAt: item.last_message_at || item.created_at,
-        unreadCount: 0,
+        unreadCount: typeof unreadCount === 'number' && Number.isSafeInteger(unreadCount) && unreadCount > 0 ? unreadCount : 0,
     };
 }
 

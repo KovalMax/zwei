@@ -5,11 +5,12 @@ import {backends} from '../../environments/environment';
 import {Injectable} from '@angular/core';
 import {Profile} from './profile.model';
 import {BehaviorSubject, Observable, of, throwError} from 'rxjs';
-import {catchError, tap} from 'rxjs/operators';
+import {catchError, shareReplay, tap} from 'rxjs/operators';
 
 @Injectable({providedIn: 'root'})
 export class AuthService {
     private tokenSubject: BehaviorSubject<Token | null> = new BehaviorSubject<Token | null>(null);
+    private restoreResult?: Observable<Token | null>;
 
     constructor(private http: HttpClient) {
     }
@@ -23,6 +24,7 @@ export class AuthService {
             .pipe(
                 catchError((res: HttpErrorResponse) => throwError(() => res)),
                 tap((token: Token) => {
+                    this.restoreResult = undefined;
                     this.handleToken(token);
                 })
             );
@@ -31,15 +33,20 @@ export class AuthService {
     public restore(): Observable<Token | null> {
         const token = this.tokenSubject.value;
         if (token) return of(token);
-        return this.http.post<Token>(backends.refresh, {}, {withCredentials: true}).pipe(
-            tap(restored => this.handleToken(restored)),
-            catchError(() => of(null)),
-        );
+        if (!this.restoreResult) {
+            this.restoreResult = this.http.post<Token>(backends.refresh, {}, {withCredentials: true}).pipe(
+                tap(restored => this.handleToken(restored)),
+                catchError(() => of(null)),
+                shareReplay({bufferSize: 1, refCount: false}),
+            );
+        }
+        return this.restoreResult;
     }
 
     public logout(revoke = true): Observable<void> {
         const token = this.tokenSubject.value;
         this.tokenSubject.next(null);
+        this.restoreResult = of(null);
         if (!revoke) return of(void 0);
         const headers = token ? new HttpHeaders().set('Authorization', token.token_type.concat(' ', token.access_token)) : undefined;
         return this.http.post<void>(backends.logout, {}, {withCredentials: true, headers}).pipe(
