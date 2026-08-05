@@ -87,8 +87,8 @@ func (r *Repository) Create(ctx context.Context, userID, otherUserID uuid.UUID) 
 	return result, nil
 }
 
-func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]conversation.Conversation, error) {
-	rows, err := r.db.Query(ctx, `SELECT c.id, u.id, u.display_name, u.email, c.created_at, COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id), c.created_at) FROM conversations c JOIN conversation_members cm ON cm.conversation_id = c.id JOIN users u ON u.id = CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END WHERE cm.user_id = $1 ORDER BY 6 DESC, c.id DESC`, userID)
+func (r *Repository) List(ctx context.Context, userID, deviceID uuid.UUID) ([]conversation.Conversation, error) {
+	rows, err := r.db.Query(ctx, `SELECT c.id, u.id, u.display_name, u.email, c.created_at, COALESCE(MAX(m.created_at), c.created_at), COUNT(m.id) FILTER (WHERE m.sender_id <> $1 AND m.sequence > COALESCE(rc.last_read_sequence, 0)) FROM conversations c JOIN conversation_members cm ON cm.conversation_id = c.id JOIN users u ON u.id = CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END LEFT JOIN device_read_cursors rc ON rc.conversation_id = c.id AND rc.device_id = $2 LEFT JOIN messages m ON m.conversation_id = c.id WHERE cm.user_id = $1 GROUP BY c.id, u.id, u.display_name, u.email, rc.last_read_sequence ORDER BY 6 DESC, c.id DESC`, userID, deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]conversation
 	conversations := make([]conversation.Conversation, 0)
 	for rows.Next() {
 		var item conversation.Conversation
-		if err := rows.Scan(&item.ID, &item.OtherUserID, &item.OtherDisplayName, &item.OtherEmail, &item.CreatedAt, &item.LastMessageAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.OtherUserID, &item.OtherDisplayName, &item.OtherEmail, &item.CreatedAt, &item.LastMessageAt, &item.UnreadCount); err != nil {
 			return nil, err
 		}
 		conversations = append(conversations, item)

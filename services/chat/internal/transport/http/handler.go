@@ -79,11 +79,16 @@ func (h *Handler) createConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
-	userID, ok := h.userID(w, r)
+	identity, ok := h.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := h.conversations.List(r.Context(), userID)
+	deviceID, err := uuid.Parse(identity.DeviceID)
+	if err != nil {
+		errorJSON(w, http.StatusUnauthorized, "invalid device session")
+		return
+	}
+	items, err := h.conversations.List(r.Context(), identity.UserID, deviceID)
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "could not load conversations")
 		return
@@ -190,12 +195,20 @@ func (h *Handler) historyMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) userID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))
-	if err != nil {
-		errorJSON(w, http.StatusUnauthorized, "invalid access token")
+	identity, ok := h.identity(w, r)
+	if !ok {
 		return uuid.Nil, false
 	}
 	return identity.UserID, true
+}
+
+func (h *Handler) identity(w http.ResponseWriter, r *http.Request) (sharedauth.Identity, bool) {
+	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))
+	if err != nil {
+		errorJSON(w, http.StatusUnauthorized, "invalid access token")
+		return sharedauth.Identity{}, false
+	}
+	return identity, true
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {

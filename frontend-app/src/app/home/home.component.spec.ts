@@ -58,15 +58,16 @@ describe('HomeComponent', () => {
 
     it('reorders a background conversation and increments its unread count', () => {
         const historyComponent = new HomeComponent(
-            {history: () => of({messages: []})} as unknown as ConversationService,
+            {history: () => of({messages: [{id: 'background-message', conversationId: 'background', senderId: 'user-background', clientMessageId: 'background-message', sequence: 1, body: 'New message', createdAt: '2026-01-02T00:00:00Z'}]})} as unknown as ConversationService,
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
-            {} as DataProviderService,
+            {send: jasmine.createSpy('send').and.returnValue(true)} as unknown as DataProviderService,
         );
         const selected = conversation('selected');
         const background = conversation('background');
         historyComponent.selectedConversation = selected;
         historyComponent.conversations.next([selected, background]);
+        historyComponent.socketReady = true;
 
         historyComponent.handleSocketEvent({
             version: WEBSOCKET_PROTOCOL_VERSION,

@@ -80,14 +80,22 @@ test('register, create conversation, and deliver a message', async ({ browser })
   await expect(bob.getByText(messages[1])).toBeVisible({ timeout: 5_000 });
 
   const reply = `reply-${Date.now()}`;
+  await alice.setViewportSize({ width: 390, height: 844 });
+  await alice.getByRole('button', { name: 'Back to chats' }).click();
+  await alice.setViewportSize(desktop.viewport);
   await bob.getByPlaceholder('Write a message…').fill(reply);
   await bob.getByRole('button', { name: 'Send message' }).click();
-  await expect(alice.getByText(reply)).toBeVisible({ timeout: 5_000 });
+  const aliceConversationAfterReply = alice.locator('.person-option').filter({ hasText: 'Bob' });
+  await expect(aliceConversationAfterReply.locator('.unread-count')).toHaveText('1', { timeout: 5_000 });
 
   await alice.reload();
+  const restoredAliceConversation = alice.locator('.person-option').filter({ hasText: 'Bob' });
+  await expect(restoredAliceConversation.locator('.unread-count')).toHaveText('1');
+  await restoredAliceConversation.click();
   await expect(alice.getByRole('heading', { name: 'Bob' })).toBeVisible();
   await expect(alice.getByText(messages[0])).toBeVisible();
   await expect(alice.getByText(reply)).toBeVisible();
+  await expect(alice.locator('.unread-count')).not.toBeVisible();
   await expect(alice.getByText(messages[0]).locator('xpath=ancestor::article')).toHaveClass(/message-own/);
   await expect(alice.getByText(reply).locator('xpath=ancestor::article')).not.toHaveClass(/message-own/);
   const messageColumn = await alice.locator('.message-list').boundingBox();

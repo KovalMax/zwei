@@ -87,7 +87,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	h.writeTokens(w, http.StatusOK, tokens)
 }
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
-	tokens, err := h.auth.Refresh(r.Context(), refreshToken(r))
+	refreshToken := refreshTokenFromCookie(r)
+	if refreshToken == "" {
+		errorJSON(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+	tokens, err := h.auth.Refresh(r.Context(), refreshToken)
 	if errors.Is(err, application.ErrInvalidInput) {
 		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
 		return
@@ -121,7 +126,7 @@ func (h *Handler) writeTokens(w http.ResponseWriter, status int, tokens applicat
 	runtime.WriteJSON(w, status, tokens)
 }
 
-func refreshToken(r *http.Request) string {
+func refreshTokenFromCookie(r *http.Request) string {
 	cookie, err := r.Cookie("zwei_refresh")
 	if err != nil {
 		return ""

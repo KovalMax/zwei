@@ -31,3 +31,14 @@ func TestClearRefreshCookieExpiresRestrictedCookie(t *testing.T) {
 		t.Fatalf("cookie security attributes = %#v", cookie)
 	}
 }
+
+func TestRefreshWithoutCookieReturnsUnauthorized(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	response := httptest.NewRecorder()
+
+	(&Handler{}).refresh(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}

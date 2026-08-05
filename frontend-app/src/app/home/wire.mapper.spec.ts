@@ -7,6 +7,14 @@ describe('wire mapper', () => {
         expect(conversation.lastMessageAt).toBe('2026-01-01T00:00:00Z');
     });
 
+    it('maps a valid server-provided unread count and rejects malformed values', () => {
+        const base = {id: 'conversation-1', other_user_id: 'user-2', other_display_name: 'Peer', other_email: 'peer@example.test', created_at: '2026-01-01T00:00:00Z'};
+
+        expect(toConversation({...base, unread_count: 3}).unreadCount).toBe(3);
+        expect(toConversation({...base, unread_count: -1}).unreadCount).toBe(0);
+        expect(toConversation({...base, unread_count: 1.5}).unreadCount).toBe(0);
+    });
+
     it('rejects malformed messages and retains valid history messages', () => {
         expect(toMessage({id: '', conversation_id: 'conversation-1', sender_id: 'user-1', client_message_id: 'client-1', sequence: 1, body: 'Hello', created_at: '2026-01-01T00:00:00Z'})).toBeNull();
         const history = toMessageHistory({messages: [
