@@ -24,6 +24,7 @@ describe('CallFacade', () => {
     });
 
     afterEach(() => {
+        facade.close();
         if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
         (window as unknown as {RTCPeerConnection: unknown}).RTCPeerConnection = originalPeerConnection;
     });
@@ -80,6 +81,18 @@ describe('CallFacade', () => {
 
         expect(facade.state.callID).toBe('call-1');
         expect(facade.state.statusLabel).toBe('Ringing...');
+    });
+
+    it('dismisses an offline-call rejection after showing one error notice', async () => {
+        jasmine.clock().install();
+        await facade.start('conversation-1', 'peer-1');
+
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.rejected', request_id: 'call-1', payload: {error: 'recipient is offline'}});
+
+        expect(facade.state.statusLabel).toBe('Call unavailable: recipient is offline');
+        jasmine.clock().tick(5_000);
+        expect(facade.state.phase).toBe('idle');
+        jasmine.clock().uninstall();
     });
 
     it('mutes tracks and closes the peer connection and local tracks when ended', async () => {

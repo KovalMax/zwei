@@ -162,6 +162,10 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
 
   await login(page, email);
   await expect(page).toHaveURL(/\/home$/);
+  const refreshResponse = page.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
+  await page.reload();
+  expect((await refreshResponse).status()).toBe(200);
+  await expect(page).toHaveURL(/\/home$/);
   await expect(page.getByRole('button', {name: 'Account menu'})).toBeVisible();
   await expect(page.getByRole('heading', {name: 'Choose a conversation'})).toBeVisible();
   await expect(page.getByPlaceholder('Name or email')).toBeVisible();

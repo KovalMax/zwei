@@ -38,7 +38,7 @@
         </header>
         <section class="call-panel" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
             <audio autoplay [srcObject]="call.state.remoteStream"></audio>
-            <div><strong>{{ call.state.statusLabel }}</strong><span *ngIf="call.state.errorLabel" role="alert">{{ call.state.errorLabel }}</span></div>
+            <div><strong [attr.role]="call.state.errorLabel ? 'alert' : null">{{ call.state.statusLabel }}</strong></div>
             <div class="call-actions">
                 <button mat-flat-button color="primary" type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.accept()">Accept</button>
                 <button mat-stroked-button type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.decline()">Decline</button>
