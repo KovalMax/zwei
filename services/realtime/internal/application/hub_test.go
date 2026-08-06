@@ -18,7 +18,7 @@ func (testClient) SendJSON(any)                  {}
 func (testClient) Close()                        {}
 
 func TestHubHandlePreservesRequestIDForRejectedCommand(t *testing.T) {
-	hub := NewHub(nil, nil, nil, nil, nil)
+	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
 	err := hub.Handle(context.Background(), testClient{}, []byte(`{"version":1,"type":"unsupported","request_id":"request-1"}`))
 
 	var requestError *RequestError
@@ -31,7 +31,7 @@ func TestHubHandlePreservesRequestIDForRejectedCommand(t *testing.T) {
 }
 
 func TestHubRejectsUnsupportedProtocolVersion(t *testing.T) {
-	hub := NewHub(nil, nil, nil, nil, nil)
+	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
 	err := hub.Handle(context.Background(), testClient{}, []byte(`{"version":2,"type":"presence.refresh","request_id":"request-1"}`))
 
 	var requestError *RequestError
@@ -41,7 +41,7 @@ func TestHubRejectsUnsupportedProtocolVersion(t *testing.T) {
 }
 
 func TestHubRejectsRateLimitedMessage(t *testing.T) {
-	hub := NewHub(nil, nil, rateLimitedCoordinator{}, nil, nil)
+	hub := NewHub(nil, nil, rateLimitedCoordinator{}, nil, nil, nil, nil)
 	err := hub.Handle(context.Background(), testClient{}, []byte(`{"version":1,"type":"message.send","request_id":"request-1","payload":{}}`))
 
 	var requestError *RequestError
@@ -58,7 +58,7 @@ func TestHubReplaysAndMarksPendingMessagesOnConnection(t *testing.T) {
 	messageID := uuid.New()
 	delivery := &fakeDelivery{pending: []messaging.Message{{ID: messageID, ConversationID: uuid.New(), SenderID: uuid.New(), Body: "offline message"}}}
 	client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New(), DeviceID: deviceID.String()}}
-	hub := NewHub(nil, nil, nil, delivery, nil)
+	hub := NewHub(nil, nil, nil, delivery, nil, nil, nil)
 
 	hub.Add(context.Background(), client)
 
@@ -78,7 +78,7 @@ func TestHubDeliversPresenceChangeLocallyWhenPublishingSucceeds(t *testing.T) {
 	userID := uuid.New()
 	peerID := uuid.New()
 	coord := &recordingPresenceCoordinator{}
-	hub := NewHub(nil, peerPresence{peerIDs: []uuid.UUID{peerID}}, coord, nil, nil)
+	hub := NewHub(nil, peerPresence{peerIDs: []uuid.UUID{peerID}}, coord, nil, nil, nil, nil)
 	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
 	hub.Add(context.Background(), peer)
 	peer.events = nil
@@ -102,7 +102,7 @@ func TestHubDeliversTypingLocallyWhenPublishingSucceeds(t *testing.T) {
 	senderID := uuid.New()
 	peerID := uuid.New()
 	coord := &recordingPresenceCoordinator{}
-	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, coord, nil, nil)
+	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, coord, nil, nil, nil, nil)
 	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
 	hub.Add(context.Background(), peer)
 	peer.events = nil
@@ -130,7 +130,7 @@ func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	peerID := uuid.New()
 	deviceID := uuid.New()
 	cursors := &fakeReadCursors{sequence: 5}
-	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, nil, nil, cursors)
+	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, nil, nil, cursors, nil, nil)
 	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
 	hub.Add(context.Background(), peer)
 	peer.events = nil
@@ -148,6 +148,62 @@ func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	event, ok := peer.events[0].(serverEvent)
 	if !ok || event.Version != ProtocolVersion || event.Type != "conversation.read" {
 		t.Fatalf("read event = %#v", peer.events[0])
+	}
+}
+
+func TestHubStartsCallForOnlineConversationPeer(t *testing.T) {
+	callerID := uuid.New()
+	recipientID := uuid.New()
+	conversationID := uuid.New()
+	calls := &fakeCalls{}
+	hub := NewHub(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, calls, nil)
+	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: "caller-device"}}
+	recipient := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: "recipient-device"}}
+	hub.Add(context.Background(), caller)
+	hub.Add(context.Background(), recipient)
+	caller.events = nil
+	recipient.events = nil
+
+	err := hub.Handle(context.Background(), caller, []byte(`{"version":1,"type":"call.start","request_id":"call-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(recipient.events) != 1 || recipient.events[0].(serverEvent).Type != "call.incoming" {
+		t.Fatalf("recipient events = %#v", recipient.events)
+	}
+	if len(caller.events) != 1 || caller.events[0].(serverEvent).Type != "call.ringing" {
+		t.Fatalf("caller events = %#v", caller.events)
+	}
+	if calls.started.CallerID != callerID || calls.started.RecipientID != recipientID || calls.started.ConversationID != conversationID {
+		t.Fatalf("started call = %+v", calls.started)
+	}
+}
+
+func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
+	callerID := uuid.New()
+	recipientID := uuid.New()
+	call := Call{ID: uuid.New(), ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: "caller-device", AcceptedDeviceID: "accepted-device", Status: CallActive}
+	calls := &fakeCalls{call: call}
+	hub := NewHub(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, calls, nil)
+	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: call.CallerDeviceID}}
+	accepted := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: call.AcceptedDeviceID}}
+	otherDevice := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: "other-device"}}
+	hub.Add(context.Background(), caller)
+	hub.Add(context.Background(), accepted)
+	hub.Add(context.Background(), otherDevice)
+	caller.events = nil
+	accepted.events = nil
+	otherDevice.events = nil
+
+	err := hub.Handle(context.Background(), caller, []byte(`{"version":1,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"private"}}}`))
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(accepted.events) != 1 || accepted.events[0].(serverEvent).Type != "call.signal" {
+		t.Fatalf("accepted events = %#v", accepted.events)
+	}
+	if len(otherDevice.events) != 0 {
+		t.Fatalf("other device events = %#v", otherDevice.events)
 	}
 }
 
@@ -212,6 +268,48 @@ type recordingPresenceCoordinator struct {
 	typingUserID         uuid.UUID
 	typingStarted        bool
 }
+
+type onlinePresence struct{}
+
+func (onlinePresence) Connect(context.Context, uuid.UUID, string) (bool, error) { return false, nil }
+func (onlinePresence) Disconnect(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+func (onlinePresence) Online(_ context.Context, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	online := make(map[uuid.UUID]bool, len(userIDs))
+	for _, userID := range userIDs {
+		online[userID] = true
+	}
+	return online, nil
+}
+func (onlinePresence) Publish(context.Context, uuid.UUID, bool) error { return nil }
+
+type fakeCalls struct {
+	call    Call
+	started Call
+}
+
+func (f *fakeCalls) Start(_ context.Context, call Call) (Call, error) {
+	call.Status = CallRinging
+	f.started = call
+	f.call = call
+	return call, nil
+}
+func (f *fakeCalls) Accept(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+	return f.call, nil
+}
+func (f *fakeCalls) Decline(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+	return f.call, nil
+}
+func (f *fakeCalls) Cancel(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+	return f.call, nil
+}
+func (f *fakeCalls) End(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+	return f.call, nil
+}
+func (f *fakeCalls) EndByDevice(context.Context, uuid.UUID, string) ([]Call, error) { return nil, nil }
+func (f *fakeCalls) Get(context.Context, uuid.UUID) (Call, error)                   { return f.call, nil }
+func (*fakeCalls) PublishCall(context.Context, CallChange) error                    { return nil }
 
 func (*recordingPresenceCoordinator) Connect(context.Context, uuid.UUID, string) (bool, error) {
 	return false, nil

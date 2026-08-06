@@ -10,6 +10,7 @@ import {Conversation} from './conversation.model';
 import {MessageHistory} from './message.model';
 import {WEBSOCKET_PROTOCOL_VERSION} from './data-provider.service';
 import {DataProviderService} from './data-provider.service';
+import {CallFacade} from './call-facade.service';
 
 describe('HomeComponent', () => {
     let component: HomeComponent;
@@ -40,6 +41,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         const firstConversation = conversation('first');
         const secondConversation = conversation('second');
@@ -62,6 +64,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {send: jasmine.createSpy('send').and.returnValue(true)} as unknown as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         const selected = conversation('selected');
         const background = conversation('background');
@@ -91,6 +94,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         window.localStorage.setItem('zwei_selected_conversation', savedConversation.id);
 
@@ -106,6 +110,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         window.localStorage.setItem('zwei_selected_conversation', 'missing');
 
@@ -120,6 +125,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         historyComponent.selectedConversation = conversation('peer');
         historyComponent.socketReady = true;
@@ -138,6 +144,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {send, close: () => undefined} as unknown as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         historyComponent.selectedConversation = conversation('peer');
         historyComponent.socketReady = true;
@@ -162,6 +169,7 @@ describe('HomeComponent', () => {
             {} as AuthService,
             {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
             {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
         );
         const send = jasmine.createSpy('send').and.returnValue(true);
         (historyComponent as unknown as { dataProvider: { send: typeof send; close(): void } }).dataProvider = {send, close: () => undefined};

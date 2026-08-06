@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,8 @@ type Hub struct {
 	coord     PresenceCoordinator
 	delivery  DeliveryRepository
 	cursors   ReadCursorRepository
+	calls     CallCoordinator
+	turn      TURNCredentialIssuer
 	mu        sync.RWMutex
 	clients   map[string]Client
 	typingMu  sync.Mutex
@@ -85,8 +88,8 @@ type RequestError struct {
 func (e *RequestError) Error() string { return e.Err.Error() }
 func (e *RequestError) Unwrap() error { return e.Err }
 
-func NewHub(sender *messaging.Sender, presence PresenceRepository, coord PresenceCoordinator, delivery DeliveryRepository, cursors ReadCursorRepository) *Hub {
-	return &Hub{sender: sender, presence: presence, coord: coord, delivery: delivery, cursors: cursors, clients: make(map[string]Client), typingAt: make(map[string]time.Time), messageAt: make(map[string]time.Time)}
+func NewHub(sender *messaging.Sender, presence PresenceRepository, coord PresenceCoordinator, delivery DeliveryRepository, cursors ReadCursorRepository, calls CallCoordinator, turn TURNCredentialIssuer) *Hub {
+	return &Hub{sender: sender, presence: presence, coord: coord, delivery: delivery, cursors: cursors, calls: calls, turn: turn, clients: make(map[string]Client), typingAt: make(map[string]time.Time), messageAt: make(map[string]time.Time)}
 }
 
 func (h *Hub) Add(ctx context.Context, client Client) {
@@ -143,6 +146,14 @@ func (h *Hub) Remove(ctx context.Context, client Client) {
 	delete(h.clients, key(client.Identity()))
 	isOnline := h.userOnlineLocked(client.Identity().UserID)
 	h.mu.Unlock()
+	if h.calls != nil {
+		calls, err := h.calls.EndByDevice(ctx, client.Identity().UserID, client.Identity().DeviceID)
+		if err == nil {
+			for _, call := range calls {
+				h.publishCall(ctx, CallChange{Type: "ended", Call: call})
+			}
+		}
+	}
 	if !isOnline {
 		if h.coord != nil {
 			becameOffline, err := h.coord.Disconnect(ctx, client.Identity().UserID, key(client.Identity()))
@@ -210,10 +221,12 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 		Type      string `json:"type"`
 		RequestID string `json:"request_id,omitempty"`
 		Payload   struct {
-			ConversationID  uuid.UUID `json:"conversation_id"`
-			ClientMessageID string    `json:"client_message_id"`
-			Body            string    `json:"body"`
-			Sequence        int64     `json:"sequence"`
+			ConversationID  uuid.UUID       `json:"conversation_id"`
+			ClientMessageID string          `json:"client_message_id"`
+			Body            string          `json:"body"`
+			Sequence        int64           `json:"sequence"`
+			CallID          uuid.UUID       `json:"call_id"`
+			Signal          json.RawMessage `json:"signal"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &request); err != nil {
@@ -225,6 +238,24 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 	if request.Type == "presence.refresh" {
 		h.sendPresenceSnapshot(ctx, client)
 		return nil
+	}
+	if len(request.Payload.Signal) > 16*1024 {
+		return &RequestError{RequestID: request.RequestID, Err: errors.New("call signal is too large")}
+	}
+	if len(request.Payload.Signal) > 0 && !json.Valid(request.Payload.Signal) {
+		return &RequestError{RequestID: request.RequestID, Err: errors.New("invalid call signal")}
+	}
+	if request.Type == "call.start" || request.Type == "call.accept" || request.Type == "call.decline" || request.Type == "call.cancel" || request.Type == "call.end" || request.Type == "call.signal" {
+		if request.RequestID == "" {
+			return &RequestError{Err: errors.New("call request ID is required")}
+		}
+		if request.Type != "call.start" && request.Payload.CallID == uuid.Nil {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("call is required")}
+		}
+		if request.Type == "call.signal" && (len(bytes.TrimSpace(request.Payload.Signal)) == 0 || bytes.TrimSpace(request.Payload.Signal)[0] != '{') {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("signal must be an object")}
+		}
+		return h.handleCall(ctx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.CallID, request.Payload.Signal)
 	}
 	if request.Type == "conversation.read" {
 		if h.cursors == nil || h.presence == nil || request.Payload.Sequence < 1 {
@@ -312,6 +343,149 @@ func (h *Hub) DeliverReadCursor(recipientID, conversationID uuid.UUID, sequence 
 			Sequence       int64     `json:"sequence"`
 		}{ConversationID: conversationID, Sequence: sequence}})
 	}
+}
+
+func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventType string, conversationID, callID uuid.UUID, signal json.RawMessage) error {
+	if h.calls == nil || h.presence == nil || h.coord == nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	identity := client.Identity()
+	var (
+		call Call
+		err  error
+	)
+	switch eventType {
+	case "call.start":
+		if conversationID == uuid.Nil {
+			return &RequestError{RequestID: requestID, Err: errors.New("conversation is required")}
+		}
+		recipientID, recipientErr := h.presence.RecipientID(ctx, identity.UserID, conversationID)
+		if recipientErr != nil {
+			return &RequestError{RequestID: requestID, Err: errors.New("conversation not found")}
+		}
+		online, onlineErr := h.coord.Online(ctx, []uuid.UUID{recipientID})
+		if onlineErr != nil || !online[recipientID] {
+			return &RequestError{RequestID: requestID, Err: errors.New("recipient is offline")}
+		}
+		call, err = h.calls.Start(ctx, Call{ID: uuid.New(), ConversationID: conversationID, CallerID: identity.UserID, RecipientID: recipientID, CallerDeviceID: identity.DeviceID})
+		if err == nil {
+			h.publishCall(ctx, CallChange{Type: "started", Call: call})
+		}
+	case "call.accept":
+		call, err = h.calls.Accept(ctx, callID, identity.UserID, identity.DeviceID)
+		if err == nil {
+			h.publishCall(ctx, CallChange{Type: "accepted", Call: call})
+		}
+	case "call.decline":
+		call, err = h.calls.Decline(ctx, callID, identity.UserID, identity.DeviceID)
+		if err == nil {
+			h.publishCall(ctx, CallChange{Type: "declined", Call: call})
+		}
+	case "call.cancel":
+		call, err = h.calls.Cancel(ctx, callID, identity.UserID, identity.DeviceID)
+		if err == nil {
+			h.publishCall(ctx, CallChange{Type: "ended", Call: call})
+		}
+	case "call.end":
+		call, err = h.calls.End(ctx, callID, identity.UserID, identity.DeviceID)
+		if err == nil {
+			h.publishCall(ctx, CallChange{Type: "ended", Call: call})
+		}
+	case "call.signal":
+		if callID == uuid.Nil || len(signal) == 0 {
+			return &RequestError{RequestID: requestID, Err: errors.New("call and signal are required")}
+		}
+		call, err = h.calls.Get(ctx, callID)
+		if err == nil && call.Status != CallActive {
+			err = ErrCallNotAllowed
+		}
+		if err == nil {
+			var toDeviceID string
+			switch {
+			case identity.UserID == call.CallerID && identity.DeviceID == call.CallerDeviceID && call.AcceptedDeviceID != "":
+				toDeviceID = call.AcceptedDeviceID
+			case identity.UserID == call.RecipientID && identity.DeviceID == call.AcceptedDeviceID:
+				toDeviceID = call.CallerDeviceID
+			default:
+				err = ErrCallNotAllowed
+			}
+			if err == nil {
+				h.publishCall(ctx, CallChange{Type: "signal", Call: call, FromDeviceID: identity.DeviceID, ToDeviceID: toDeviceID, Signal: signal})
+			}
+		}
+	default:
+		return &RequestError{RequestID: requestID, Err: errors.New("unsupported event")}
+	}
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: err}
+	}
+	return nil
+}
+
+func (h *Hub) publishCall(ctx context.Context, change CallChange) {
+	h.DeliverCall(change)
+	if h.calls != nil {
+		_ = h.calls.PublishCall(ctx, change)
+	}
+}
+
+// DeliverCall fans an already-authorized call event only to participating devices.
+func (h *Hub) DeliverCall(change CallChange) {
+	send := func(userID uuid.UUID, deviceID, eventType string, payload any) {
+		for _, recipient := range h.recipients(userID) {
+			if recipient.Identity().DeviceID == deviceID {
+				recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: eventType, Payload: payload})
+			}
+		}
+	}
+	call := change.Call
+	switch change.Type {
+	case "started":
+		for _, recipient := range h.recipients(call.RecipientID) {
+			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "call.incoming", Payload: call})
+		}
+		send(call.CallerID, call.CallerDeviceID, "call.ringing", call)
+	case "accepted":
+		send(call.CallerID, call.CallerDeviceID, "call.accepted", h.callAcceptedPayload(call, call.CallerID))
+		send(call.RecipientID, call.AcceptedDeviceID, "call.accepted", h.callAcceptedPayload(call, call.RecipientID))
+	case "declined":
+		send(call.CallerID, call.CallerDeviceID, "call.declined", call)
+		for _, recipient := range h.recipients(call.RecipientID) {
+			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "call.declined", Payload: call})
+		}
+	case "ended":
+		send(call.CallerID, call.CallerDeviceID, "call.ended", call)
+		if call.AcceptedDeviceID != "" {
+			send(call.RecipientID, call.AcceptedDeviceID, "call.ended", call)
+			return
+		}
+		for _, recipient := range h.recipients(call.RecipientID) {
+			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "call.ended", Payload: call})
+		}
+	case "signal":
+		userID := call.CallerID
+		if change.ToDeviceID == call.AcceptedDeviceID {
+			userID = call.RecipientID
+		}
+		send(userID, change.ToDeviceID, "call.signal", struct {
+			CallID uuid.UUID       `json:"call_id"`
+			Signal json.RawMessage `json:"signal"`
+		}{CallID: call.ID, Signal: change.Signal})
+	}
+}
+
+func (h *Hub) callAcceptedPayload(call Call, userID uuid.UUID) any {
+	if h.turn == nil {
+		return call
+	}
+	server, err := h.turn.Issue(call, userID)
+	if err != nil {
+		return call
+	}
+	return struct {
+		Call
+		ICEServers []ICEServer `json:"ice_servers"`
+	}{Call: call, ICEServers: []ICEServer{server}}
 }
 
 func (h *Hub) replayPending(ctx context.Context, client Client) {

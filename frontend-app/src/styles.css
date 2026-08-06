@@ -1,6 +1,20 @@
 /* You can add global styles to this file, and also import other style files */
 @import "@angular/material/prebuilt-themes/azure-blue.css";
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap');
+@import "@fontsource/dm-sans/latin-400.css";
+@import "@fontsource/dm-sans/latin-500.css";
+@import "@fontsource/dm-sans/latin-600.css";
+@import "@fontsource/dm-sans/latin-700.css";
+@import "@fontsource/manrope/latin-400.css";
+@import "@fontsource/manrope/latin-500.css";
+@import "@fontsource/manrope/latin-600.css";
+@import "@fontsource/manrope/latin-700.css";
+@import "material-icons/iconfont/material-icons.css";
+
+/* Angular Material's runtime icon rules load after global styles. Keep the
+   self-hosted ligature font authoritative without relying on a remote link. */
+mat-icon.material-icons {
+    font-family: "Material Icons" !important;
+}
 
 html, body {
     font-family: 'Manrope', sans-serif;

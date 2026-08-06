@@ -26,7 +26,25 @@ export interface ConversationReadEvent {
     payload: { conversation_id: string; sequence: number };
 }
 
-export type ClientSocketEvent = MessageSendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent;
+export interface CallStartEvent {
+    type: 'call.start';
+    request_id: string;
+    payload: { conversation_id: string };
+}
+
+export interface CallControlEvent {
+    type: 'call.accept' | 'call.decline' | 'call.cancel' | 'call.end';
+    request_id: string;
+    payload: { call_id: string };
+}
+
+export interface CallSignalEvent {
+    type: 'call.signal';
+    request_id: string;
+    payload: { call_id: string; signal: Record<string, unknown> };
+}
+
+export type ClientSocketEvent = MessageSendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent | CallStartEvent | CallControlEvent | CallSignalEvent;
 
 export interface MessagePayload {
     id: string;
@@ -88,7 +106,78 @@ export interface ConversationReadSocketEvent {
     payload: { conversation_id: string; sequence: number };
 }
 
-export type MessageSocketEvent = MessageAcceptedEvent | MessageCreatedEvent | MessageRejectedEvent | PresenceSnapshotEvent | PresenceChangedEvent | TypingSocketEvent | ConversationCreatedEvent | ConversationReadSocketEvent;
+export interface CallPayload {
+    call_id: string;
+    conversation_id: string;
+    caller_id: string;
+    recipient_id: string;
+    caller_device_id: string;
+    accepted_device_id?: string;
+    status: 'ringing' | 'active' | 'ended';
+    expires_at: string;
+}
+
+export interface ICEServer {
+    urls: string[];
+    username: string;
+    credential: string;
+}
+
+export interface CallStateSocketEvent {
+    version: typeof WEBSOCKET_PROTOCOL_VERSION;
+    type: 'call.incoming' | 'call.ringing' | 'call.declined' | 'call.ended';
+    payload: CallPayload;
+}
+
+export interface CallAcceptedSocketEvent {
+    version: typeof WEBSOCKET_PROTOCOL_VERSION;
+    type: 'call.accepted';
+    payload: CallPayload & { ice_servers: ICEServer[] };
+}
+
+export interface CallSignalSocketEvent {
+    version: typeof WEBSOCKET_PROTOCOL_VERSION;
+    type: 'call.signal';
+    payload: { call_id: string; signal: Record<string, unknown> };
+}
+
+export interface CallRejectedSocketEvent {
+    version: typeof WEBSOCKET_PROTOCOL_VERSION;
+    type: 'call.rejected';
+    request_id?: string;
+    payload: { error: string };
+}
+
+export type CallSocketEvent = CallStateSocketEvent | CallAcceptedSocketEvent | CallSignalSocketEvent | CallRejectedSocketEvent;
+export type MessageSocketEvent = MessageAcceptedEvent | MessageCreatedEvent | MessageRejectedEvent | PresenceSnapshotEvent | PresenceChangedEvent | TypingSocketEvent | ConversationCreatedEvent | ConversationReadSocketEvent | CallSocketEvent;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isCallPayload(value: unknown): value is CallPayload {
+    if (!isRecord(value)) return false;
+    const required = ['call_id', 'conversation_id', 'caller_id', 'recipient_id', 'caller_device_id', 'status', 'expires_at'];
+    return required.every(key => typeof value[key] === 'string') &&
+        (value.status === 'ringing' || value.status === 'active' || value.status === 'ended') &&
+        (value.accepted_device_id === undefined || typeof value.accepted_device_id === 'string');
+}
+
+function isICEServers(value: unknown): value is ICEServer[] {
+    return Array.isArray(value) && value.length > 0 && value.every(server => isRecord(server) && Array.isArray(server.urls) && server.urls.every(url => typeof url === 'string') && typeof server.username === 'string' && typeof server.credential === 'string');
+}
+
+function isAcceptedCallPayload(value: unknown): value is CallPayload & {ice_servers: ICEServer[]} {
+    return isRecord(value) && isCallPayload(value) && isICEServers(value['ice_servers']);
+}
+
+export function isValidCallSocketEvent(event: unknown): event is CallSocketEvent {
+    if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || typeof event.type !== 'string' || !('payload' in event)) return false;
+    if (event.type === 'call.signal') return isRecord(event.payload) && typeof event.payload.call_id === 'string' && isRecord(event.payload.signal);
+    if (event.type === 'call.rejected') return isRecord(event.payload) && typeof event.payload.error === 'string';
+    if (event.type === 'call.accepted') return isAcceptedCallPayload(event.payload);
+    return ['call.incoming', 'call.ringing', 'call.declined', 'call.ended'].includes(event.type) && isCallPayload(event.payload);
+}
 
 interface WebSocketTicketResponse { ticket: string; }
 
@@ -152,7 +241,7 @@ export class DataProviderService {
                 });
                 this.socket.subscribe({
                     next: event => {
-                        if (event.version === WEBSOCKET_PROTOCOL_VERSION) this.events.next(event as MessageSocketEvent);
+                        if (event.version === WEBSOCKET_PROTOCOL_VERSION && (!event.type.startsWith('call.') || isValidCallSocketEvent(event))) this.events.next(event as MessageSocketEvent);
                     },
                     error: () => this.scheduleReconnect(),
                     complete: () => this.scheduleReconnect(),

@@ -16,7 +16,9 @@ import (
 )
 
 const (
-	maxFrameSize = 4096
+	// WebRTC SDP can exceed the message-chat frame budget. Signals remain bounded
+	// by Hub validation and are never logged.
+	maxFrameSize = 32 * 1024
 	writeTimeout = 10 * time.Second
 	readTimeout  = 60 * time.Second
 	pingInterval = 30 * time.Second
@@ -114,12 +116,21 @@ func (c *client) readPump(ctx context.Context) {
 			if errors.As(err, &requestError) {
 				requestID = requestError.RequestID
 			}
+			rejectionType := "message.rejected"
+			if len(payload) > 0 {
+				var command struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(payload, &command) == nil && len(command.Type) >= 5 && command.Type[:5] == "call." {
+					rejectionType = "call.rejected"
+				}
+			}
 			c.SendJSON(struct {
 				Version   int               `json:"version"`
 				Type      string            `json:"type"`
 				RequestID string            `json:"request_id,omitempty"`
 				Payload   map[string]string `json:"payload"`
-			}{Version: application.ProtocolVersion, Type: "message.rejected", RequestID: requestID, Payload: map[string]string{"error": err.Error()}})
+			}{Version: application.ProtocolVersion, Type: rejectionType, RequestID: requestID, Payload: map[string]string{"error": err.Error()}})
 		}
 	}
 }
