@@ -53,7 +53,7 @@ test('shows every registration and login validation state', async ({page}) => {
   });
   await page.goto('/sign-up');
   await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
-  await expect(page.locator('mat-icon').first()).toHaveCSS('font-family', /Material Icons/);
+  await expect(page.locator('zwei-icon').first().locator('svg')).toBeVisible();
   expect(thirdPartyAssetRequests).toEqual([]);
   await expect(page.getByRole('button', {name: 'Create account'})).toBeDisabled();
 
@@ -109,6 +109,16 @@ test('shows every registration and login validation state', async ({page}) => {
   await expect(field(page, 'email').getByText('Enter a valid email.')).toBeVisible();
 });
 
+test('uses the light auth theme when selected before the application starts', async ({page}) => {
+  await page.addInitScript(() => localStorage.setItem('zwei_theme', 'light'));
+  await page.goto('/login');
+
+  await expect(page.locator('html')).toHaveClass(/light-theme/);
+  await expect(page.locator('body')).toHaveClass(/light-theme/);
+  await expect(page.locator('.auth-card')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.78)');
+  await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toHaveCSS('color', 'rgb(23, 28, 43)');
+});
+
 test('keeps registration keyboard-accessible on a reduced-motion mobile viewport', async ({browser}) => {
   const context = await browser.newContext({
     viewport: {width: 390, height: 844},
@@ -151,6 +161,10 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await expect(page).toHaveURL(/\/login$/);
 
   await login(page, email);
+  await expect(page).toHaveURL(/\/home$/);
+  const refreshResponse = page.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
+  await page.reload();
+  expect((await refreshResponse).status()).toBe(200);
   await expect(page).toHaveURL(/\/home$/);
   await expect(page.getByRole('button', {name: 'Account menu'})).toBeVisible();
   await expect(page.getByRole('heading', {name: 'Choose a conversation'})).toBeVisible();

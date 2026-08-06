@@ -2,10 +2,10 @@
     <section class="auth-card" aria-labelledby="login-title">
         <div class="auth-intro"><span class="eyebrow">Welcome back</span><h1 id="login-title">Sign in to zwei</h1><p>Your private conversations are waiting for you.</p></div>
         <div *ngIf="isLoading" class="auth-loading"><app-loading-spinner></app-loading-spinner></div>
-        <form (ngSubmit)="onSubmit()" *ngIf="!isLoading" [formGroup]="loginForm" class="auth-form">
-            <mat-form-field appearance="outline"><mat-label>Email address</mat-label><input formControlName="email" matInput type="email" autocomplete="email"><mat-icon matPrefix>mail</mat-icon><mat-error *ngIf="email.errors?.['required']">Email is required.</mat-error><mat-error *ngIf="email.errors?.['email']">Enter a valid email.</mat-error></mat-form-field>
-            <mat-form-field appearance="outline"><mat-label>Password</mat-label><input formControlName="password" matInput type="password" autocomplete="current-password"><mat-icon matPrefix>lock</mat-icon><mat-error *ngIf="password.errors?.['required']">Password is required.</mat-error></mat-form-field>
-            <button class="submit-button" [disabled]="loginForm.invalid" color="primary" mat-flat-button type="submit">Sign in</button>
+        <form (ngSubmit)="onSubmit()" [formGroup]="loginForm" class="auth-form" [attr.aria-busy]="isLoading">
+            <mat-form-field appearance="outline"><mat-label>Email address</mat-label><input formControlName="email" matInput type="email" autocomplete="email" [disabled]="isLoading"><zwei-icon matPrefix name="mail"></zwei-icon><mat-error *ngIf="email.errors?.['required']">Email is required.</mat-error><mat-error *ngIf="email.errors?.['email']">Enter a valid email.</mat-error></mat-form-field>
+            <mat-form-field appearance="outline"><mat-label>Password</mat-label><input formControlName="password" matInput type="password" autocomplete="current-password" [disabled]="isLoading"><zwei-icon matPrefix name="lock"></zwei-icon><mat-error *ngIf="password.errors?.['required']">Password is required.</mat-error></mat-form-field>
+            <button class="submit-button" [disabled]="loginForm.invalid || isLoading" color="primary" mat-flat-button type="submit">Sign in</button>
         </form>
         <p class="auth-switch">Don't have an account? <a routerLink="/sign-up">Create one</a></p>
     </section>

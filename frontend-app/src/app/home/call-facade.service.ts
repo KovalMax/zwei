@@ -7,6 +7,7 @@ export type CallPhase = 'idle' | 'requesting' | 'outgoing' | 'incoming' | 'conne
 export type CallRole = 'caller' | 'recipient';
 export interface CallState { readonly phase: CallPhase; readonly role?: CallRole; readonly callID?: string; readonly conversationID?: string; readonly peerID?: string; readonly muted: boolean; readonly localStream?: MediaStream; readonly remoteStream?: MediaStream; readonly statusLabel: string; readonly errorLabel?: string; }
 const idleState: CallState = Object.freeze({phase: 'idle', muted: false, statusLabel: 'No active call.'});
+const callNoticeDuration = 5_000;
 
 @Injectable()
 export class CallFacade implements OnDestroy {
@@ -14,6 +15,7 @@ export class CallFacade implements OnDestroy {
     private readonly subscription: Subscription;
     private connection?: RTCPeerConnection;
     private pendingSignals: Record<string, unknown>[] = [];
+    private dismissTimer?: number;
     public readonly state$ = this.stateSubject.asObservable();
 
     public constructor(private readonly dataProvider: DataProviderService) {
@@ -23,6 +25,7 @@ export class CallFacade implements OnDestroy {
 
     public async start(conversationID: string, peerID: string): Promise<void> {
         if (!this.canStart()) return;
+        this.clearDismissTimer();
         this.setState({phase: 'requesting', role: 'caller', conversationID, peerID, muted: false, statusLabel: 'Requesting microphone access...'});
         const stream = await this.requestMicrophone();
         if (!stream) return;
@@ -46,6 +49,7 @@ export class CallFacade implements OnDestroy {
         this.setState({...state, muted, statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
     }
     public close(): void {
+        this.clearDismissTimer();
         const state = this.state;
         if (state.callID) {
             const type = state.phase === 'incoming' ? 'call.decline' : state.phase === 'outgoing' ? 'call.cancel' : 'call.end';
@@ -70,6 +74,7 @@ export class CallFacade implements OnDestroy {
     }
     private handleIncoming(payload: CallPayload): void {
         if (!this.canStart()) { this.dataProvider.send({type: 'call.decline', request_id: createRandomID(), payload: {call_id: payload.call_id}}); return; }
+        this.clearDismissTimer();
         this.setState({phase: 'incoming', role: 'recipient', callID: payload.call_id, conversationID: payload.conversation_id, peerID: payload.caller_id, muted: false, statusLabel: 'Incoming audio call.'});
     }
     private async handleAccepted(event: CallAcceptedSocketEvent): Promise<void> {
@@ -110,10 +115,15 @@ export class CallFacade implements OnDestroy {
     private sendSignal(signal: Record<string, unknown>): void { const callID = this.state.callID; if (callID && !this.dataProvider.send({type: 'call.signal', request_id: createRandomID(), payload: {call_id: callID, signal}})) this.setError('The secure connection is unavailable.'); }
     private sendControl(type: 'call.decline' | 'call.cancel' | 'call.end', label: string): void { const callID = this.state.callID; if (callID) this.dataProvider.send({type, request_id: createRandomID(), payload: {call_id: callID}}); this.terminal(label); }
     private async requestMicrophone(): Promise<MediaStream | undefined> { try { return await navigator.mediaDevices.getUserMedia({audio: true}); } catch { this.setError('Microphone permission was denied.'); return undefined; } }
-    private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, statusLabel: label}); }
-    private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); }
+    private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, statusLabel: label}); this.dismissNotice(); }
+    private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
     private cleanup(): void { this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; }
     private stopStream(stream?: MediaStream): void { stream?.getTracks().forEach(track => track.stop()); }
+    private dismissNotice(): void {
+        this.clearDismissTimer();
+        this.dismissTimer = window.setTimeout(() => { this.dismissTimer = undefined; this.setState(idleState); }, callNoticeDuration);
+    }
+    private clearDismissTimer(): void { window.clearTimeout(this.dismissTimer); this.dismissTimer = undefined; }
     private canStart(): boolean { return ['idle', 'ended', 'error'].includes(this.state.phase); }
     private matches(callID: string): boolean { return this.state.callID === callID; }
     private peerFor(payload: CallPayload): string { return this.state.role === 'caller' ? payload.recipient_id : payload.caller_id; }

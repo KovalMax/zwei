@@ -7,14 +7,14 @@ export const environment = {
 };
 
 export const backends = {
-    auth: 'https://auth.localhost',
+    auth: 'https://chat.localhost',
     chat: 'https://api.chat.localhost',
     websocket: 'wss://ws.chat.localhost/ws',
-    login: 'https://auth.localhost/api/auth/login',
-    registration: 'https://auth.localhost/api/auth/register',
-    websocketTicket: 'https://auth.localhost/api/auth/ws-ticket',
-    refresh: 'https://auth.localhost/api/auth/refresh',
-    logout: 'https://auth.localhost/api/auth/logout',
+    login: 'https://chat.localhost/api/auth/login',
+    registration: 'https://chat.localhost/api/auth/register',
+    websocketTicket: 'https://chat.localhost/api/auth/ws-ticket',
+    refresh: 'https://chat.localhost/api/auth/refresh',
+    logout: 'https://chat.localhost/api/auth/logout',
 };
 
 /*

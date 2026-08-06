@@ -8,14 +8,6 @@
 @import "@fontsource/manrope/latin-500.css";
 @import "@fontsource/manrope/latin-600.css";
 @import "@fontsource/manrope/latin-700.css";
-@import "material-icons/iconfont/material-icons.css";
-
-/* Angular Material's runtime icon rules load after global styles. Keep the
-   self-hosted ligature font authoritative without relying on a remote link. */
-mat-icon.material-icons {
-    font-family: "Material Icons" !important;
-}
-
 html, body {
     font-family: 'Manrope', sans-serif;
     height: 100%;
@@ -61,9 +53,25 @@ html, body {
     --chat-message-own: #2d5c45;
     --chat-message-sender: #72c86f;
     --chat-message-read: #b5e680;
+    --auth-card-surface: rgba(255, 255, 255, .78);
+    --auth-card-border: var(--zwei-card-border);
+    --auth-title: #171c2b;
+    --auth-muted: #817970;
+    --auth-icon: #a59b90;
+    --auth-submit: #252c40;
+    --auth-submit-text: #fff;
 }
 
-:root.light-theme {
+:root.dark-theme, body.dark-theme {
+    --auth-card-surface: #202c3b;
+    --auth-card-border: #30465e;
+    --auth-title: #f1f5f9;
+    --auth-muted: #aebdd0;
+    --auth-icon: #aebdd0;
+    --auth-submit: #4b9ce9;
+}
+
+:root.light-theme, body.light-theme {
     --zwei-ink: #172033;
     --zwei-canvas: #f6f8fc;
     --chat-canvas: #f6f8fc;
@@ -116,7 +124,7 @@ body :is(a, button, select, [tabindex]):focus-visible {
 .light-theme .search-result { color: var(--chat-text); }
 .light-theme .search-result:hover { background: #f1f4f9; }
 .light-theme .search-result small { color: var(--chat-muted); }
-.light-theme .search-result mat-icon { color: #4c86c6; }
+.light-theme .search-result zwei-icon { color: #4c86c6; }
 .light-theme .person-option { color: var(--chat-text); }
 .light-theme .person-option:hover { background: #f1f4f9; }
 .light-theme .conversation-copy strong { color: var(--chat-text); }
@@ -129,3 +137,8 @@ body :is(a, button, select, [tabindex]):focus-visible {
 .light-theme .composer textarea, .light-theme .composer .mdc-floating-label { color: var(--chat-text) !important; }
 
 app-root { display: block; height: 100dvh; overflow: hidden; }
+
+.dark-theme .mat-mdc-menu-panel { background: var(--chat-surface-raised) !important; }
+.dark-theme .mat-mdc-menu-item, .dark-theme .mat-mdc-menu-item zwei-icon { color: var(--chat-text) !important; }
+.dark-theme .account-menu-name { color: var(--chat-text-strong) !important; }
+.dark-theme .account-menu-email { color: var(--chat-muted) !important; }

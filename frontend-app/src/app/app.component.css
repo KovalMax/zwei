@@ -6,8 +6,4 @@
 .app-shell { background: var(--zwei-canvas); }
 .app-content { height: calc(100dvh - 72px); min-height: 0; overflow: hidden; }
 
-:host ::ng-deep mat-icon.material-icons {
-    font-family: "Material Icons" !important;
-}
-
 @media (max-width: 600px) { .app-content { height: calc(100dvh - 64px); } }

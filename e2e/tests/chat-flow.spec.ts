@@ -75,10 +75,20 @@ test('register, create conversation, and deliver a message', async ({ browser })
    await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
    await alice.getByRole('button', {name: 'Mute'}).click();
    await expect(alice.getByRole('button', {name: 'Unmute'})).toBeVisible();
-   await alice.getByRole('button', {name: 'End call'}).click();
-   await expect(bob.getByText('Call ended.')).toBeVisible();
+  await alice.getByRole('button', {name: 'End call'}).click();
+  await expect(bob.getByText('Call ended.')).toBeVisible();
 
-  const messages = [`hello-${Date.now()}`, `follow-up-${Date.now()}`];
+  await bob.goto('/profile');
+  await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
+  await alice.getByRole('button', {name: 'Start audio call'}).click();
+  const offlineCallNotice = alice.getByText('Call unavailable: recipient is offline', {exact: true});
+  await expect(offlineCallNotice).toHaveCount(1);
+  await expect(offlineCallNotice).toBeVisible();
+  await expect(offlineCallNotice).not.toBeVisible({timeout: 7_000});
+  await bob.goto('/home');
+  await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled({timeout: 10_000});
+
+   const messages = [`hello-${Date.now()}`, `follow-up-${Date.now()}`];
   const started = Date.now();
   await alice.getByPlaceholder('Write a message…').fill(messages[0]);
   await expect(alice.getByRole('button', { name: 'Send message' })).toBeEnabled();

@@ -15,6 +15,7 @@ import {AuthInterceptorService} from './auth/auth-interceptor.service';
 import {LoadingSpinnerComponent} from './shared/loading-spinner/loading-spinner.component';
 import {RegistrationService} from './registration/registration.service';
 import {ProfileComponent} from './profile/profile.component';
+import {ZweiIconComponent} from './shared/zwei-icon/zwei-icon.component';
 
 @NgModule({
     declarations: [
@@ -25,6 +26,7 @@ import {ProfileComponent} from './profile/profile.component';
         RegistrationComponent,
         ProfileComponent,
         LoadingSpinnerComponent,
+        ZweiIconComponent,
     ],
     imports: [
         BrowserModule,
