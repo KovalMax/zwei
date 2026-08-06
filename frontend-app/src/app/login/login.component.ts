@@ -1,4 +1,4 @@
-import {Component} from '@angular/core';
+import {ChangeDetectorRef, Component} from '@angular/core';
 import {FormControl, FormGroup, Validators} from '@angular/forms';
 import {AuthService} from '../auth/auth.service';
 import {Router} from '@angular/router';
@@ -23,6 +23,7 @@ export class LoginComponent {
         private client: AuthService,
         private router: Router,
         private snackBar: MatSnackBar,
+        private changeDetector: ChangeDetectorRef,
     ) {
         this.loginForm = new FormGroup<ControlsOf<Login>>({
             email: new FormControl(
@@ -54,7 +55,10 @@ export class LoginComponent {
                 device_id: getDeviceID(),
                 device_name: 'Browser',
             })
-            .pipe(finalize(() => this.isLoading = false))
+            .pipe(finalize(() => {
+                this.isLoading = false;
+                this.changeDetector.markForCheck();
+            }))
             .subscribe({
                 next: () => {
                     this.snackBar.dismiss();
@@ -87,6 +91,7 @@ export class LoginComponent {
 
     private showError(message: string): void {
         this.isLoading = false;
+        this.changeDetector.markForCheck();
         this.snackBar.open(message, 'Close', {
             duration: 60 * 1000,
             horizontalPosition: 'center',

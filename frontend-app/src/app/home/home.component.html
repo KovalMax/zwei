@@ -6,12 +6,12 @@
 
         <mat-form-field class="search-field" appearance="outline">
             <mat-label>Search people</mat-label>
-            <mat-icon matPrefix>search</mat-icon>
+            <zwei-icon matPrefix name="search"></zwei-icon>
             <input matInput placeholder="Name or email" [(ngModel)]="searchQuery" name="userSearch" (input)="searchUsers()">
         </mat-form-field>
         <div class="search-results" *ngIf="searchResults.length">
             <button class="search-result" *ngFor="let user of searchResults" type="button" [attr.aria-label]="'Start a conversation with ' + user.display_name" (click)="startConversation(user)">
-                <span class="person-avatar">{{ user.display_name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><mat-icon>arrow_forward</mat-icon>
+                <span class="person-avatar">{{ user.display_name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><zwei-icon name="arrow_forward"></zwei-icon>
             </button>
         </div>
 
@@ -23,18 +23,18 @@
             </button>
         </div>
         <ng-template #loadingPeople>
-            <div class="empty-rail"><mat-icon>{{ isLoading ? 'hourglass_top' : 'forum' }}</mat-icon><span>{{ isLoading ? 'Loading conversations…' : 'No conversations yet.' }}</span></div>
+            <div class="empty-rail"><zwei-icon [name]="isLoading ? 'hourglass_top' : 'forum'"></zwei-icon><span>{{ isLoading ? 'Loading conversations…' : 'No conversations yet.' }}</span></div>
         </ng-template>
     </aside>
 
     <main class="chat-panel">
         <header class="chat-header">
             <div class="chat-identity">
-                <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><mat-icon>arrow_back</mat-icon></button>
+                <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><zwei-icon name="arrow_back"></zwei-icon></button>
                 <div class="hero-avatar">{{ selectedConversation ? initials(selectedConversation) : 'L' }}</div>
                 <div><h2>{{ selectedConversation ? selectedConversation.otherDisplayName : 'Choose a conversation' }}</h2><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedUserOffline()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
             </div>
-            <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><mat-icon>call</mat-icon></button>
+            <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
         </header>
         <section class="call-panel" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
             <audio autoplay [srcObject]="call.state.remoteStream"></audio>
@@ -47,16 +47,16 @@
                 <button mat-flat-button color="warn" type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.end()">End call</button>
             </div>
         </section>
-        <div class="socket-warning" *ngIf="socketError"><mat-icon>cloud_off</mat-icon> Live connection lost. Refresh to reconnect.</div>
-        <div class="socket-connecting" *ngIf="!socketError && !socketReady && selectedConversation"><mat-icon>sync</mat-icon> Connecting securely…</div>
+        <div class="socket-warning" *ngIf="socketError"><zwei-icon name="cloud_off"></zwei-icon> Live connection lost. Refresh to reconnect.</div>
+        <div class="socket-connecting" *ngIf="!socketError && !socketReady && selectedConversation"><zwei-icon name="sync"></zwei-icon> Connecting securely…</div>
         <div class="send-status" *ngIf="sendStatus">{{ sendStatus }}</div>
         <div class="chat-empty" *ngIf="!selectedConversation">
-            <div class="empty-orbit"><mat-icon>forum</mat-icon></div>
+            <div class="empty-orbit"><zwei-icon name="forum"></zwei-icon></div>
             <span class="eyebrow">Private by design</span><h3>Your messages, your space</h3><p>Search for someone to start a secure one-to-one conversation.</p>
         </div>
         <section #messageHistory class="message-history" *ngIf="selectedConversation" aria-label="Message history">
             <button class="load-older" *ngIf="historyCursor" mat-stroked-button (click)="loadOlderMessages()" [disabled]="isHistoryLoading">
-                <mat-icon *ngIf="isHistoryLoading">hourglass_top</mat-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
+                <zwei-icon *ngIf="isHistoryLoading" name="hourglass_top"></zwei-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
             <div class="message-list" *ngIf="messages.length; else emptyMessages">
                 <article class="message-bubble" *ngFor="let message of messages" [class.message-own]="isOwnMessage(message)" [class.message-pending]="message.pending">
@@ -64,13 +64,13 @@
                     <p>{{ message.body }}</p><time>{{ message.createdAt | date:'shortTime' }}</time><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-read" *ngIf="isLatestReadMessage(message)">Read</span>
                 </article>
             </div>
-            <ng-template #emptyMessages><div class="empty-messages"><mat-icon>mark_chat_unread</mat-icon><p>No messages yet.</p></div></ng-template>
+            <ng-template #emptyMessages><div class="empty-messages"><zwei-icon name="mark_chat_unread"></zwei-icon><p>No messages yet.</p></div></ng-template>
         </section>
         <form class="composer" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
             <mat-form-field appearance="outline">
                 <textarea matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown.enter)="sendMessage($event)"></textarea>
             </mat-form-field>
-            <button mat-fab color="primary" type="submit" aria-label="Send message" [disabled]="!selectedConversation || !draft.trim() || !socketReady"><mat-icon>send</mat-icon></button>
+            <button mat-fab color="primary" type="submit" aria-label="Send message" [disabled]="!selectedConversation || !draft.trim() || !socketReady"><zwei-icon name="send"></zwei-icon></button>
         </form>
     </main>
 </section>

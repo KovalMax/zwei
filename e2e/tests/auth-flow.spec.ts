@@ -53,7 +53,7 @@ test('shows every registration and login validation state', async ({page}) => {
   });
   await page.goto('/sign-up');
   await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
-  await expect(page.locator('mat-icon').first()).toHaveCSS('font-family', /Material Icons/);
+  await expect(page.locator('zwei-icon').first().locator('svg')).toBeVisible();
   expect(thirdPartyAssetRequests).toEqual([]);
   await expect(page.getByRole('button', {name: 'Create account'})).toBeDisabled();
 
@@ -107,6 +107,16 @@ test('shows every registration and login validation state', async ({page}) => {
   await input(page, 'email').fill('not-an-email');
   await input(page, 'email').blur();
   await expect(field(page, 'email').getByText('Enter a valid email.')).toBeVisible();
+});
+
+test('uses the light auth theme when selected before the application starts', async ({page}) => {
+  await page.addInitScript(() => localStorage.setItem('zwei_theme', 'light'));
+  await page.goto('/login');
+
+  await expect(page.locator('html')).toHaveClass(/light-theme/);
+  await expect(page.locator('body')).toHaveClass(/light-theme/);
+  await expect(page.locator('.auth-card')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.78)');
+  await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toHaveCSS('color', 'rgb(23, 28, 43)');
 });
 
 test('keeps registration keyboard-accessible on a reduced-motion mobile viewport', async ({browser}) => {
