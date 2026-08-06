@@ -9,6 +9,7 @@ import {createRandomID} from '../login/login';
 import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
 import {toMessage} from './wire.mapper';
+import {CallFacade} from './call-facade.service';
 
 @Component({
     standalone: false,
@@ -16,7 +17,7 @@ import {toMessage} from './wire.mapper';
     selector: 'app-home',
     templateUrl: './home.component.html',
     styleUrls: ['./home.component.css'],
-    providers: [DataProviderService],
+    providers: [DataProviderService, CallFacade],
 })
 export class HomeComponent implements OnInit, OnDestroy {
     private readonly selectedConversationKey = 'zwei_selected_conversation';
@@ -45,7 +46,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     private readonly peerReadSequences = new Map<string, number>();
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
 
-    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService) {
+    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade) {
     }
 
     public ngOnInit(): void {
@@ -77,7 +78,12 @@ export class HomeComponent implements OnInit, OnDestroy {
         for (const pending of this.pendingRequests.values()) window.clearTimeout(pending.timeout);
         window.clearTimeout(this.typingTimeout);
         window.clearTimeout(this.remoteTypingTimeout);
+        this.call.close();
         this.dataProvider.close();
+    }
+
+    public startCall(): void {
+        if (this.selectedConversation) void this.call.start(this.selectedConversation.id, this.selectedConversation.otherUserId);
     }
 
     public initials(conversation: Conversation): string {

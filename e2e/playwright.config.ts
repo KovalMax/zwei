@@ -11,5 +11,5 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     ignoreHTTPSErrors: true,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], launchOptions: { args: ['--ignore-certificate-errors', '--host-resolver-rules=MAP *.localhost host.docker.internal'] } } }],
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], launchOptions: { args: ['--ignore-certificate-errors', '--host-resolver-rules=MAP *.localhost host.docker.internal', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } } }],
 });

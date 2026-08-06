@@ -34,7 +34,19 @@
                 <div class="hero-avatar">{{ selectedConversation ? initials(selectedConversation) : 'L' }}</div>
                 <div><h2>{{ selectedConversation ? selectedConversation.otherDisplayName : 'Choose a conversation' }}</h2><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedUserOffline()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
             </div>
+            <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><mat-icon>call</mat-icon></button>
         </header>
+        <section class="call-panel" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
+            <audio autoplay [srcObject]="call.state.remoteStream"></audio>
+            <div><strong>{{ call.state.statusLabel }}</strong><span *ngIf="call.state.errorLabel" role="alert">{{ call.state.errorLabel }}</span></div>
+            <div class="call-actions">
+                <button mat-flat-button color="primary" type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.accept()">Accept</button>
+                <button mat-stroked-button type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.decline()">Decline</button>
+                <button mat-stroked-button type="button" *ngIf="call.state.phase === 'outgoing' || call.state.phase === 'requesting'" (click)="call.cancel()">Cancel</button>
+                <button mat-stroked-button type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.toggleMute()">{{ call.state.muted ? 'Unmute' : 'Mute' }}</button>
+                <button mat-flat-button color="warn" type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.end()">End call</button>
+            </div>
+        </section>
         <div class="socket-warning" *ngIf="socketError"><mat-icon>cloud_off</mat-icon> Live connection lost. Refresh to reconnect.</div>
         <div class="socket-connecting" *ngIf="!socketError && !socketReady && selectedConversation"><mat-icon>sync</mat-icon> Connecting securely…</div>
         <div class="send-status" *ngIf="sendStatus">{{ sendStatus }}</div>

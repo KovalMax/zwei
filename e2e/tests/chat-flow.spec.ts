@@ -37,6 +37,8 @@ test('register, create conversation, and deliver a message', async ({ browser })
   const desktop = { viewport: { width: 2560, height: 1440 } };
   const aliceContext = await browser.newContext(desktop);
   const bobContext = await browser.newContext(desktop);
+  await aliceContext.grantPermissions(['microphone'], {origin: 'https://chat.localhost'});
+  await bobContext.grantPermissions(['microphone'], {origin: 'https://chat.localhost'});
   const alice = await aliceContext.newPage();
   const bob = await bobContext.newPage();
 
@@ -60,9 +62,21 @@ test('register, create conversation, and deliver a message', async ({ browser })
   await expect(aliceConversation).toBeVisible();
   await aliceConversation.click();
 
-  await alice.getByPlaceholder('Write a message…').fill('typing');
-  await expect(bob.getByText('Alice is typing…')).toBeVisible();
-  await expect(bob.getByText('Alice is typing…')).not.toBeVisible({ timeout: 3_000 });
+   await alice.getByPlaceholder('Write a message…').fill('typing');
+   await expect(bob.getByText('Alice is typing…')).toBeVisible();
+   await expect(bob.getByText('Alice is typing…')).not.toBeVisible({ timeout: 3_000 });
+
+   await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
+   await alice.getByRole('button', {name: 'Start audio call'}).click();
+   await expect(alice.getByText('Ringing...')).toBeVisible();
+   await expect(bob.getByText('Incoming audio call.')).toBeVisible();
+   await bob.getByRole('button', {name: 'Accept'}).click();
+   await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+   await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+   await alice.getByRole('button', {name: 'Mute'}).click();
+   await expect(alice.getByRole('button', {name: 'Unmute'})).toBeVisible();
+   await alice.getByRole('button', {name: 'End call'}).click();
+   await expect(bob.getByText('Call ended.')).toBeVisible();
 
   const messages = [`hello-${Date.now()}`, `follow-up-${Date.now()}`];
   const started = Date.now();

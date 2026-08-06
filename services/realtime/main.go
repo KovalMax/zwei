@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +13,7 @@ import (
 	"github.com/KovalMax/zwei/services/realtime/internal/application"
 	postgresinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/postgres"
 	redisinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/redis"
+	turninfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/turn"
 	websockettransport "github.com/KovalMax/zwei/services/realtime/internal/transport/websocket"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 	"github.com/KovalMax/zwei/services/shared/messaging"
@@ -39,6 +41,11 @@ func main() {
 		panic(err)
 	}
 	encryptionSecret := getenv("MESSAGE_ENCRYPTION_KEY", "local-development-key-change-me")
+	turnURLs := strings.Split(getenv("TURN_URLS", "turn:turn.chat.localhost:3478?transport=udp,turn:turn.chat.localhost:3478?transport=tcp"), ",")
+	turnIssuer, err := turninfra.NewCredentialIssuer(getenv("TURN_SHARED_SECRET", "local-development-turn-shared-secret-change-me"), turnURLs, 2*time.Hour)
+	if err != nil {
+		panic(err)
+	}
 	coordination, err := redisinfra.NewPresenceCoordinator(getenv("REDIS_URL", "redis://redis:6379/0"))
 	if err != nil {
 		panic(err)
@@ -48,7 +55,7 @@ func main() {
 		panic(err)
 	}
 	presence := postgresinfra.NewPresenceRepository(db)
-	hub := application.NewHub(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db))
+	hub := application.NewHub(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db), coordination, turnIssuer)
 	go coordination.StartHeartbeat(ctx)
 	go func() {
 		_ = coordination.Consume(ctx, func(change redisinfra.Change) { hub.NotifyPresenceChanged(ctx, change.UserID, change.Online) })
@@ -73,6 +80,28 @@ func main() {
 	}()
 	go func() {
 		_ = coordination.ConsumeMessages(ctx, func(change redisinfra.MessageChange) { hub.DeliverMessageCreated(change.Message) })
+	}()
+	go func() {
+		_ = coordination.ConsumeCalls(ctx, hub.DeliverCall)
+	}()
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				calls, err := coordination.ExpireCalls(ctx)
+				if err != nil {
+					continue
+				}
+				for _, call := range calls {
+					hub.DeliverCall(application.CallChange{Type: "ended", Call: call})
+					_ = coordination.PublishCall(ctx, application.CallChange{Type: "ended", Call: call})
+				}
+			}
+		}
 	}()
 	outbox := postgresinfra.NewOutboxRepository(db)
 	go consumeConversationEvents(ctx, outbox, hub)

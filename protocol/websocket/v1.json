@@ -5,7 +5,13 @@
     "typing.start": ["payload.conversation_id"],
     "typing.stop": ["payload.conversation_id"],
     "presence.refresh": [],
-    "conversation.read": ["payload.conversation_id", "payload.sequence"]
+    "conversation.read": ["payload.conversation_id", "payload.sequence"],
+    "call.start": ["request_id", "payload.conversation_id"],
+    "call.accept": ["request_id", "payload.call_id"],
+    "call.decline": ["request_id", "payload.call_id"],
+    "call.cancel": ["request_id", "payload.call_id"],
+    "call.end": ["request_id", "payload.call_id"],
+    "call.signal": ["request_id", "payload.call_id", "payload.signal"]
   },
   "serverEvents": [
     "message.accepted",
@@ -16,6 +22,16 @@
     "typing.started",
     "typing.stopped",
     "conversation.created",
-    "conversation.read"
-  ]
+    "conversation.read",
+    "call.incoming",
+    "call.ringing",
+    "call.accepted",
+    "call.declined",
+    "call.ended",
+    "call.signal",
+    "call.rejected"
+  ],
+  "serverEventFields": {
+    "call.accepted": ["payload.call_id", "payload.ice_servers", "payload.ice_servers[].urls", "payload.ice_servers[].username", "payload.ice_servers[].credential"]
+  }
 }

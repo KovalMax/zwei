@@ -38,6 +38,8 @@ test('serves the browser security headers', async ({request}) => {
 
   expect(response.ok()).toBeTruthy();
   expect(response.headers()['content-security-policy']).toContain("default-src 'self'");
+  expect(response.headers()['content-security-policy']).not.toContain('fonts.googleapis.com');
+  expect(response.headers()['content-security-policy']).not.toContain('fonts.gstatic.com');
   expect(response.headers()['x-content-type-options']).toBe('nosniff');
   expect(response.headers()['x-frame-options']).toBe('DENY');
   expect(response.headers()['referrer-policy']).toBe('strict-origin-when-cross-origin');
@@ -45,9 +47,14 @@ test('serves the browser security headers', async ({request}) => {
 });
 
 test('shows every registration and login validation state', async ({page}) => {
+  const thirdPartyAssetRequests: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('fonts.googleapis.com') || request.url().includes('fonts.gstatic.com')) thirdPartyAssetRequests.push(request.url());
+  });
   await page.goto('/sign-up');
   await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
   await expect(page.locator('mat-icon').first()).toHaveCSS('font-family', /Material Icons/);
+  expect(thirdPartyAssetRequests).toEqual([]);
   await expect(page.getByRole('button', {name: 'Create account'})).toBeDisabled();
 
   for (const name of ['email', 'firstName', 'lastName', 'nickName', 'password', 'confirmPassword']) {
