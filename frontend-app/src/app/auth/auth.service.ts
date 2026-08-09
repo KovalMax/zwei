@@ -23,11 +23,13 @@ export class AuthService {
         return this.http.post<Token>(backends.login, login, {withCredentials: true})
             .pipe(
                 catchError((res: HttpErrorResponse) => throwError(() => res)),
-                tap((token: Token) => {
-                    this.restoreResult = undefined;
-                    this.handleToken(token);
-                })
+                tap((token: Token) => this.acceptToken(token))
             );
+    }
+
+    public acceptToken(token: Token): void {
+        this.restoreResult = undefined;
+        this.handleToken(token);
     }
 
     public restore(): Observable<Token | null> {

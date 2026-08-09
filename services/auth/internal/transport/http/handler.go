@@ -62,8 +62,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusInternalServerError, "could not create user")
 		return
 	}
-	tokens.RefreshToken = ""
-	runtime.WriteJSON(w, http.StatusCreated, tokens)
+	h.writeTokens(w, http.StatusCreated, tokens)
 }
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var request credentialsRequest

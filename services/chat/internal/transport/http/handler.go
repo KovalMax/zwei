@@ -79,16 +79,11 @@ func (h *Handler) createConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
-	identity, ok := h.identity(w, r)
+	userID, ok := h.userID(w, r)
 	if !ok {
 		return
 	}
-	deviceID, err := uuid.Parse(identity.DeviceID)
-	if err != nil {
-		errorJSON(w, http.StatusUnauthorized, "invalid device session")
-		return
-	}
-	items, err := h.conversations.List(r.Context(), identity.UserID, deviceID)
+	items, err := h.conversations.List(r.Context(), userID)
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "could not load conversations")
 		return

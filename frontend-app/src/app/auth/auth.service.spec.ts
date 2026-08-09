@@ -30,4 +30,11 @@ describe('AuthService', () => {
 
         expect(results).toEqual([null, null, null]);
     });
+
+    it('accepts a token issued by registration into memory', () => {
+        service.acceptToken({token_type: 'Bearer', access_token: 'registered-access', expires_in: 900});
+
+        expect(service.token.value?.access_token).toBe('registered-access');
+        expect(service.token.value?.expires_in).toBeGreaterThan(Date.now());
+    });
 });

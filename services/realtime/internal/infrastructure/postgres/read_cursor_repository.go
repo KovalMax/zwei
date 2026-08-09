@@ -13,9 +13,9 @@ func NewReadCursorRepository(db *pgxpool.Pool) *ReadCursorRepository {
 	return &ReadCursorRepository{db: db}
 }
 
-// Advance records the highest existing sequence read by an active device in an authorized conversation.
-func (r *ReadCursorRepository) Advance(ctx context.Context, deviceID, userID, conversationID uuid.UUID, sequence int64) (int64, error) {
+// Advance records the highest existing sequence read by a user in an authorized conversation.
+func (r *ReadCursorRepository) Advance(ctx context.Context, userID, conversationID uuid.UUID, sequence int64) (int64, error) {
 	var cursor int64
-	err := r.db.QueryRow(ctx, `INSERT INTO device_read_cursors (device_id, conversation_id, last_read_sequence) SELECT d.id, $3, LEAST($4, COALESCE((SELECT MAX(sequence) FROM messages WHERE conversation_id = $3), 0)) FROM devices d JOIN conversation_members cm ON cm.user_id = d.user_id AND cm.conversation_id = $3 WHERE d.id = $1 AND d.user_id = $2 AND d.revoked_at IS NULL ON CONFLICT (device_id, conversation_id) DO UPDATE SET last_read_sequence = GREATEST(device_read_cursors.last_read_sequence, EXCLUDED.last_read_sequence), updated_at = now() RETURNING last_read_sequence`, deviceID, userID, conversationID, sequence).Scan(&cursor)
+	err := r.db.QueryRow(ctx, `INSERT INTO user_read_cursors (user_id, conversation_id, last_read_sequence) SELECT $1, $2, LEAST($3, COALESCE((SELECT sequence FROM messages WHERE conversation_id = $2 ORDER BY sequence DESC LIMIT 1), 0)) WHERE EXISTS (SELECT 1 FROM conversation_members WHERE user_id = $1 AND conversation_id = $2) ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_sequence = GREATEST(user_read_cursors.last_read_sequence, EXCLUDED.last_read_sequence), updated_at = now() RETURNING last_read_sequence`, userID, conversationID, sequence).Scan(&cursor)
 	return cursor, err
 }

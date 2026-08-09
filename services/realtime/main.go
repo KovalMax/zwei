@@ -82,6 +82,11 @@ func main() {
 		_ = coordination.ConsumeMessages(ctx, func(change redisinfra.MessageChange) { hub.DeliverMessageCreated(change.Message) })
 	}()
 	go func() {
+		_ = coordination.ConsumeReads(ctx, func(change redisinfra.ReadChange) {
+			hub.DeliverReadCursor(change.ReaderID, change.RecipientID, change.ConversationID, change.Sequence)
+		})
+	}()
+	go func() {
 		_ = coordination.ConsumeCalls(ctx, hub.DeliverCall)
 	}()
 	go func() {

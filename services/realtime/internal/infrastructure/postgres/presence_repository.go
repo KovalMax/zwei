@@ -12,7 +12,7 @@ type PresenceRepository struct{ db *pgxpool.Pool }
 func NewPresenceRepository(db *pgxpool.Pool) *PresenceRepository { return &PresenceRepository{db: db} }
 
 func (r *PresenceRepository) PeerIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := r.db.Query(ctx, `SELECT CASE WHEN user_low_id = $1 THEN user_high_id ELSE user_low_id END FROM conversations WHERE user_low_id = $1 OR user_high_id = $1`, userID)
+	rows, err := r.db.Query(ctx, `SELECT user_high_id FROM conversations WHERE user_low_id = $1 UNION ALL SELECT user_low_id FROM conversations WHERE user_high_id = $1`, userID)
 	if err != nil {
 		return nil, err
 	}

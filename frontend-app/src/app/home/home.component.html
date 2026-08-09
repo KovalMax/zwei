@@ -31,31 +31,59 @@
         <header class="chat-header">
             <div class="chat-identity">
                 <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><zwei-icon name="arrow_back"></zwei-icon></button>
-                <div class="hero-avatar">{{ selectedConversation ? initials(selectedConversation) : 'L' }}</div>
-                <div><h2>{{ selectedConversation ? selectedConversation.otherDisplayName : 'Choose a conversation' }}</h2><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedUserOffline()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
+                <div class="hero-avatar">{{ headerInitials() }}</div>
+                <div><h2>{{ headerDisplayName() }}</h2><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedUserOffline()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
             </div>
             <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
         </header>
-        <section class="call-panel" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
+        <section class="call-panel" [class.call-panel-full]="isCallSurfaceVisible()" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
             <audio autoplay playsinline [srcObject]="call.state.remoteStream" (loadedmetadata)="call.playRemoteAudio($event)"></audio>
-            <div><strong [attr.role]="call.state.errorLabel ? 'alert' : null">{{ call.state.statusLabel }}</strong></div>
-            <div class="call-actions">
-                <button mat-flat-button color="primary" type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.accept()">Accept</button>
-                <button mat-stroked-button type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.decline()">Decline</button>
-                <button mat-stroked-button type="button" *ngIf="call.state.phase === 'outgoing' || call.state.phase === 'requesting'" (click)="call.cancel()">Cancel</button>
-                <button mat-stroked-button type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.toggleMute()">{{ call.state.muted ? 'Unmute' : 'Mute' }}</button>
-                <button mat-stroked-button type="button" *ngIf="call.state.audioPlaybackBlocked" (click)="call.enableRemoteAudio()">Enable sound</button>
-                <button mat-flat-button color="warn" type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.end()">End call</button>
+            <div class="call-card">
+                <div class="call-profile">
+                    <div class="call-avatar">{{ callInitials() }}</div>
+                    <div class="call-profile-copy">
+                        <strong>{{ callDisplayName() }}</strong>
+                        <span [attr.role]="call.state.errorLabel ? 'alert' : 'status'">{{ call.state.statusLabel }}</span>
+                    </div>
+                </div>
+                <div class="call-diagnostics" aria-label="Call diagnostics">
+                    <span>Connection: {{ call.connectionLabel() }}</span>
+                    <span>{{ call.iceLabel() }}</span>
+                    <span>{{ call.microphoneLabel() }}</span>
+                    <span>{{ call.speakerLabel() }}</span>
+                </div>
+                <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
+                    <label>Microphone
+                        <select aria-label="Microphone input" [value]="call.selectedInputDeviceID" (change)="onCallInputDeviceChange($event)">
+                            <option *ngFor="let device of call.inputDevices" [value]="device.deviceID">{{ device.label }}</option>
+                        </select>
+                    </label>
+                    <label>Speaker
+                        <select aria-label="Speaker output" [value]="call.selectedOutputDeviceID" [disabled]="!call.outputSelectionSupported || !call.outputDevices.length" (change)="onCallOutputDeviceChange($event)">
+                            <option value="" disabled>System default</option>
+                            <option *ngFor="let device of call.outputDevices" [value]="device.deviceID">{{ device.label }}</option>
+                        </select>
+                    </label>
+                </div>
+                <p class="call-device-note" *ngIf="(call.state.phase === 'connecting' || call.state.phase === 'active') && !call.outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
+                <div class="call-actions">
+                    <button mat-flat-button color="primary" type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.accept()">Accept</button>
+                    <button mat-stroked-button type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.decline()">Decline</button>
+                    <button mat-stroked-button type="button" *ngIf="call.state.phase === 'outgoing' || call.state.phase === 'requesting'" (click)="call.cancel()">Cancel</button>
+                    <button mat-stroked-button type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.toggleMute()">{{ call.state.muted ? 'Unmute' : 'Mute' }}</button>
+                    <button mat-stroked-button type="button" *ngIf="call.state.audioPlaybackBlocked" (click)="call.enableRemoteAudio()">Enable sound</button>
+                    <button mat-flat-button color="warn" type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.end()">End call</button>
+                </div>
             </div>
         </section>
         <div class="socket-warning" *ngIf="socketError"><zwei-icon name="cloud_off"></zwei-icon> Live connection lost. Refresh to reconnect.</div>
         <div class="socket-connecting" *ngIf="!socketError && !socketReady && selectedConversation"><zwei-icon name="sync"></zwei-icon> Connecting securely…</div>
         <div class="send-status" *ngIf="sendStatus">{{ sendStatus }}</div>
-        <div class="chat-empty" *ngIf="!selectedConversation">
+        <div class="chat-empty" [class.call-surface-hidden]="isCallSurfaceVisible()" *ngIf="!selectedConversation">
             <div class="empty-orbit"><zwei-icon name="forum"></zwei-icon></div>
             <span class="eyebrow">Private by design</span><h3>Your messages, your space</h3><p>Search for someone to start a secure one-to-one conversation.</p>
         </div>
-        <section #messageHistory class="message-history" *ngIf="selectedConversation" aria-label="Message history">
+        <section #messageHistory class="message-history" *ngIf="selectedConversation" [class.call-surface-hidden]="isCallSurfaceVisible()" aria-label="Message history">
             <button class="load-older" *ngIf="historyCursor" mat-stroked-button (click)="loadOlderMessages()" [disabled]="isHistoryLoading">
                 <zwei-icon *ngIf="isHistoryLoading" name="hourglass_top"></zwei-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
@@ -67,7 +95,7 @@
             </div>
             <ng-template #emptyMessages><div class="empty-messages"><zwei-icon name="mark_chat_unread"></zwei-icon><p>No messages yet.</p></div></ng-template>
         </section>
-        <form class="composer" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
+        <form class="composer" [class.call-surface-hidden]="isCallSurfaceVisible()" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
             <mat-form-field appearance="outline">
                 <textarea matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown.enter)="sendMessage($event)"></textarea>
             </mat-form-field>

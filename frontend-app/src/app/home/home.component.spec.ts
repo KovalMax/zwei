@@ -11,6 +11,7 @@ import {MessageHistory} from './message.model';
 import {WEBSOCKET_PROTOCOL_VERSION} from './data-provider.service';
 import {DataProviderService} from './data-provider.service';
 import {CallFacade} from './call-facade.service';
+import {Profile} from '../auth/profile.model';
 
 describe('HomeComponent', () => {
     let component: HomeComponent;
@@ -135,6 +136,59 @@ describe('HomeComponent', () => {
         expect(historyComponent.peerPresenceLabel()).toBe('Online');
         historyComponent.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.changed', payload: {user_id: 'user-peer', online: false}});
         expect(historyComponent.peerPresenceLabel()).toBe('Offline');
+    });
+
+    it('uses the incoming call conversation when no chat is selected', () => {
+        const incoming = conversation('incoming');
+        const historyComponent = new HomeComponent(
+            {} as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {} as DataProviderService,
+            {state: {phase: 'incoming', conversationID: incoming.id}, close: () => undefined} as unknown as CallFacade,
+        );
+        historyComponent.conversations.next([incoming]);
+
+        expect(historyComponent.callDisplayName()).toBe('incoming');
+        expect(historyComponent.callInitials()).toBe('IN');
+        expect(historyComponent.headerDisplayName()).toBe('incoming');
+        expect(historyComponent.headerInitials()).toBe('IN');
+    });
+
+    it('selects the caller conversation when an incoming call arrives', () => {
+        const incoming = conversation('incoming');
+        const historyComponent = new HomeComponent(
+            {history: () => of({messages: []})} as unknown as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
+        );
+        historyComponent.conversations.next([incoming]);
+
+        historyComponent.handleSocketEvent({
+            version: WEBSOCKET_PROTOCOL_VERSION,
+            type: 'call.incoming',
+            payload: {call_id: 'call-1', conversation_id: incoming.id, caller_id: incoming.otherUserId, recipient_id: 'user-me', caller_device_id: 'device-1', status: 'ringing', expires_at: '2026-01-01T00:00:30Z'},
+        });
+
+        expect(historyComponent.selectedConversation?.id).toBe(incoming.id);
+    });
+
+    it('clears the same conversation unread count for every user device', () => {
+        const historyComponent = new HomeComponent(
+            {} as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {} as DataProviderService,
+            {close: () => undefined} as CallFacade,
+        );
+        historyComponent.profile = {id: 'user-me'} as Profile;
+        historyComponent.conversations.next([{...conversation('background'), unreadCount: 3}]);
+
+        historyComponent.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: 'background', user_id: 'user-me', sequence: 4}});
+
+        expect(historyComponent.conversations.getValue()[0].unreadCount).toBe(0);
     });
 
     it('refreshes typing while composing so the peer indicator does not expire', fakeAsync(() => {

@@ -7,6 +7,7 @@ import {RegistrationService} from './registration.service';
 import {RegistrationErrorResponse} from './registration.error.model';
 import {finalize} from 'rxjs/operators';
 import {ControlsOf} from '../shared/model/controlOf';
+import {AuthService} from '../auth/auth.service';
 
 @Component({
     standalone: false,
@@ -20,6 +21,7 @@ export class RegistrationComponent {
 
     constructor(
         private service: RegistrationService,
+        private authService: AuthService,
         private router: Router,
         private snackBar: MatSnackBar,
     ) {
@@ -45,10 +47,11 @@ export class RegistrationComponent {
         this.service.registration(model)
             .pipe(finalize(() => this.isLoading = false))
             .subscribe({
-                next: () => {
-                    this.snackBar.dismiss();
-                    this.router.navigate(['login']);
-                },
+                 next: token => {
+                     this.authService.acceptToken(token);
+                     this.snackBar.dismiss();
+                     this.router.navigate(['home']);
+                 },
                 error: (error: RegistrationErrorResponse) => this.showError(this.registrationErrorMessage(error)),
             });
     }

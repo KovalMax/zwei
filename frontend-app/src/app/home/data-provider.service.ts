@@ -103,7 +103,7 @@ export interface ConversationCreatedEvent {
 export interface ConversationReadSocketEvent {
     version: typeof WEBSOCKET_PROTOCOL_VERSION;
     type: 'conversation.read';
-    payload: { conversation_id: string; sequence: number };
+    payload: { conversation_id: string; user_id: string; sequence: number };
 }
 
 export interface CallPayload {
@@ -179,6 +179,11 @@ export function isValidCallSocketEvent(event: unknown): event is CallSocketEvent
     return ['call.incoming', 'call.ringing', 'call.declined', 'call.ended'].includes(event.type) && isCallPayload(event.payload);
 }
 
+export function isValidConversationReadEvent(event: unknown): event is ConversationReadSocketEvent {
+    if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || event.type !== 'conversation.read' || !isRecord(event.payload)) return false;
+    return typeof event.payload.conversation_id === 'string' && typeof event.payload.user_id === 'string' && typeof event.payload.sequence === 'number' && Number.isSafeInteger(event.payload.sequence) && event.payload.sequence > 0;
+}
+
 interface WebSocketTicketResponse { ticket: string; }
 
 @Injectable()
@@ -241,7 +246,7 @@ export class DataProviderService {
                 });
                 this.socket.subscribe({
                     next: event => {
-                        if (event.version === WEBSOCKET_PROTOCOL_VERSION && (!event.type.startsWith('call.') || isValidCallSocketEvent(event))) this.events.next(event as MessageSocketEvent);
+                        if (event.version === WEBSOCKET_PROTOCOL_VERSION && (!event.type.startsWith('call.') || isValidCallSocketEvent(event)) && (event.type !== 'conversation.read' || isValidConversationReadEvent(event))) this.events.next(event as MessageSocketEvent);
                     },
                     error: () => this.scheduleReconnect(),
                     complete: () => this.scheduleReconnect(),

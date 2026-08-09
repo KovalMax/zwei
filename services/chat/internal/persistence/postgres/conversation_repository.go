@@ -87,8 +87,8 @@ func (r *Repository) Create(ctx context.Context, userID, otherUserID uuid.UUID) 
 	return result, nil
 }
 
-func (r *Repository) List(ctx context.Context, userID, deviceID uuid.UUID) ([]conversation.Conversation, error) {
-	rows, err := r.db.Query(ctx, `SELECT c.id, u.id, u.display_name, u.email, c.created_at, COALESCE(MAX(m.created_at), c.created_at), COUNT(m.id) FILTER (WHERE m.sender_id <> $1 AND m.sequence > COALESCE(rc.last_read_sequence, 0)) FROM conversations c JOIN conversation_members cm ON cm.conversation_id = c.id JOIN users u ON u.id = CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END LEFT JOIN device_read_cursors rc ON rc.conversation_id = c.id AND rc.device_id = $2 LEFT JOIN messages m ON m.conversation_id = c.id WHERE cm.user_id = $1 GROUP BY c.id, u.id, u.display_name, u.email, rc.last_read_sequence ORDER BY 6 DESC, c.id DESC`, userID, deviceID)
+func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]conversation.Conversation, error) {
+	rows, err := r.db.Query(ctx, `SELECT c.id, peer.id, peer.display_name, peer.email, c.created_at, COALESCE(last_message.created_at, c.created_at), unread.count FROM conversation_members cm JOIN conversations c ON c.id = cm.conversation_id JOIN users peer ON peer.id = CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END LEFT JOIN user_read_cursors rc ON rc.user_id = $1 AND rc.conversation_id = c.id LEFT JOIN LATERAL (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) last_message ON true LEFT JOIN LATERAL (SELECT COUNT(*) AS count FROM messages m WHERE m.conversation_id = c.id AND m.sender_id <> $1 AND m.sequence > COALESCE(rc.last_read_sequence, 0)) unread ON true WHERE cm.user_id = $1 ORDER BY COALESCE(last_message.created_at, c.created_at) DESC, c.id DESC`, userID)
 	if err != nil {
 		return nil, err
 	}

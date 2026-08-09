@@ -5,7 +5,29 @@ import {createRandomID} from '../login/login';
 
 export type CallPhase = 'idle' | 'requesting' | 'outgoing' | 'incoming' | 'connecting' | 'active' | 'ended' | 'error';
 export type CallRole = 'caller' | 'recipient';
-export interface CallState { readonly phase: CallPhase; readonly role?: CallRole; readonly callID?: string; readonly conversationID?: string; readonly peerID?: string; readonly muted: boolean; readonly localStream?: MediaStream; readonly remoteStream?: MediaStream; readonly audioPlaybackBlocked?: boolean; readonly statusLabel: string; readonly errorLabel?: string; }
+export interface CallDevice { readonly deviceID: string; readonly label: string; }
+export interface CallState {
+    readonly phase: CallPhase;
+    readonly role?: CallRole;
+    readonly callID?: string;
+    readonly conversationID?: string;
+    readonly peerID?: string;
+    readonly muted: boolean;
+    readonly localStream?: MediaStream;
+    readonly remoteStream?: MediaStream;
+    readonly audioPlaybackBlocked?: boolean;
+    readonly inputDevices?: readonly CallDevice[];
+    readonly outputDevices?: readonly CallDevice[];
+    readonly selectedInputDeviceID?: string;
+    readonly selectedOutputDeviceID?: string;
+    readonly outputSelectionSupported?: boolean;
+    readonly connectionState?: RTCPeerConnectionState;
+    readonly iceConnectionState?: RTCIceConnectionState;
+    readonly localAudioState?: 'active' | 'muted' | 'ended' | 'unavailable';
+    readonly remoteAudioState?: 'waiting' | 'receiving' | 'playing' | 'blocked' | 'unavailable';
+    readonly statusLabel: string;
+    readonly errorLabel?: string;
+}
 const idleState: CallState = Object.freeze({phase: 'idle', muted: false, statusLabel: 'No active call.'});
 const callNoticeDuration = 5_000;
 
@@ -17,21 +39,62 @@ export class CallFacade implements OnDestroy {
     private pendingSignals: Record<string, unknown>[] = [];
     private remoteAudio?: HTMLAudioElement;
     private dismissTimer?: number;
+    private readonly deviceChangeListener = (): void => { void this.refreshDevices(); };
     public readonly state$ = this.stateSubject.asObservable();
 
     public constructor(private readonly dataProvider: DataProviderService) {
         this.subscription = this.dataProvider.getObservable().subscribe(event => { if (event.type.startsWith('call.')) this.handleEvent(event as CallSocketEvent); });
+        navigator.mediaDevices?.addEventListener?.('devicechange', this.deviceChangeListener);
     }
     public get state(): CallState { return this.stateSubject.value; }
+    public get inputDevices(): readonly CallDevice[] { return this.state.inputDevices || []; }
+    public get outputDevices(): readonly CallDevice[] { return this.state.outputDevices || []; }
+    public get selectedInputDeviceID(): string { return this.state.selectedInputDeviceID || ''; }
+    public get selectedOutputDeviceID(): string { return this.state.selectedOutputDeviceID || ''; }
+    public get outputSelectionSupported(): boolean { return this.state.outputSelectionSupported === true; }
+
+    public connectionLabel(): string {
+        switch (this.state.connectionState) {
+            case 'connected': return 'Connected';
+            case 'connecting': return 'Connecting';
+            case 'disconnected': return 'Connection interrupted';
+            case 'failed': return 'Connection failed';
+            case 'closed': return 'Disconnected';
+            default: return this.state.phase === 'active' ? 'Connected' : 'Waiting for connection';
+        }
+    }
+    public microphoneLabel(): string {
+        if (this.state.muted || this.state.localAudioState === 'muted') return 'Muted';
+        if (this.state.localAudioState === 'active') return 'Microphone active';
+        if (this.state.localAudioState === 'ended') return 'Microphone ended';
+        return 'Microphone waiting';
+    }
+    public iceLabel(): string {
+        switch (this.state.iceConnectionState) {
+            case 'connected':
+            case 'completed': return 'Network connected';
+            case 'checking': return 'Network checking';
+            case 'failed': return 'Network failed';
+            case 'disconnected': return 'Network interrupted';
+            case 'closed': return 'Network closed';
+            default: return 'Network waiting';
+        }
+    }
+    public speakerLabel(): string {
+        if (this.state.remoteAudioState === 'playing') return 'Speaker active';
+        if (this.state.remoteAudioState === 'blocked') return 'Sound blocked';
+        if (this.state.remoteAudioState === 'unavailable') return 'Speaker unavailable';
+        return 'Speaker waiting';
+    }
 
     public async start(conversationID: string, peerID: string): Promise<void> {
         if (!this.canStart()) return;
         this.clearDismissTimer();
-        this.setState({phase: 'requesting', role: 'caller', conversationID, peerID, muted: false, statusLabel: 'Requesting microphone access...'});
+        this.setState({...this.state, phase: 'requesting', role: 'caller', conversationID, peerID, muted: false, statusLabel: 'Requesting microphone access...'});
         const stream = await this.requestMicrophone();
         if (!stream) return;
         if (!this.dataProvider.send({type: 'call.start', request_id: createRandomID(), payload: {conversation_id: conversationID}})) { this.stopStream(stream); this.setError('The secure connection is unavailable.'); return; }
-        this.setState({phase: 'outgoing', role: 'caller', conversationID, peerID, muted: false, localStream: stream, statusLabel: 'Calling...'});
+        this.setState({...this.state, phase: 'outgoing', role: 'caller', conversationID, peerID, muted: false, localStream: stream, localAudioState: 'active', statusLabel: 'Calling...'});
     }
     public accept(): void {
         const state = this.state;
@@ -47,7 +110,7 @@ export class CallFacade implements OnDestroy {
         if (!state.localStream) return;
         const muted = !state.muted;
         state.localStream.getAudioTracks().forEach(track => track.enabled = !muted);
-        this.setState({...state, muted, statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
+        this.setState({...state, muted, localAudioState: muted ? 'muted' : 'active', statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
     }
     public playRemoteAudio(event: Event): void {
         const audio = event.currentTarget as HTMLAudioElement | null;
@@ -58,6 +121,43 @@ export class CallFacade implements OnDestroy {
     public enableRemoteAudio(): void {
         if (this.remoteAudio) void this.tryPlayRemoteAudio(this.remoteAudio);
     }
+
+    public async selectInputDevice(deviceID: string): Promise<void> {
+        if (!deviceID || !this.state.localStream || deviceID === this.selectedInputDeviceID) return;
+        if (!window.isSecureContext || typeof navigator.mediaDevices?.getUserMedia !== 'function') return;
+        let replacement: MediaStream;
+        try {
+            replacement = await navigator.mediaDevices.getUserMedia({audio: {deviceId: {exact: deviceID}}});
+        } catch (error: unknown) {
+            const label = this.microphoneErrorLabel(error);
+            this.setState({...this.state, statusLabel: label, errorLabel: label});
+            return;
+        }
+        const track = replacement.getAudioTracks()[0];
+        if (!track) {
+            this.stopStream(replacement);
+            return;
+        }
+        try {
+            const sender = this.connection?.getSenders().find(item => item.track?.kind === 'audio');
+            if (!sender) throw new Error('audio sender unavailable');
+            await sender.replaceTrack(track);
+            this.stopStream(this.state.localStream);
+            this.setState({...this.state, localStream: replacement, selectedInputDeviceID: deviceID, localAudioState: 'active', errorLabel: undefined, statusLabel: 'Microphone changed.'});
+            await this.refreshDevices();
+        } catch {
+            this.stopStream(replacement);
+            this.setState({...this.state, statusLabel: 'Could not change the microphone.', errorLabel: 'Could not change the microphone.'});
+        }
+    }
+
+    public async selectOutputDevice(deviceID: string): Promise<void> {
+        if (!deviceID) return;
+        this.setState({...this.state, selectedOutputDeviceID: deviceID});
+        if (!this.remoteAudio) return;
+        if (!(await this.applyOutputDevice(this.remoteAudio, deviceID))) return;
+        this.setState({...this.state, selectedOutputDeviceID: deviceID, outputSelectionSupported: true, errorLabel: undefined, statusLabel: 'Speaker changed.'});
+    }
     public close(): void {
         this.clearDismissTimer();
         const state = this.state;
@@ -66,6 +166,7 @@ export class CallFacade implements OnDestroy {
             this.dataProvider.send({type, request_id: createRandomID(), payload: {call_id: state.callID}});
         }
         this.cleanup(); this.subscription.unsubscribe(); this.setState(idleState);
+        navigator.mediaDevices?.removeEventListener?.('devicechange', this.deviceChangeListener);
     }
     public ngOnDestroy(): void { this.close(); }
 
@@ -85,7 +186,7 @@ export class CallFacade implements OnDestroy {
     private handleIncoming(payload: CallPayload): void {
         if (!this.canStart()) { this.dataProvider.send({type: 'call.decline', request_id: createRandomID(), payload: {call_id: payload.call_id}}); return; }
         this.clearDismissTimer();
-        this.setState({phase: 'incoming', role: 'recipient', callID: payload.call_id, conversationID: payload.conversation_id, peerID: payload.caller_id, muted: false, statusLabel: 'Incoming audio call.'});
+        this.setState({...this.state, phase: 'incoming', role: 'recipient', callID: payload.call_id, conversationID: payload.conversation_id, peerID: payload.caller_id, muted: false, statusLabel: 'Incoming audio call.'});
     }
     private async handleAccepted(event: CallAcceptedSocketEvent): Promise<void> {
         const state = this.state;
@@ -125,24 +226,38 @@ export class CallFacade implements OnDestroy {
             this.connection.onicecandidate = event => { if (event.candidate) this.sendSignal({type: 'candidate', candidate: event.candidate.toJSON()}); };
             this.connection.ontrack = event => {
                 const remoteStream = event.streams[0] || new MediaStream([event.track]);
-                this.setState({...this.state, remoteStream, audioPlaybackBlocked: false, phase: 'active', statusLabel: 'Audio call connected.'});
+                this.setState({...this.state, remoteStream, remoteAudioState: 'receiving', audioPlaybackBlocked: false, phase: 'active', statusLabel: 'Audio call connected.'});
             };
-            this.connection.onconnectionstatechange = () => { if (this.connection?.connectionState === 'failed') this.setError('Could not connect the audio call.'); };
+            this.connection.onconnectionstatechange = () => {
+                const connectionState = this.connection?.connectionState;
+                const iceConnectionState = this.connection?.iceConnectionState;
+                this.setState({...this.state, connectionState, iceConnectionState});
+                if (connectionState === 'failed') this.setError('Could not connect the audio call.');
+            };
+            this.connection.oniceconnectionstatechange = () => this.setState({...this.state, iceConnectionState: this.connection?.iceConnectionState});
             return true;
         } catch { this.setError('Audio calls are not supported by this browser.'); return false; }
     }
     private sendSignal(signal: Record<string, unknown>): void { const callID = this.state.callID; if (callID && !this.dataProvider.send({type: 'call.signal', request_id: createRandomID(), payload: {call_id: callID, signal}})) this.setError('The secure connection is unavailable.'); }
     private sendControl(type: 'call.decline' | 'call.cancel' | 'call.end', label: string): void { const callID = this.state.callID; if (callID) this.sendCallControl(type, callID); this.terminal(label); }
     private sendCallControl(type: 'call.decline' | 'call.cancel' | 'call.end', callID: string): void { this.dataProvider.send({type, request_id: createRandomID(), payload: {call_id: callID}}); }
-    private async requestMicrophone(): Promise<MediaStream | undefined> {
-        if (!window.isSecureContext) { this.setError('Microphone access requires a secure HTTPS connection.'); return undefined; }
-        if (typeof navigator.mediaDevices?.getUserMedia !== 'function') { this.setError('This browser does not support microphone access.'); return undefined; }
+    private async requestMicrophone(deviceID?: string, endCallOnError = true): Promise<MediaStream | undefined> {
+        if (!window.isSecureContext) return this.microphoneFailure('Microphone access requires a secure HTTPS connection.', endCallOnError);
+        if (typeof navigator.mediaDevices?.getUserMedia !== 'function') return this.microphoneFailure('This browser does not support microphone access.', endCallOnError);
         try {
-            return await navigator.mediaDevices.getUserMedia({audio: true});
+            const stream = await navigator.mediaDevices.getUserMedia({audio: deviceID ? {deviceId: {exact: deviceID}} : true});
+            const track = stream.getAudioTracks()[0];
+            this.setState({...this.state, selectedInputDeviceID: track?.getSettings().deviceId || deviceID, localAudioState: track ? 'active' : 'unavailable'});
+            void this.refreshDevices();
+            return stream;
         } catch (error: unknown) {
-            this.setError(this.microphoneErrorLabel(error));
-            return undefined;
+            return this.microphoneFailure(this.microphoneErrorLabel(error), endCallOnError);
         }
+    }
+    private microphoneFailure(label: string, endCall: boolean): undefined {
+        if (endCall) this.setError(label);
+        else this.setState({...this.state, statusLabel: label, errorLabel: label});
+        return undefined;
     }
     private microphoneErrorLabel(error: unknown): string {
         const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
@@ -156,11 +271,41 @@ export class CallFacade implements OnDestroy {
     private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
     private async tryPlayRemoteAudio(audio: HTMLAudioElement): Promise<void> {
         try {
+            if (this.outputSelectionSupported && this.selectedOutputDeviceID) await this.applyOutputDevice(audio, this.selectedOutputDeviceID);
             await audio.play();
-            if (this.state.audioPlaybackBlocked) this.setState({...this.state, audioPlaybackBlocked: false, statusLabel: 'Audio call connected.'});
+            this.setState({...this.state, audioPlaybackBlocked: false, remoteAudioState: 'playing', statusLabel: 'Audio call connected.'});
         } catch (error: unknown) {
             const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
-            if (name === 'NotAllowedError') this.setState({...this.state, audioPlaybackBlocked: true, statusLabel: 'Audio connected. Enable sound to hear the call.'});
+            if (name === 'NotAllowedError') this.setState({...this.state, audioPlaybackBlocked: true, remoteAudioState: 'blocked', statusLabel: 'Audio connected. Enable sound to hear the call.'});
+            else this.setState({...this.state, remoteAudioState: 'unavailable', statusLabel: 'Audio connected, but speaker playback failed.'});
+        }
+    }
+    private async applyOutputDevice(audio: HTMLAudioElement, deviceID: string): Promise<boolean> {
+        const selectableAudio = audio as HTMLAudioElement & {setSinkId?: (sinkID: string) => Promise<void>};
+        if (typeof selectableAudio.setSinkId !== 'function') {
+            this.setState({...this.state, outputSelectionSupported: false, statusLabel: 'This browser does not support speaker selection.'});
+            return false;
+        }
+        try {
+            await selectableAudio.setSinkId(deviceID);
+            return true;
+        } catch {
+            this.setState({...this.state, outputSelectionSupported: true, statusLabel: 'Could not change the speaker.'});
+            return false;
+        }
+    }
+    private async refreshDevices(): Promise<void> {
+        if (typeof navigator.mediaDevices?.enumerateDevices !== 'function') return;
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const inputDevices = devices.filter(device => device.kind === 'audioinput').map(device => ({deviceID: device.deviceId, label: device.label || 'Microphone'}));
+            const outputDevices = devices.filter(device => device.kind === 'audiooutput').map(device => ({deviceID: device.deviceId, label: device.label || 'Speaker'}));
+            const outputSelectionSupported = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+            const selectedInputDeviceID = inputDevices.some(device => device.deviceID === this.selectedInputDeviceID) ? this.selectedInputDeviceID : inputDevices[0]?.deviceID;
+            const selectedOutputDeviceID = outputSelectionSupported && outputDevices.some(device => device.deviceID === this.selectedOutputDeviceID) ? this.selectedOutputDeviceID : undefined;
+            this.setState({...this.state, inputDevices, outputDevices, selectedInputDeviceID, selectedOutputDeviceID, outputSelectionSupported});
+        } catch {
+            // Device enumeration is best-effort; active media tracks remain usable.
         }
     }
     private cleanup(): void { this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; this.remoteAudio?.pause(); if (this.remoteAudio) this.remoteAudio.srcObject = null; this.remoteAudio = undefined; }

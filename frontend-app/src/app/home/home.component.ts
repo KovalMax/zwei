@@ -42,8 +42,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     private historyLoadID = 0;
     private onlineUserIDs = new Set<string>();
     private typingConversationID?: string;
+    private pendingIncomingCallConversationID?: string;
     private isTyping = false;
     private readonly peerReadSequences = new Map<string, number>();
+    private readonly ownReadSequences = new Map<string, number>();
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
 
     constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade) {
@@ -58,6 +60,7 @@ export class HomeComponent implements OnInit, OnDestroy {
             next: conversations => {
                 this.conversations.next(conversations);
                 this.restoreSelectedConversation(conversations);
+                this.selectPendingIncomingCallConversation();
             },
             error: () => { this.isLoading = false; this.changeDetector.markForCheck(); },
             complete: () => this.isLoading = false,
@@ -84,6 +87,43 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     public startCall(): void {
         if (this.selectedConversation) void this.call.start(this.selectedConversation.id, this.selectedConversation.otherUserId);
+    }
+
+    public onCallInputDeviceChange(event: Event): void {
+        const deviceID = (event.target as HTMLSelectElement | null)?.value;
+        if (deviceID) void this.call.selectInputDevice(deviceID);
+    }
+
+    public onCallOutputDeviceChange(event: Event): void {
+        const deviceID = (event.target as HTMLSelectElement | null)?.value;
+        if (deviceID) void this.call.selectOutputDevice(deviceID);
+    }
+
+    public isCallSurfaceVisible(): boolean {
+        return this.call.state.phase === 'connecting' || this.call.state.phase === 'active';
+    }
+
+    public callConversation(): Conversation | undefined {
+        const conversationID = this.call.state.conversationID;
+        if (conversationID) return this.conversations.getValue().find(item => item.id === conversationID);
+        return this.selectedConversation;
+    }
+
+    public callDisplayName(): string {
+        return this.callConversation()?.otherDisplayName || (this.call.state.phase === 'incoming' ? 'Incoming caller' : 'Audio call');
+    }
+
+    public callInitials(): string {
+        const conversation = this.callConversation();
+        return conversation ? this.initials(conversation) : '??';
+    }
+
+    public headerDisplayName(): string {
+        return this.callConversation()?.otherDisplayName || 'Choose a conversation';
+    }
+
+    public headerInitials(): string {
+        return this.callConversation() ? this.callInitials() : 'L';
     }
 
     public initials(conversation: Conversation): string {
@@ -221,13 +261,24 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public handleSocketEvent(event: MessageSocketEvent): void {
+        if (event.type === 'call.incoming') {
+            this.selectIncomingCallConversation(event.payload.conversation_id);
+            this.changeDetector.markForCheck();
+            return;
+        }
         if (event.type === 'conversation.created') {
             this.refreshConversations();
             return;
         }
         if (event.type === 'conversation.read') {
-            const sequence = this.peerReadSequences.get(event.payload.conversation_id) || 0;
-            if (event.payload.sequence > sequence) this.peerReadSequences.set(event.payload.conversation_id, event.payload.sequence);
+            if (event.payload.user_id === this.profile?.id) {
+                const sequence = this.ownReadSequences.get(event.payload.conversation_id) || 0;
+                if (event.payload.sequence > sequence) this.ownReadSequences.set(event.payload.conversation_id, event.payload.sequence);
+                this.clearConversationUnreadCount(event.payload.conversation_id);
+            } else if (this.conversations.getValue().some(item => item.id === event.payload.conversation_id && item.otherUserId === event.payload.user_id)) {
+                const sequence = this.peerReadSequences.get(event.payload.conversation_id) || 0;
+                if (event.payload.sequence > sequence) this.peerReadSequences.set(event.payload.conversation_id, event.payload.sequence);
+            }
             this.changeDetector.markForCheck();
             return;
         }
@@ -272,7 +323,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (event.type === 'message.accepted' && event.request_id) this.resolvePendingMessage(event.request_id);
         if (!message) return;
         if (!this.selectedConversation || message.conversationId !== this.selectedConversation.id) {
-            this.updateBackgroundConversationActivity(message.conversationId, message.createdAt, event.type === 'message.created');
+            this.updateBackgroundConversationActivity(message.conversationId, message.createdAt, message.sequence, event.type === 'message.created');
             this.changeDetector.markForCheck();
             return;
         }
@@ -292,9 +343,24 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.conversationService.list().subscribe({
             next: conversations => {
                 this.conversations.next(conversations);
+                this.selectPendingIncomingCallConversation();
                 this.changeDetector.markForCheck();
             },
         });
+    }
+
+    private selectIncomingCallConversation(conversationID: string): void {
+        this.pendingIncomingCallConversationID = conversationID;
+        this.selectPendingIncomingCallConversation();
+    }
+
+    private selectPendingIncomingCallConversation(): void {
+        const conversationID = this.pendingIncomingCallConversationID;
+        if (!conversationID) return;
+        const conversation = this.conversations.getValue().find(item => item.id === conversationID);
+        if (!conversation) return;
+        this.pendingIncomingCallConversationID = undefined;
+        if (this.selectedConversation?.id !== conversation.id) this.selectConversation(conversation);
     }
 
     private stopTyping(): void {
@@ -347,14 +413,24 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.socketReady || !this.selectedConversation || this.messages.length === 0) return false;
         const sequence = Math.max(...this.messages.map(message => message.sequence));
         if (sequence < 1) return false;
-        return this.dataProvider.send({type: 'conversation.read', payload: {conversation_id: this.selectedConversation.id, sequence}});
+        const sent = this.dataProvider.send({type: 'conversation.read', payload: {conversation_id: this.selectedConversation.id, sequence}});
+        if (sent) {
+            const current = this.ownReadSequences.get(this.selectedConversation.id) || 0;
+            if (sequence > current) this.ownReadSequences.set(this.selectedConversation.id, sequence);
+        }
+        return sent;
     }
 
     private clearSelectedConversationUnreadCount(): void {
-        if (!this.selectedConversation || this.selectedConversation.unreadCount === 0) return;
-        const updated = {...this.selectedConversation, unreadCount: 0};
-        this.selectedConversation = updated;
-        this.conversations.next(this.conversations.getValue().map(item => item.id === updated.id ? updated : item));
+        if (this.selectedConversation) this.clearConversationUnreadCount(this.selectedConversation.id);
+    }
+
+    private clearConversationUnreadCount(conversationID: string): void {
+        const conversation = this.conversations.getValue().find(item => item.id === conversationID);
+        if (!conversation || conversation.unreadCount === 0) return;
+        const updated = {...conversation, unreadCount: 0};
+        if (this.selectedConversation?.id === conversationID) this.selectedConversation = updated;
+        this.conversations.next(this.conversations.getValue().map(item => item.id === conversationID ? updated : item));
     }
 
     private resolvePendingMessage(requestID: string): void {
@@ -401,11 +477,13 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.conversations.next([updated, ...conversations.filter(item => item.id !== updated.id)]);
     }
 
-    private updateBackgroundConversationActivity(conversationID: string, lastMessageAt: string, incrementUnread: boolean): void {
+    private updateBackgroundConversationActivity(conversationID: string, lastMessageAt: string, sequence: number, incrementUnread: boolean): void {
         const conversations = this.conversations.getValue();
         const conversation = conversations.find(item => item.id === conversationID);
         if (!conversation) return;
-        const updated = {...conversation, lastMessageAt, unreadCount: conversation.unreadCount + (incrementUnread ? 1 : 0)};
+        const ownReadSequence = this.ownReadSequences.get(conversationID) || 0;
+        const shouldIncrement = incrementUnread && sequence > ownReadSequence;
+        const updated = {...conversation, lastMessageAt, unreadCount: conversation.unreadCount + (shouldIncrement ? 1 : 0)};
         this.conversations.next([updated, ...conversations.filter(item => item.id !== conversationID)]);
     }
 }

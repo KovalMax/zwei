@@ -131,19 +131,24 @@ func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	conversationID := uuid.New()
 	readerID := uuid.New()
 	peerID := uuid.New()
-	deviceID := uuid.New()
 	cursors := &fakeReadCursors{sequence: 5}
 	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, nil, nil, cursors, nil, nil)
 	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
+	reader := &recordingClient{identity: sharedauth.Identity{UserID: readerID, DeviceID: uuid.NewString()}}
 	hub.Add(context.Background(), peer)
+	hub.Add(context.Background(), reader)
 	peer.events = nil
+	reader.events = nil
 
-	err := hub.Handle(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: readerID, DeviceID: deviceID.String()}}, []byte(`{"version":1,"type":"conversation.read","payload":{"conversation_id":"`+conversationID.String()+`","sequence":9}}`))
+	err := hub.Handle(context.Background(), reader, []byte(`{"version":1,"type":"conversation.read","payload":{"conversation_id":"`+conversationID.String()+`","sequence":9}}`))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
-	if cursors.deviceID != deviceID || cursors.userID != readerID || cursors.conversationID != conversationID || cursors.requestedSequence != 9 {
+	if cursors.userID != readerID || cursors.conversationID != conversationID || cursors.requestedSequence != 9 {
 		t.Fatalf("cursor advance = %+v", cursors)
+	}
+	if len(reader.events) != 1 {
+		t.Fatalf("reader events = %d, want 1", len(reader.events))
 	}
 	if len(peer.events) != 1 {
 		t.Fatalf("peer events = %d, want 1", len(peer.events))
@@ -151,6 +156,14 @@ func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	event, ok := peer.events[0].(serverEvent)
 	if !ok || event.Version != ProtocolVersion || event.Type != "conversation.read" {
 		t.Fatalf("read event = %#v", peer.events[0])
+	}
+	payload := event.Payload.(struct {
+		ConversationID uuid.UUID `json:"conversation_id"`
+		UserID         uuid.UUID `json:"user_id"`
+		Sequence       int64     `json:"sequence"`
+	})
+	if payload.UserID != readerID || payload.Sequence != 5 {
+		t.Fatalf("read payload = %+v", payload)
 	}
 }
 
@@ -358,15 +371,13 @@ func (c *recordingPresenceCoordinator) PublishTyping(_ context.Context, conversa
 }
 
 type fakeReadCursors struct {
-	deviceID          uuid.UUID
 	userID            uuid.UUID
 	conversationID    uuid.UUID
 	requestedSequence int64
 	sequence          int64
 }
 
-func (f *fakeReadCursors) Advance(_ context.Context, deviceID, userID, conversationID uuid.UUID, sequence int64) (int64, error) {
-	f.deviceID = deviceID
+func (f *fakeReadCursors) Advance(_ context.Context, userID, conversationID uuid.UUID, sequence int64) (int64, error) {
 	f.userID = userID
 	f.conversationID = conversationID
 	f.requestedSequence = sequence
