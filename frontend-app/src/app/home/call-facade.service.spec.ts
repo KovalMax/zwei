@@ -1,5 +1,5 @@
 import {Subject} from 'rxjs';
-import {CallFacade} from './call-facade.service';
+import {CallFacade, collectCallAudioDiagnostics} from './call-facade.service';
 import {DataProviderService, MessageSocketEvent, WEBSOCKET_PROTOCOL_VERSION} from './data-provider.service';
 
 describe('CallFacade', () => {
@@ -176,6 +176,25 @@ describe('CallFacade', () => {
         expect(facade.state.statusLabel).toBe('Audio call connected.');
     });
 
+    it('attaches the received stream and restores audible playback before starting audio', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const play = jasmine.createSpy('play').and.returnValue(Promise.resolve());
+        const audio = {autoplay: false, muted: true, volume: 0, play, pause: jasmine.createSpy('pause'), srcObject: undefined} as unknown as HTMLAudioElement;
+
+        facade.playRemoteAudio({currentTarget: audio} as unknown as Event);
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+        await flush();
+
+        expect(audio.srcObject).toBe(stream as unknown as MediaStream);
+        expect(audio.autoplay).toBeTrue();
+        expect(audio.muted).toBeFalse();
+        expect(audio.volume).toBe(1);
+        expect(play).toHaveBeenCalled();
+    });
+
     it('selects a supported speaker after the remote audio element is ready', async () => {
         events.next(incoming());
         facade.accept();
@@ -191,6 +210,17 @@ describe('CallFacade', () => {
 
         expect(setSinkId).toHaveBeenCalledWith('speaker-1');
         expect(facade.selectedOutputDeviceID).toBe('speaker-1');
+    });
+
+    it('extracts capture, inbound, packet-loss, and output diagnostics from WebRTC stats', () => {
+        const report = new Map<string, RTCStats>([
+            ['source', {type: 'media-source', kind: 'audio', audioLevel: 0.42} as unknown as RTCStats],
+            ['outbound', {type: 'outbound-rtp', kind: 'audio', packetsSent: 17} as unknown as RTCStats],
+            ['inbound', {type: 'inbound-rtp', kind: 'audio', audioLevel: 0.68, packetsReceived: 21, packetsLost: 2, jitter: 0.012} as unknown as RTCStats],
+        ]);
+        const audio = {paused: false, muted: false, volume: 1} as HTMLAudioElement;
+
+        expect(collectCallAudioDiagnostics(report as unknown as RTCStatsReport, audio)).toEqual({available: true, localLevel: 0.42, remoteLevel: 0.68, packetsSent: 17, packetsReceived: 21, packetsLost: 2, jitterMs: 12, outputPaused: false, outputMuted: false, outputVolume: 1});
     });
 
     it('ignores irrelevant and malformed call events while retaining its call state', async () => {

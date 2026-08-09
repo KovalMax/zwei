@@ -166,7 +166,7 @@ jobs:
             docker compose --profile migration pull
             docker compose up -d --wait --wait-timeout 120 database redis
             docker compose run --rm migrate
-            docker compose up -d --force-recreate --wait --wait-timeout 120 traefik frontend auth chat realtime"
+            docker compose up -d --force-recreate --wait --wait-timeout 120 coturn traefik frontend auth chat realtime"
 
       - name: Verify public HTTPS endpoints
         run: |

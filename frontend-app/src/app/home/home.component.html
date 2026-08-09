@@ -37,7 +37,7 @@
             <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
         </header>
         <section class="call-panel" [class.call-panel-full]="isCallSurfaceVisible()" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
-            <audio autoplay playsinline [srcObject]="call.state.remoteStream" (loadedmetadata)="call.playRemoteAudio($event)"></audio>
+            <audio autoplay playsinline [srcObject]="call.state.remoteStream" (loadedmetadata)="call.playRemoteAudio($event)" (canplay)="call.playRemoteAudio($event)"></audio>
             <div class="call-card">
                 <div class="call-profile">
                     <div class="call-avatar">{{ callInitials() }}</div>
@@ -51,6 +51,15 @@
                     <span>{{ call.iceLabel() }}</span>
                     <span>{{ call.microphoneLabel() }}</span>
                     <span>{{ call.speakerLabel() }}</span>
+                </div>
+                <div class="call-audio-diagnostics" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" aria-label="Audio diagnostics">
+                    <div class="call-meter"><span>Microphone level</span><meter min="0" max="1" [value]="call.state.audioDiagnostics?.localLevel || 0" [attr.aria-valuetext]="call.microphoneLevelLabel()" aria-label="Microphone input level"></meter><strong>{{ call.microphoneLevelLabel() }}</strong></div>
+                    <div class="call-meter"><span>Incoming audio</span><meter min="0" max="1" [value]="call.state.audioDiagnostics?.remoteLevel || 0" [attr.aria-valuetext]="call.remoteAudioLevelLabel()" aria-label="Incoming audio level"></meter><strong>{{ call.remoteAudioLevelLabel() }}</strong></div>
+                    <div class="call-stat">Packets sent: <strong>{{ call.packetsSentLabel() }}</strong></div>
+                    <div class="call-stat">Packets received: <strong>{{ call.packetsReceivedLabel() }}</strong></div>
+                    <div class="call-stat">Packets lost: <strong>{{ call.packetsLostLabel() }}</strong></div>
+                    <div class="call-stat">Jitter: <strong>{{ call.jitterLabel() }}</strong></div>
+                    <div class="call-stat">Output path: <strong>{{ call.outputPathLabel() }}</strong></div>
                 </div>
                 <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
                     <label>Microphone

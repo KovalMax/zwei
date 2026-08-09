@@ -138,6 +138,27 @@ describe('HomeComponent', () => {
         expect(historyComponent.peerPresenceLabel()).toBe('Offline');
     });
 
+    it('refreshes peer presence when a new conversation is delivered', () => {
+        const send = jasmine.createSpy('send').and.returnValue(true);
+        const list = jasmine.createSpy('list').and.returnValue(of([conversation('new')]));
+        const historyComponent = new HomeComponent(
+            {list} as unknown as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {send} as unknown as DataProviderService,
+            {close: () => undefined} as CallFacade,
+        );
+        historyComponent.selectedConversation = conversation('new');
+        historyComponent.socketReady = true;
+        historyComponent.presenceReady = true;
+
+        historyComponent.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.created', payload: {conversation_id: 'new'}});
+        historyComponent.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: ['user-new']}});
+
+        expect(send).toHaveBeenCalledWith({type: 'presence.refresh'});
+        expect(historyComponent.peerPresenceLabel()).toBe('Online');
+    });
+
     it('uses the incoming call conversation when no chat is selected', () => {
         const incoming = conversation('incoming');
         const historyComponent = new HomeComponent(
