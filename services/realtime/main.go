@@ -55,7 +55,7 @@ func main() {
 		panic(err)
 	}
 	presence := postgresinfra.NewPresenceRepository(db)
-	hub := application.NewHub(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db), coordination, turnIssuer)
+	hub := application.NewHubWithLogger(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db), coordination, turnIssuer, runtime.NewLogger())
 	go coordination.StartHeartbeat(ctx)
 	go func() {
 		_ = coordination.Consume(ctx, func(change redisinfra.Change) { hub.NotifyPresenceChanged(ctx, change.UserID, change.Online) })

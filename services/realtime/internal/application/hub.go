@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -18,6 +19,11 @@ type Client interface {
 	Identity() sharedauth.Identity
 	SendJSON(any)
 	Close()
+}
+
+type CallLogger interface {
+	InfoContext(context.Context, string, ...any)
+	WarnContext(context.Context, string, ...any)
 }
 
 const ProtocolVersion = 1
@@ -71,6 +77,7 @@ type Hub struct {
 	cursors   ReadCursorRepository
 	calls     CallCoordinator
 	turn      TURNCredentialIssuer
+	logger    CallLogger
 	mu        sync.RWMutex
 	clients   map[string]Client
 	typingMu  sync.Mutex
@@ -89,7 +96,14 @@ func (e *RequestError) Error() string { return e.Err.Error() }
 func (e *RequestError) Unwrap() error { return e.Err }
 
 func NewHub(sender *messaging.Sender, presence PresenceRepository, coord PresenceCoordinator, delivery DeliveryRepository, cursors ReadCursorRepository, calls CallCoordinator, turn TURNCredentialIssuer) *Hub {
-	return &Hub{sender: sender, presence: presence, coord: coord, delivery: delivery, cursors: cursors, calls: calls, turn: turn, clients: make(map[string]Client), typingAt: make(map[string]time.Time), messageAt: make(map[string]time.Time)}
+	return NewHubWithLogger(sender, presence, coord, delivery, cursors, calls, turn, slog.Default())
+}
+
+func NewHubWithLogger(sender *messaging.Sender, presence PresenceRepository, coord PresenceCoordinator, delivery DeliveryRepository, cursors ReadCursorRepository, calls CallCoordinator, turn TURNCredentialIssuer, logger CallLogger) *Hub {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Hub{sender: sender, presence: presence, coord: coord, delivery: delivery, cursors: cursors, calls: calls, turn: turn, logger: logger, clients: make(map[string]Client), typingAt: make(map[string]time.Time), messageAt: make(map[string]time.Time)}
 }
 
 func (h *Hub) Add(ctx context.Context, client Client) {
@@ -150,8 +164,11 @@ func (h *Hub) Remove(ctx context.Context, client Client) {
 		calls, err := h.calls.EndByDevice(ctx, client.Identity().UserID, client.Identity().DeviceID)
 		if err == nil {
 			for _, call := range calls {
+				h.logCallLifecycle(ctx, "call ended after websocket disconnect", call, "user_id", client.Identity().UserID, "device_id", client.Identity().DeviceID)
 				h.publishCall(ctx, CallChange{Type: "ended", Call: call})
 			}
+		} else {
+			h.logCallWarning(ctx, "could not end calls after websocket disconnect", err, "user_id", client.Identity().UserID, "device_id", client.Identity().DeviceID)
 		}
 	}
 	if !isOnline {
@@ -417,15 +434,59 @@ func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventTyp
 		return &RequestError{RequestID: requestID, Err: errors.New("unsupported event")}
 	}
 	if err != nil {
+		if eventType != "call.signal" {
+			h.logCallWarning(ctx, "call command rejected", err, "command", eventType, "request_id", requestID, "call_id", callID, "actor_user_id", identity.UserID, "actor_device_id", identity.DeviceID)
+		}
 		return &RequestError{RequestID: requestID, Err: err}
+	}
+	if eventType != "call.signal" {
+		h.logCallLifecycle(ctx, "call command accepted", call, "command", eventType, "request_id", requestID, "actor_user_id", identity.UserID, "actor_device_id", identity.DeviceID)
 	}
 	return nil
 }
 
 func (h *Hub) publishCall(ctx context.Context, change CallChange) {
+	if change.Type != "signal" {
+		h.logCallLifecycle(ctx, "call event emitted", change.Call, "event", change.Type, "source", change.Source)
+	}
 	h.DeliverCall(change)
 	if h.calls != nil {
-		_ = h.calls.PublishCall(ctx, change)
+		if err := h.calls.PublishCall(ctx, change); err != nil {
+			h.logCallWarning(ctx, "call event fanout failed", err, "event", change.Type, "source", change.Source)
+		}
+	}
+}
+
+func (h *Hub) logCallLifecycle(ctx context.Context, message string, call Call, args ...any) {
+	if h.logger == nil {
+		return
+	}
+	fields := []any{"call_id", call.ID, "conversation_id", call.ConversationID, "caller_id", call.CallerID, "recipient_id", call.RecipientID, "status", call.Status}
+	h.logger.InfoContext(ctx, message, append(fields, args...)...)
+}
+
+func (h *Hub) logCallWarning(ctx context.Context, message string, err error, args ...any) {
+	if h.logger == nil {
+		return
+	}
+	fields := append([]any{"reason", callErrorReason(err)}, args...)
+	h.logger.WarnContext(ctx, message, fields...)
+}
+
+func callErrorReason(err error) string {
+	switch {
+	case errors.Is(err, ErrCallUnavailable):
+		return "unavailable"
+	case errors.Is(err, ErrCallBusy):
+		return "busy"
+	case errors.Is(err, ErrCallNotFound):
+		return "not_found"
+	case errors.Is(err, ErrCallNotAllowed):
+		return "not_allowed"
+	case errors.Is(err, ErrCallTaken):
+		return "already_taken"
+	default:
+		return "internal"
 	}
 }
 

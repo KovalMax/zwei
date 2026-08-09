@@ -131,6 +131,27 @@ describe('CallFacade', () => {
         expect(facade.state.statusLabel).toBe('Call ended.');
     });
 
+    it('offers a user gesture retry when remote audio autoplay is blocked', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+        const audio = {play: jasmine.createSpy('play').and.returnValue(Promise.reject(new DOMException('blocked', 'NotAllowedError'))), pause: jasmine.createSpy('pause'), srcObject: stream} as unknown as HTMLAudioElement;
+
+        facade.playRemoteAudio({currentTarget: audio} as unknown as Event);
+        await flush();
+
+        expect(facade.state.audioPlaybackBlocked).toBeTrue();
+        expect(facade.state.statusLabel).toBe('Audio connected. Enable sound to hear the call.');
+        audio.play = jasmine.createSpy('play').and.returnValue(Promise.resolve());
+        facade.enableRemoteAudio();
+        await flush();
+
+        expect(facade.state.audioPlaybackBlocked).toBeFalse();
+        expect(facade.state.statusLabel).toBe('Audio call connected.');
+    });
+
     it('ignores irrelevant and malformed call events while retaining its call state', async () => {
         await facade.start('conversation-1', 'peer-1');
         events.next(signal('other-call', {type: 'offer', sdp: 'ignored'}));
