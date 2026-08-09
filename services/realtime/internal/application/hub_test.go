@@ -1,8 +1,11 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -207,6 +210,27 @@ func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
 	}
 }
 
+func TestHubLogsAcceptedCallDeclineWithActorAndCallContext(t *testing.T) {
+	callerID := uuid.New()
+	recipientID := uuid.New()
+	call := Call{ID: uuid.New(), ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: "caller-device", Status: CallRinging}
+	calls := &fakeCalls{call: call}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	hub := NewHubWithLogger(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, calls, nil, logger)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: "recipient-device"}}
+
+	err := hub.Handle(context.Background(), client, []byte(`{"version":1,"type":"call.decline","request_id":"decline-1","payload":{"call_id":"`+call.ID.String()+`"}}`))
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	for _, expected := range []string{"call command accepted", "command=call.decline", "request_id=decline-1", "actor_user_id=" + recipientID.String(), "actor_device_id=recipient-device", "call_id=" + call.ID.String()} {
+		if !strings.Contains(logs.String(), expected) {
+			t.Fatalf("logs do not contain %q: %s", expected, logs.String())
+		}
+	}
+}
+
 type rateLimitedCoordinator struct{}
 
 func (rateLimitedCoordinator) Connect(context.Context, uuid.UUID, string) (bool, error) {
@@ -299,6 +323,7 @@ func (f *fakeCalls) Accept(context.Context, uuid.UUID, uuid.UUID, string) (Call,
 	return f.call, nil
 }
 func (f *fakeCalls) Decline(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+	f.call.Status = CallEnded
 	return f.call, nil
 }
 func (f *fakeCalls) Cancel(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {

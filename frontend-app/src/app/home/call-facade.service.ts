@@ -5,7 +5,7 @@ import {createRandomID} from '../login/login';
 
 export type CallPhase = 'idle' | 'requesting' | 'outgoing' | 'incoming' | 'connecting' | 'active' | 'ended' | 'error';
 export type CallRole = 'caller' | 'recipient';
-export interface CallState { readonly phase: CallPhase; readonly role?: CallRole; readonly callID?: string; readonly conversationID?: string; readonly peerID?: string; readonly muted: boolean; readonly localStream?: MediaStream; readonly remoteStream?: MediaStream; readonly statusLabel: string; readonly errorLabel?: string; }
+export interface CallState { readonly phase: CallPhase; readonly role?: CallRole; readonly callID?: string; readonly conversationID?: string; readonly peerID?: string; readonly muted: boolean; readonly localStream?: MediaStream; readonly remoteStream?: MediaStream; readonly audioPlaybackBlocked?: boolean; readonly statusLabel: string; readonly errorLabel?: string; }
 const idleState: CallState = Object.freeze({phase: 'idle', muted: false, statusLabel: 'No active call.'});
 const callNoticeDuration = 5_000;
 
@@ -15,6 +15,7 @@ export class CallFacade implements OnDestroy {
     private readonly subscription: Subscription;
     private connection?: RTCPeerConnection;
     private pendingSignals: Record<string, unknown>[] = [];
+    private remoteAudio?: HTMLAudioElement;
     private dismissTimer?: number;
     public readonly state$ = this.stateSubject.asObservable();
 
@@ -47,6 +48,15 @@ export class CallFacade implements OnDestroy {
         const muted = !state.muted;
         state.localStream.getAudioTracks().forEach(track => track.enabled = !muted);
         this.setState({...state, muted, statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
+    }
+    public playRemoteAudio(event: Event): void {
+        const audio = event.currentTarget as HTMLAudioElement | null;
+        if (!audio) return;
+        this.remoteAudio = audio;
+        void this.tryPlayRemoteAudio(audio);
+    }
+    public enableRemoteAudio(): void {
+        if (this.remoteAudio) void this.tryPlayRemoteAudio(this.remoteAudio);
     }
     public close(): void {
         this.clearDismissTimer();
@@ -113,7 +123,10 @@ export class CallFacade implements OnDestroy {
             this.connection = new RTCPeerConnection({iceServers});
             localStream.getTracks().forEach(track => this.connection!.addTrack(track, localStream));
             this.connection.onicecandidate = event => { if (event.candidate) this.sendSignal({type: 'candidate', candidate: event.candidate.toJSON()}); };
-            this.connection.ontrack = event => this.setState({...this.state, remoteStream: event.streams[0], phase: 'active', statusLabel: 'Audio call connected.'});
+            this.connection.ontrack = event => {
+                const remoteStream = event.streams[0] || new MediaStream([event.track]);
+                this.setState({...this.state, remoteStream, audioPlaybackBlocked: false, phase: 'active', statusLabel: 'Audio call connected.'});
+            };
             this.connection.onconnectionstatechange = () => { if (this.connection?.connectionState === 'failed') this.setError('Could not connect the audio call.'); };
             return true;
         } catch { this.setError('Audio calls are not supported by this browser.'); return false; }
@@ -141,7 +154,16 @@ export class CallFacade implements OnDestroy {
     }
     private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, statusLabel: label}); this.dismissNotice(); }
     private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
-    private cleanup(): void { this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; }
+    private async tryPlayRemoteAudio(audio: HTMLAudioElement): Promise<void> {
+        try {
+            await audio.play();
+            if (this.state.audioPlaybackBlocked) this.setState({...this.state, audioPlaybackBlocked: false, statusLabel: 'Audio call connected.'});
+        } catch (error: unknown) {
+            const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
+            if (name === 'NotAllowedError') this.setState({...this.state, audioPlaybackBlocked: true, statusLabel: 'Audio connected. Enable sound to hear the call.'});
+        }
+    }
+    private cleanup(): void { this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; this.remoteAudio?.pause(); if (this.remoteAudio) this.remoteAudio.srcObject = null; this.remoteAudio = undefined; }
     private stopStream(stream?: MediaStream): void { stream?.getTracks().forEach(track => track.stop()); }
     private dismissNotice(): void {
         this.clearDismissTimer();

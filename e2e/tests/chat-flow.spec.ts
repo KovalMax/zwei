@@ -93,6 +93,8 @@ test('register, create conversation, and deliver a message', async ({ browser })
    await bob.getByRole('button', {name: 'Accept'}).click();
     await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
     await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+    await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
+    await expect(bob.locator('audio')).toHaveJSProperty('paused', false);
     const darkThemeColors = await callThemeColors(alice);
     expect(darkThemeColors.panel).not.toBe(darkThemeColors.text);
     expect(darkThemeColors.panel).not.toBe(darkThemeColors.control);
