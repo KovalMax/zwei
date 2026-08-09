@@ -1,9 +1,12 @@
 package httptransport
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/KovalMax/zwei/services/auth/internal/application"
 )
 
 func TestRefreshCookiesAreRestrictedToAuthEndpoints(t *testing.T) {
@@ -40,5 +43,23 @@ func TestRefreshWithoutCookieReturnsUnauthorized(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestWriteTokensSetsRefreshCookieAndOmitsItFromJSON(t *testing.T) {
+	response := httptest.NewRecorder()
+	(&Handler{}).writeTokens(response, http.StatusCreated, application.Tokens{
+		AccessToken: "access-token", TokenType: "Bearer", ExpiresIn: 900, RefreshToken: "refresh-token",
+	})
+
+	if response.Result().Cookies()[0].Value != "refresh-token" {
+		t.Fatalf("refresh cookie = %#v", response.Result().Cookies()[0])
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["refresh_token"]; ok {
+		t.Fatalf("refresh token leaked in JSON: %v", payload)
 	}
 }

@@ -21,7 +21,7 @@ async function register(page: import('@playwright/test').Page, email: string, ni
   if (response.status() !== 201) {
     throw new Error(`registration failed: ${response.status()} ${await response.text()}`);
   }
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/home$/);
 }
 
 async function login(page: import('@playwright/test').Page, email: string): Promise<void> {
@@ -31,17 +31,21 @@ async function login(page: import('@playwright/test').Page, email: string): Prom
   await expect(page).toHaveURL(/\/home$/);
 }
 
-async function callThemeColors(page: Page): Promise<{panel: string; text: string; control: string; controlBorder: string; icon: string; scrollTrack: string; scrollThumb: string}> {
+async function callThemeColors(page: Page): Promise<{panel: string; text: string; card: string; cardText: string; control: string; controlBorder: string; icon: string; scrollTrack: string; scrollThumb: string}> {
   return page.evaluate(() => {
     const panel = document.querySelector<HTMLElement>('.call-panel');
+    const card = document.querySelector<HTMLElement>('.call-card');
     const control = document.querySelector<HTMLElement>('.call-actions button[mat-stroked-button]');
     const icon = document.querySelector<HTMLElement>('.call-button');
     const scrollSurface = document.querySelector<HTMLElement>('.message-history');
     const panelStyle = panel ? getComputedStyle(panel) : undefined;
+    const cardStyle = card ? getComputedStyle(card) : undefined;
     const scrollStyle = scrollSurface ? getComputedStyle(scrollSurface) : undefined;
     return {
       panel: panelStyle?.backgroundColor || '',
       text: panelStyle?.color || '',
+      card: cardStyle?.backgroundColor || '',
+      cardText: cardStyle?.color || '',
       control: control ? getComputedStyle(control).color : '',
       controlBorder: control ? getComputedStyle(control).borderTopColor : '',
       icon: icon ? getComputedStyle(icon).color : '',
@@ -64,8 +68,6 @@ test('register, create conversation, and deliver a message', async ({ browser })
 
   await register(alice, aliceEmail, 'Alice');
   await register(bob, bobEmail, 'Bob');
-  await login(alice, aliceEmail);
-  await login(bob, bobEmail);
   await expect(alice.getByRole('button', { name: 'Account menu' })).toBeVisible();
   await expect(alice.locator('.conversation-rail')).toBeVisible();
   await expect(alice.getByText(/is typing/)).not.toBeVisible();
@@ -83,17 +85,31 @@ test('register, create conversation, and deliver a message', async ({ browser })
   await aliceConversation.click();
 
    await alice.getByPlaceholder('Write a message…').fill('typing');
-   await expect(bob.getByText('Alice is typing…')).toBeVisible();
-   await expect(bob.getByText('Alice is typing…')).not.toBeVisible({ timeout: 3_000 });
+    await expect(bob.getByText('Alice is typing…')).toBeVisible();
+    await expect(bob.getByText('Alice is typing…')).not.toBeVisible({ timeout: 3_000 });
 
-   await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
-   await alice.getByRole('button', {name: 'Start audio call'}).click();
-   await expect(alice.getByText('Ringing...')).toBeVisible();
-   await expect(bob.getByText('Incoming audio call.')).toBeVisible();
-   await bob.getByRole('button', {name: 'Accept'}).click();
-    await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
-    await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
-    await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
+   await bob.setViewportSize({width: 390, height: 844});
+   await bob.getByRole('button', {name: 'Back to chats'}).click();
+   await bob.setViewportSize(desktop.viewport);
+
+    await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
+    await alice.getByRole('button', {name: 'Start audio call'}).click();
+    await expect(alice.getByText('Ringing...')).toBeVisible();
+    await expect(bob.getByText('Incoming audio call.')).toBeVisible();
+    await expect(bob.locator('.call-profile')).toContainText('Alice');
+    await expect(bob.locator('.person-option.selected')).toContainText('Alice');
+    await bob.getByRole('button', {name: 'Accept'}).click();
+      await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+      await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+      await expect(bob.locator('.call-profile')).toContainText('Alice');
+     await expect(alice.locator('.message-history')).not.toBeVisible();
+     await expect(alice.locator('.composer')).not.toBeVisible();
+     await expect(alice.locator('.call-profile')).toContainText('Bob');
+     await expect(alice.getByLabel('Microphone input')).toBeVisible();
+     await expect(alice.getByLabel('Speaker output')).toBeVisible();
+     await expect(alice.getByText('Microphone active', {exact: true})).toBeVisible();
+     await expect(alice.getByText('Speaker active', {exact: true})).toBeVisible();
+     await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
     await expect(bob.locator('audio')).toHaveJSProperty('paused', false);
     const darkThemeColors = await callThemeColors(alice);
     expect(darkThemeColors.panel).not.toBe(darkThemeColors.text);
@@ -108,16 +124,40 @@ test('register, create conversation, and deliver a message', async ({ browser })
     expect(lightThemeColors.panel).not.toBe(lightThemeColors.text);
     expect(lightThemeColors.panel).not.toBe(lightThemeColors.control);
     expect(lightThemeColors.panel).not.toBe(lightThemeColors.controlBorder);
-    expect(lightThemeColors.panel).not.toBe(lightThemeColors.icon);
-    expect(lightThemeColors.scrollTrack).not.toBe(lightThemeColors.scrollThumb);
-    expect(lightThemeColors.panel).not.toBe(darkThemeColors.panel);
-    expect(lightThemeColors.scrollThumb).not.toBe(darkThemeColors.scrollThumb);
-    await alice.getByRole('button', {name: 'Mute'}).click();
+     expect(lightThemeColors.panel).not.toBe(lightThemeColors.icon);
+     expect(lightThemeColors.scrollTrack).not.toBe(lightThemeColors.scrollThumb);
+     expect(lightThemeColors.panel).not.toBe(darkThemeColors.panel);
+     expect(lightThemeColors.card).not.toBe(darkThemeColors.card);
+     expect(lightThemeColors.card).not.toBe(lightThemeColors.cardText);
+     expect(lightThemeColors.scrollThumb).not.toBe(darkThemeColors.scrollThumb);
+     await alice.setViewportSize({width: 1440, height: 900});
+     const callCard = alice.locator('.call-panel-full .call-card');
+     const callPanel = alice.locator('.call-panel-full');
+     const endCall = alice.getByRole('button', {name: 'End call'});
+     const cardBox = await callCard.boundingBox();
+     const panelBox = await callPanel.boundingBox();
+     const endCallBox = await endCall.boundingBox();
+     if (!cardBox || !panelBox || !endCallBox) {
+       throw new Error('Active call surface bounds were not available');
+     }
+     expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
+     expect(endCallBox.x + endCallBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+     await alice.setViewportSize({width: 390, height: 844});
+     await expect(callCard).toBeVisible();
+     const mobileCardBox = await callCard.boundingBox();
+     const mobilePanelBox = await callPanel.boundingBox();
+     if (!mobileCardBox || !mobilePanelBox) {
+       throw new Error('Mobile call surface bounds were not available');
+     }
+     expect(mobileCardBox.x + mobileCardBox.width).toBeLessThanOrEqual(mobilePanelBox.x + mobilePanelBox.width + 1);
+     await alice.setViewportSize(desktop.viewport);
+     await alice.getByRole('button', {name: 'Mute'}).click();
    await expect(alice.getByRole('button', {name: 'Unmute'})).toBeVisible();
-  await alice.getByRole('button', {name: 'End call'}).click();
-  await expect(bob.getByText('Call ended.')).toBeVisible();
+   await alice.getByRole('button', {name: 'End call'}).click();
+   await expect(bob.getByText('Call ended.')).toBeVisible();
+   await bob.locator('.person-option').filter({hasText: 'Alice'}).click();
 
-  await bob.goto('/profile');
+   await bob.goto('/profile');
   await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await alice.getByRole('button', {name: 'Start audio call'}).click();
   const offlineCallNotice = alice.getByText('Call unavailable: recipient is offline', {exact: true});
@@ -190,8 +230,6 @@ test('replays a message sent while the recipient is offline', async ({ browser }
 
   await register(alice, aliceEmail, 'Alice');
   await register(bob, bobEmail, 'Bob');
-  await login(alice, aliceEmail);
-  await login(bob, bobEmail);
   await alice.getByPlaceholder('Name or email').fill(bobEmail);
   await alice.getByText(bobEmail).click();
   const bobConversation = bob.locator('.person-option').filter({hasText: 'Alice'});
@@ -210,5 +248,39 @@ test('replays a message sent while the recipient is offline', async ({ browser }
   await expect(bob.getByText(offlineMessage)).toBeVisible({timeout: 10_000});
 
   await aliceContext.close();
+  await bobContext.close();
+});
+
+test('shares read and unread state across a user\'s browser devices', async ({ browser }) => {
+  const aliceEmail = uniqueEmail('global-alice');
+  const bobEmail = uniqueEmail('global-bob');
+  const aliceContext = await browser.newContext();
+  const aliceSecondContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const alice = await aliceContext.newPage();
+  const aliceSecond = await aliceSecondContext.newPage();
+  const bob = await bobContext.newPage();
+
+  await register(alice, aliceEmail, 'Alice');
+  await register(bob, bobEmail, 'Bob');
+  await alice.getByPlaceholder('Name or email').fill(bobEmail);
+  await alice.getByText(bobEmail).click();
+  await expect(bob.locator('.person-option').filter({hasText: 'Alice'})).toBeVisible();
+
+  await aliceSecond.goto('/login');
+  await login(aliceSecond, aliceEmail);
+  const secondConversation = aliceSecond.locator('.person-option').filter({hasText: 'Bob'});
+  await expect(secondConversation).toBeVisible();
+  await bob.locator('.person-option').filter({hasText: 'Alice'}).click();
+  const message = `global-read-${Date.now()}`;
+  await bob.getByPlaceholder('Write a message…').fill(message);
+  await bob.getByRole('button', {name: 'Send message'}).click();
+  await expect(alice.getByText(message)).toBeVisible({timeout: 5_000});
+  await aliceSecond.reload();
+  await expect(aliceSecond.locator('.person-option').filter({hasText: 'Bob'})).toBeVisible();
+  await expect(aliceSecond.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).not.toBeVisible({timeout: 5_000});
+
+  await aliceContext.close();
+  await aliceSecondContext.close();
   await bobContext.close();
 });

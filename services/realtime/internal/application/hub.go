@@ -52,6 +52,10 @@ type MessageCoordinator interface {
 	PublishMessage(context.Context, messaging.Message) error
 }
 
+type ReadCoordinator interface {
+	PublishRead(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int64) error
+}
+
 type MessageRateCoordinator interface {
 	AllowMessage(context.Context, uuid.UUID) (bool, error)
 }
@@ -66,7 +70,7 @@ type DeliveryRepository interface {
 }
 
 type ReadCursorRepository interface {
-	Advance(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int64) (int64, error)
+	Advance(context.Context, uuid.UUID, uuid.UUID, int64) (int64, error)
 }
 
 type Hub struct {
@@ -278,19 +282,18 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 		if h.cursors == nil || h.presence == nil || request.Payload.Sequence < 1 {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("read cursor unavailable")}
 		}
-		deviceID, err := uuid.Parse(client.Identity().DeviceID)
-		if err != nil {
-			return &RequestError{RequestID: request.RequestID, Err: errors.New("read cursor unavailable")}
-		}
 		recipientID, err := h.presence.RecipientID(ctx, client.Identity().UserID, request.Payload.ConversationID)
 		if err != nil {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("conversation not found")}
 		}
-		sequence, err := h.cursors.Advance(ctx, deviceID, client.Identity().UserID, request.Payload.ConversationID, request.Payload.Sequence)
+		sequence, err := h.cursors.Advance(ctx, client.Identity().UserID, request.Payload.ConversationID, request.Payload.Sequence)
 		if err != nil {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("could not update read cursor")}
 		}
-		h.DeliverReadCursor(recipientID, request.Payload.ConversationID, sequence)
+		if coordinator, ok := h.coord.(ReadCoordinator); ok && coordinator.PublishRead(ctx, client.Identity().UserID, recipientID, request.Payload.ConversationID, sequence) == nil {
+			return nil
+		}
+		h.DeliverReadCursor(client.Identity().UserID, recipientID, request.Payload.ConversationID, sequence)
 		return nil
 	}
 	if request.Type == "typing.start" || request.Type == "typing.stop" {
@@ -353,12 +356,15 @@ func (h *Hub) DeliverMessageCreated(message messaging.Message) {
 	}
 }
 
-func (h *Hub) DeliverReadCursor(recipientID, conversationID uuid.UUID, sequence int64) {
-	for _, recipient := range h.recipients(recipientID) {
-		recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "conversation.read", Payload: struct {
-			ConversationID uuid.UUID `json:"conversation_id"`
-			Sequence       int64     `json:"sequence"`
-		}{ConversationID: conversationID, Sequence: sequence}})
+func (h *Hub) DeliverReadCursor(readerID, recipientID, conversationID uuid.UUID, sequence int64) {
+	for _, userID := range []uuid.UUID{readerID, recipientID} {
+		for _, recipient := range h.recipients(userID) {
+			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "conversation.read", Payload: struct {
+				ConversationID uuid.UUID `json:"conversation_id"`
+				UserID         uuid.UUID `json:"user_id"`
+				Sequence       int64     `json:"sequence"`
+			}{ConversationID: conversationID, UserID: readerID, Sequence: sequence}})
+		}
 	}
 }
 

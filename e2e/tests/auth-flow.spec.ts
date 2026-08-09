@@ -23,7 +23,7 @@ async function register(page: Page, email: string, nickname = 'Test User'): Prom
   await input(page, 'password').fill(password);
   await input(page, 'confirmPassword').fill(password);
   await page.getByRole('button', {name: 'Create account'}).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/home$/);
 }
 
 async function login(page: Page, email: string, value = password): Promise<void> {
@@ -147,6 +147,9 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   const email = uniqueEmail('account');
   await register(page, email, 'Account User');
 
+  await page.getByRole('button', {name: 'Account menu'}).click();
+  await page.getByRole('menuitem', {name: 'Sign out'}).click();
+  await expect(page).toHaveURL(/\/login$/);
   await page.goto('/sign-up');
   await input(page, 'email').fill(email);
   await input(page, 'firstName').fill('Test');

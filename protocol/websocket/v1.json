@@ -32,6 +32,7 @@
     "call.rejected"
   ],
   "serverEventFields": {
-    "call.accepted": ["payload.call_id", "payload.ice_servers", "payload.ice_servers[].urls", "payload.ice_servers[].username", "payload.ice_servers[].credential"]
+    "call.accepted": ["payload.call_id", "payload.ice_servers", "payload.ice_servers[].urls", "payload.ice_servers[].username", "payload.ice_servers[].credential"],
+    "conversation.read": ["payload.conversation_id", "payload.user_id", "payload.sequence"]
   }
 }

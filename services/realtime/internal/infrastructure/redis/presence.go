@@ -19,6 +19,7 @@ const (
 	conversationChannel = "zwei:conversation"
 	typingChannel       = "zwei:typing"
 	messageChannel      = "zwei:message"
+	readChannel         = "zwei:read"
 	presenceTTL         = 30 * time.Second
 	websocketTicketTTL  = 30 * time.Second
 	messageWindow       = time.Minute
@@ -45,6 +46,13 @@ type TypingChange struct {
 type MessageChange struct {
 	Message     messaging.Message `json:"message"`
 	RecipientID uuid.UUID         `json:"recipient_id"`
+}
+
+type ReadChange struct {
+	ConversationID uuid.UUID `json:"conversation_id"`
+	ReaderID       uuid.UUID `json:"reader_id"`
+	RecipientID    uuid.UUID `json:"recipient_id"`
+	Sequence       int64     `json:"sequence"`
 }
 
 type PresenceCoordinator struct {
@@ -79,6 +87,7 @@ func (c *PresenceCoordinator) AllowTypingStart(ctx context.Context, userID, conv
 }
 
 func (c *PresenceCoordinator) Connect(ctx context.Context, userID uuid.UUID, connection string) (bool, error) {
+	// Connection leases are per socket, while the returned transition is the user's global state.
 	member := c.member(connection)
 	c.mu.Lock()
 	c.connections[member] = userID
@@ -97,6 +106,7 @@ func (c *PresenceCoordinator) Disconnect(ctx context.Context, userID uuid.UUID, 
 }
 
 func (c *PresenceCoordinator) Online(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	// Online answers are user-scoped aggregates, not per-device connection status.
 	pipe := c.client.Pipeline()
 	commands := make([]*redis.Cmd, len(userIDs))
 	for index, userID := range userIDs {
@@ -146,6 +156,14 @@ func (c *PresenceCoordinator) PublishMessage(ctx context.Context, message messag
 		return err
 	}
 	return c.client.Publish(ctx, messageChannel, payload).Err()
+}
+
+func (c *PresenceCoordinator) PublishRead(ctx context.Context, readerID, recipientID, conversationID uuid.UUID, sequence int64) error {
+	payload, err := json.Marshal(ReadChange{ConversationID: conversationID, ReaderID: readerID, RecipientID: recipientID, Sequence: sequence})
+	if err != nil {
+		return err
+	}
+	return c.client.Publish(ctx, readChannel, payload).Err()
 }
 
 func (c *PresenceCoordinator) StartHeartbeat(ctx context.Context) {
@@ -240,6 +258,24 @@ func (c *PresenceCoordinator) ConsumeMessages(ctx context.Context, handler func(
 		var change MessageChange
 		if json.Unmarshal([]byte(message.Payload), &change) == nil {
 			change.Message.RecipientID = change.RecipientID
+			handler(change)
+		}
+	}
+}
+
+func (c *PresenceCoordinator) ConsumeReads(ctx context.Context, handler func(ReadChange)) error {
+	subscription := c.client.Subscribe(ctx, readChannel)
+	defer subscription.Close()
+	if _, err := subscription.Receive(ctx); err != nil {
+		return err
+	}
+	for {
+		message, err := subscription.ReceiveMessage(ctx)
+		if err != nil {
+			return err
+		}
+		var change ReadChange
+		if json.Unmarshal([]byte(message.Payload), &change) == nil {
 			handler(change)
 		}
 	}

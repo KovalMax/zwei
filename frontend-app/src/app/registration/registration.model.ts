@@ -1,4 +1,5 @@
 import {getDeviceID} from '../login/login';
+import {Token} from '../auth/token';
 
 export interface RegistrationForm {
     email: string;
@@ -17,9 +18,7 @@ export interface Registration {
     device_name?: string;
 }
 
-export interface RegistrationResponse {
-    status: number;
-}
+export type RegistrationResponse = Token;
 
 export class RegistrationModel implements Registration {
     constructor(

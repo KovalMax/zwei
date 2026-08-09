@@ -18,7 +18,14 @@ describe('CallFacade', () => {
         connections = [];
         originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
         originalPeerConnection = window.RTCPeerConnection;
-        Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {getUserMedia: jasmine.createSpy('getUserMedia').and.returnValue(Promise.resolve(stream))}});
+        Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {
+            getUserMedia: jasmine.createSpy('getUserMedia').and.returnValue(Promise.resolve(stream)),
+            enumerateDevices: jasmine.createSpy('enumerateDevices').and.returnValue(Promise.resolve([
+                {deviceId: 'microphone-1', kind: 'audioinput', label: 'Built-in microphone'},
+                {deviceId: 'microphone-2', kind: 'audioinput', label: 'USB microphone'},
+                {deviceId: 'speaker-1', kind: 'audiooutput', label: 'Built-in speakers'},
+            ])),
+        }});
         (window as unknown as {RTCPeerConnection: typeof RTCPeerConnection}).RTCPeerConnection = class extends MockPeerConnection { constructor(configuration: RTCConfiguration) { super(configuration); connections.push(this); } } as unknown as typeof RTCPeerConnection;
         facade = new CallFacade({getObservable: () => events.asObservable(), send} as unknown as DataProviderService);
     });
@@ -69,6 +76,23 @@ describe('CallFacade', () => {
 
         expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({audio: true});
         expect(connections[0].configuration.iceServers).toEqual([{urls: ['turn:turn.example.test:3478'], username: 'user', credential: 'credential'}]);
+    });
+
+    it('lists audio devices and replaces the active microphone track', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+
+        expect(facade.inputDevices.map(device => device.label)).toEqual(['Built-in microphone', 'USB microphone']);
+        const replacement = new MockStream('microphone-2');
+        (navigator.mediaDevices.getUserMedia as jasmine.Spy).and.returnValue(Promise.resolve(replacement));
+
+        await facade.selectInputDevice('microphone-2');
+
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({audio: {deviceId: {exact: 'microphone-2'}}});
+        expect(connections[0].sender.replaceTrack).toHaveBeenCalledWith(replacement.track);
+        expect(facade.selectedInputDeviceID).toBe('microphone-2');
     });
 
     it('answers a matching offer after an accepted recipient call', async () => {
@@ -152,6 +176,23 @@ describe('CallFacade', () => {
         expect(facade.state.statusLabel).toBe('Audio call connected.');
     });
 
+    it('selects a supported speaker after the remote audio element is ready', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+        const setSinkId = jasmine.createSpy('setSinkId').and.returnValue(Promise.resolve());
+        const audio = {play: jasmine.createSpy('play').and.returnValue(Promise.resolve()), pause: jasmine.createSpy('pause'), setSinkId, srcObject: stream} as unknown as HTMLAudioElement;
+
+        facade.playRemoteAudio({currentTarget: audio} as unknown as Event);
+        await flush();
+        await facade.selectOutputDevice('speaker-1');
+
+        expect(setSinkId).toHaveBeenCalledWith('speaker-1');
+        expect(facade.selectedOutputDeviceID).toBe('speaker-1');
+    });
+
     it('ignores irrelevant and malformed call events while retaining its call state', async () => {
         await facade.start('conversation-1', 'peer-1');
         events.next(signal('other-call', {type: 'offer', sdp: 'ignored'}));
@@ -163,7 +204,8 @@ describe('CallFacade', () => {
 });
 
 class MockStream {
-    public readonly track = {enabled: true, stop: jasmine.createSpy('stop')};
+    public readonly track = {kind: 'audio', enabled: true, stop: jasmine.createSpy('stop'), getSettings: () => ({deviceId: this.deviceID})};
+    public constructor(private readonly deviceID = 'microphone-1') {}
     public getTracks(): MediaStreamTrack[] { return [this.track as unknown as MediaStreamTrack]; }
     public getAudioTracks(): MediaStreamTrack[] { return [this.track as unknown as MediaStreamTrack]; }
 }
@@ -176,7 +218,9 @@ class MockPeerConnection {
     public remoteDescription?: RTCSessionDescriptionInit;
     public close = jasmine.createSpy('close');
     public constructor(public readonly configuration: RTCConfiguration) {}
-    public addTrack(): RTCRtpSender { return {} as RTCRtpSender; }
+    public readonly sender = {track: null as MediaStreamTrack | null, replaceTrack: jasmine.createSpy('replaceTrack').and.returnValue(Promise.resolve())};
+    public addTrack(track: MediaStreamTrack): RTCRtpSender { this.sender.track = track; return this.sender as unknown as RTCRtpSender; }
+    public getSenders(): RTCRtpSender[] { return [this.sender as unknown as RTCRtpSender]; }
     public async createOffer(): Promise<RTCSessionDescriptionInit> { return {type: 'offer', sdp: 'offer-sdp'}; }
     public async createAnswer(): Promise<RTCSessionDescriptionInit> { return {type: 'answer', sdp: 'answer-sdp'}; }
     public async setLocalDescription(): Promise<void> {}
