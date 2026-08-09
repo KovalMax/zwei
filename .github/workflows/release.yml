@@ -166,7 +166,7 @@ jobs:
             docker compose --profile migration pull
             docker compose up -d --wait --wait-timeout 120 database redis
             docker compose run --rm migrate
-            docker compose up -d --wait --wait-timeout 120 traefik frontend auth chat realtime"
+            docker compose up -d --force-recreate --wait --wait-timeout 120 traefik frontend auth chat realtime"
 
       - name: Verify public HTTPS endpoints
         run: |
@@ -174,3 +174,13 @@ jobs:
           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
+
+      - name: Verify public security headers
+        run: |
+          headers="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --dump-header - --output /dev/null https://chat.false.tel/ | tr -d '\r')"
+          printf '%s\n' "$headers" | grep -Fqi 'permissions-policy: geolocation=(), microphone=(self), camera=()'
+          printf '%s\n' "$headers" | grep -Fqi 'content-security-policy:'
+          if printf '%s\n' "$headers" | grep -Fqi 'fonts.googleapis.com'; then
+            echo 'The deployed CSP still permits the removed Google Fonts origin.' >&2
+            exit 1
+          fi

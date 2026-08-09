@@ -44,6 +44,7 @@ test('serves the browser security headers', async ({request}) => {
   expect(response.headers()['x-frame-options']).toBe('DENY');
   expect(response.headers()['referrer-policy']).toBe('strict-origin-when-cross-origin');
   expect(response.headers()['permissions-policy']).toContain('camera=()');
+  expect(response.headers()['permissions-policy']).toContain('microphone=(self)');
 });
 
 test('shows every registration and login validation state', async ({page}) => {
