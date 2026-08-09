@@ -46,6 +46,15 @@ html, body {
     --chat-presence: #77bd6a;
     --chat-info: #a9d3ff;
     --chat-info-surface: #26394f;
+    --chat-call-surface: #26394f;
+    --chat-call-text: #f1f5f9;
+    --chat-call-control-border: #6f8daa;
+    --chat-call-control-text: #f1f5f9;
+    --chat-call-icon: #74b7f3;
+    --chat-call-icon-disabled: #91abc5;
+    --chat-scroll-track: #202e3d;
+    --chat-scroll-thumb: #6f8aa5;
+    --chat-scroll-thumb-hover: #9ab6d1;
     --chat-warning-surface: #4c452e;
     --chat-warning-text: #f7dd8d;
     --chat-danger-surface: #4c3034;
@@ -53,6 +62,10 @@ html, body {
     --chat-message-own: #2d5c45;
     --chat-message-sender: #72c86f;
     --chat-message-read: #b5e680;
+    --chat-message-min-width: 180px;
+    --chat-message-max-width: 680px;
+    --chat-message-min-height: 64px;
+    --chat-message-max-height: 240px;
     --auth-card-surface: rgba(255, 255, 255, .78);
     --auth-card-border: var(--zwei-card-border);
     --auth-title: #171c2b;

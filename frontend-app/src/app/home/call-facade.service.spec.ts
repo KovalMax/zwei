@@ -35,7 +35,27 @@ describe('CallFacade', () => {
         await facade.start('conversation-1', 'peer-1');
 
         expect(send).not.toHaveBeenCalled();
-        expect(facade.state.errorLabel).toBe('Microphone permission was denied.');
+        expect(facade.state.errorLabel).toBe('Microphone permission was denied. Allow microphone access for this site and try again.');
+    });
+
+    it('explains when the browser cannot provide a microphone instead of reporting a permission denial', async () => {
+        Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {getUserMedia: () => Promise.reject(new DOMException('unavailable', 'NotReadableError'))}});
+
+        await facade.start('conversation-1', 'peer-1');
+
+        expect(send).not.toHaveBeenCalled();
+        expect(facade.state.errorLabel).toBe('The microphone is unavailable. Close other apps using it and try again.');
+    });
+
+    it('ends a recipient call when microphone access fails after accept', async () => {
+        Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {getUserMedia: () => Promise.reject(new DOMException('denied', 'NotAllowedError'))}});
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.end' && event.payload.call_id === 'call-1')).toBeTrue();
+        expect(facade.state.errorLabel).toContain('Microphone permission was denied.');
     });
 
     it('requests receiver microphone access only after accept and accepted ICE configuration', async () => {
