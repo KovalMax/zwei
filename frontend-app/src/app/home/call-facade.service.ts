@@ -6,6 +6,18 @@ import {createRandomID} from '../login/login';
 export type CallPhase = 'idle' | 'requesting' | 'outgoing' | 'incoming' | 'connecting' | 'active' | 'ended' | 'error';
 export type CallRole = 'caller' | 'recipient';
 export interface CallDevice { readonly deviceID: string; readonly label: string; }
+export interface CallAudioDiagnostics {
+    readonly available: boolean;
+    readonly localLevel?: number;
+    readonly remoteLevel?: number;
+    readonly packetsSent?: number;
+    readonly packetsReceived?: number;
+    readonly packetsLost?: number;
+    readonly jitterMs?: number;
+    readonly outputPaused?: boolean;
+    readonly outputMuted?: boolean;
+    readonly outputVolume?: number;
+}
 export interface CallState {
     readonly phase: CallPhase;
     readonly role?: CallRole;
@@ -25,6 +37,7 @@ export interface CallState {
     readonly iceConnectionState?: RTCIceConnectionState;
     readonly localAudioState?: 'active' | 'muted' | 'ended' | 'unavailable';
     readonly remoteAudioState?: 'waiting' | 'receiving' | 'playing' | 'blocked' | 'unavailable';
+    readonly audioDiagnostics?: CallAudioDiagnostics;
     readonly statusLabel: string;
     readonly errorLabel?: string;
 }
@@ -39,6 +52,8 @@ export class CallFacade implements OnDestroy {
     private pendingSignals: Record<string, unknown>[] = [];
     private remoteAudio?: HTMLAudioElement;
     private dismissTimer?: number;
+    private diagnosticsTimer?: number;
+    private diagnosticsGeneration = 0;
     private readonly deviceChangeListener = (): void => { void this.refreshDevices(); };
     public readonly state$ = this.stateSubject.asObservable();
 
@@ -85,6 +100,22 @@ export class CallFacade implements OnDestroy {
         if (this.state.remoteAudioState === 'blocked') return 'Sound blocked';
         if (this.state.remoteAudioState === 'unavailable') return 'Speaker unavailable';
         return 'Speaker waiting';
+    }
+    public microphoneLevelLabel(): string { return this.levelLabel(this.state.audioDiagnostics?.localLevel); }
+    public remoteAudioLevelLabel(): string { return this.levelLabel(this.state.audioDiagnostics?.remoteLevel); }
+    public packetsSentLabel(): string { return this.countLabel(this.state.audioDiagnostics?.packetsSent); }
+    public packetsReceivedLabel(): string { return this.countLabel(this.state.audioDiagnostics?.packetsReceived); }
+    public packetsLostLabel(): string { return this.countLabel(this.state.audioDiagnostics?.packetsLost); }
+    public jitterLabel(): string {
+        const jitter = this.state.audioDiagnostics?.jitterMs;
+        return jitter === undefined ? 'Unavailable' : `${Math.round(jitter)} ms`;
+    }
+    public outputPathLabel(): string {
+        const diagnostics = this.state.audioDiagnostics;
+        if (!diagnostics || diagnostics.outputPaused === undefined) return 'Unavailable';
+        if (diagnostics.outputPaused) return 'Paused';
+        if (diagnostics.outputMuted || diagnostics.outputVolume === 0) return 'Muted';
+        return `${Math.round((diagnostics.outputVolume || 0) * 100)}% volume`;
     }
 
     public async start(conversationID: string, peerID: string): Promise<void> {
@@ -227,6 +258,10 @@ export class CallFacade implements OnDestroy {
             this.connection.ontrack = event => {
                 const remoteStream = event.streams[0] || new MediaStream([event.track]);
                 this.setState({...this.state, remoteStream, remoteAudioState: 'receiving', audioPlaybackBlocked: false, phase: 'active', statusLabel: 'Audio call connected.'});
+                if (this.remoteAudio) {
+                    this.remoteAudio.srcObject = remoteStream;
+                    void this.tryPlayRemoteAudio(this.remoteAudio);
+                }
             };
             this.connection.onconnectionstatechange = () => {
                 const connectionState = this.connection?.connectionState;
@@ -235,6 +270,7 @@ export class CallFacade implements OnDestroy {
                 if (connectionState === 'failed') this.setError('Could not connect the audio call.');
             };
             this.connection.oniceconnectionstatechange = () => this.setState({...this.state, iceConnectionState: this.connection?.iceConnectionState});
+            this.startDiagnostics();
             return true;
         } catch { this.setError('Audio calls are not supported by this browser.'); return false; }
     }
@@ -271,6 +307,10 @@ export class CallFacade implements OnDestroy {
     private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
     private async tryPlayRemoteAudio(audio: HTMLAudioElement): Promise<void> {
         try {
+            if (this.state.remoteStream && audio.srcObject !== this.state.remoteStream) audio.srcObject = this.state.remoteStream;
+            audio.autoplay = true;
+            audio.muted = false;
+            audio.volume = 1;
             if (this.outputSelectionSupported && this.selectedOutputDeviceID) await this.applyOutputDevice(audio, this.selectedOutputDeviceID);
             await audio.play();
             this.setState({...this.state, audioPlaybackBlocked: false, remoteAudioState: 'playing', statusLabel: 'Audio call connected.'});
@@ -278,6 +318,27 @@ export class CallFacade implements OnDestroy {
             const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
             if (name === 'NotAllowedError') this.setState({...this.state, audioPlaybackBlocked: true, remoteAudioState: 'blocked', statusLabel: 'Audio connected. Enable sound to hear the call.'});
             else this.setState({...this.state, remoteAudioState: 'unavailable', statusLabel: 'Audio connected, but speaker playback failed.'});
+        }
+    }
+    private startDiagnostics(): void {
+        this.stopDiagnostics();
+        const generation = this.diagnosticsGeneration;
+        void this.refreshDiagnostics(generation);
+        this.diagnosticsTimer = window.setInterval(() => { void this.refreshDiagnostics(generation); }, 1_000);
+    }
+    private stopDiagnostics(): void {
+        window.clearInterval(this.diagnosticsTimer);
+        this.diagnosticsTimer = undefined;
+        this.diagnosticsGeneration += 1;
+    }
+    private async refreshDiagnostics(generation: number): Promise<void> {
+        const connection = this.connection;
+        if (!connection || generation !== this.diagnosticsGeneration) return;
+        try {
+            const diagnostics = collectCallAudioDiagnostics(await connection.getStats(), this.remoteAudio);
+            if (generation === this.diagnosticsGeneration) this.setState({...this.state, audioDiagnostics: diagnostics});
+        } catch {
+            if (generation === this.diagnosticsGeneration) this.setState({...this.state, audioDiagnostics: {available: false}});
         }
     }
     private async applyOutputDevice(audio: HTMLAudioElement, deviceID: string): Promise<boolean> {
@@ -308,7 +369,9 @@ export class CallFacade implements OnDestroy {
             // Device enumeration is best-effort; active media tracks remain usable.
         }
     }
-    private cleanup(): void { this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; this.remoteAudio?.pause(); if (this.remoteAudio) this.remoteAudio.srcObject = null; this.remoteAudio = undefined; }
+    private levelLabel(level: number | undefined): string { return level === undefined ? 'Unavailable' : `${Math.round(level * 100)}%`; }
+    private countLabel(value: number | undefined): string { return value === undefined ? 'Unavailable' : value.toString(); }
+    private cleanup(): void { this.stopDiagnostics(); this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; this.remoteAudio?.pause(); if (this.remoteAudio) this.remoteAudio.srcObject = null; this.remoteAudio = undefined; }
     private stopStream(stream?: MediaStream): void { stream?.getTracks().forEach(track => track.stop()); }
     private dismissNotice(): void {
         this.clearDismissTimer();
@@ -320,4 +383,67 @@ export class CallFacade implements OnDestroy {
     private peerFor(payload: CallPayload): string { return this.state.role === 'caller' ? payload.recipient_id : payload.caller_id; }
     private rejectionLabel(error: string): string { const value = error.toLowerCase(); return value.includes('busy') ? 'The recipient is busy.' : value.includes('answer') || value.includes('timeout') ? 'No answer.' : `Call unavailable: ${error}`; }
     private setState(state: CallState): void { this.stateSubject.next(Object.freeze({...state})); }
+}
+
+interface ParsedCallStats {
+    readonly type: string;
+    readonly kind?: string;
+    readonly audioLevel?: number;
+    readonly packetsSent?: number;
+    readonly packetsReceived?: number;
+    readonly packetsLost?: number;
+    readonly jitter?: number;
+}
+
+export function collectCallAudioDiagnostics(report: RTCStatsReport, audio?: HTMLAudioElement): CallAudioDiagnostics {
+    let localLevel: number | undefined;
+    let remoteLevel: number | undefined;
+    let packetsSent: number | undefined;
+    let packetsReceived: number | undefined;
+    let packetsLost: number | undefined;
+    let jitterMs: number | undefined;
+    report.forEach(stat => {
+        const parsed = parseCallStats(stat);
+        if (!parsed || parsed.kind !== 'audio') return;
+        if (parsed.type === 'media-source' || parsed.type === 'outbound-rtp') localLevel ??= parsed.audioLevel;
+        if (parsed.type === 'outbound-rtp') packetsSent ??= parsed.packetsSent;
+        if (parsed.type === 'inbound-rtp') {
+            remoteLevel ??= parsed.audioLevel;
+            packetsReceived ??= parsed.packetsReceived;
+            packetsLost ??= parsed.packetsLost;
+            jitterMs ??= parsed.jitter === undefined ? undefined : parsed.jitter * 1_000;
+        }
+    });
+    return {
+        available: true,
+        localLevel: normalizeAudioLevel(localLevel),
+        remoteLevel: normalizeAudioLevel(remoteLevel),
+        packetsSent,
+        packetsReceived,
+        packetsLost,
+        jitterMs,
+        outputPaused: audio?.paused,
+        outputMuted: audio?.muted,
+        outputVolume: audio?.volume,
+    };
+}
+
+function parseCallStats(stat: RTCStats): ParsedCallStats | undefined {
+    if (typeof stat !== 'object' || stat === null) return undefined;
+    const value = stat as unknown as Record<string, unknown>;
+    if (typeof value['type'] !== 'string') return undefined;
+    return {
+        type: value['type'],
+        kind: typeof value['kind'] === 'string' ? value['kind'] : undefined,
+        audioLevel: typeof value['audioLevel'] === 'number' ? value['audioLevel'] : undefined,
+        packetsSent: typeof value['packetsSent'] === 'number' ? value['packetsSent'] : undefined,
+        packetsReceived: typeof value['packetsReceived'] === 'number' ? value['packetsReceived'] : undefined,
+        packetsLost: typeof value['packetsLost'] === 'number' ? value['packetsLost'] : undefined,
+        jitter: typeof value['jitter'] === 'number' ? value['jitter'] : undefined,
+    };
+}
+
+function normalizeAudioLevel(level: number | undefined): number | undefined {
+    if (level === undefined || !Number.isFinite(level)) return undefined;
+    return Math.max(0, Math.min(1, level));
 }

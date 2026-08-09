@@ -268,6 +268,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         }
         if (event.type === 'conversation.created') {
             this.refreshConversations();
+            this.dataProvider.send({type: 'presence.refresh'});
             return;
         }
         if (event.type === 'conversation.read') {

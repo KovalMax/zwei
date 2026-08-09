@@ -83,6 +83,7 @@ test('register, create conversation, and deliver a message', async ({ browser })
   const aliceConversation = bob.locator('.person-option').filter({ hasText: 'Alice' });
   await expect(aliceConversation).toBeVisible();
   await aliceConversation.click();
+  await expect(bob.getByText('Online', { exact: true })).toBeVisible();
 
    await alice.getByPlaceholder('Write a message…').fill('typing');
     await expect(bob.getByText('Alice is typing…')).toBeVisible();
@@ -105,10 +106,14 @@ test('register, create conversation, and deliver a message', async ({ browser })
      await expect(alice.locator('.message-history')).not.toBeVisible();
      await expect(alice.locator('.composer')).not.toBeVisible();
      await expect(alice.locator('.call-profile')).toContainText('Bob');
-     await expect(alice.getByLabel('Microphone input')).toBeVisible();
-     await expect(alice.getByLabel('Speaker output')).toBeVisible();
+     await expect(alice.getByLabel('Microphone input', {exact: true})).toBeVisible();
+     await expect(alice.getByLabel('Speaker output', {exact: true})).toBeVisible();
      await expect(alice.getByText('Microphone active', {exact: true})).toBeVisible();
      await expect(alice.getByText('Speaker active', {exact: true})).toBeVisible();
+     await expect(alice.getByLabel('Microphone input level')).toBeVisible();
+     await expect(alice.getByLabel('Incoming audio level')).toBeVisible();
+     await expect(alice.getByText(/Packets received:/)).toBeVisible();
+     await expect(alice.getByText(/Output path:/)).toBeVisible();
      await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
     await expect(bob.locator('audio')).toHaveJSProperty('paused', false);
     const darkThemeColors = await callThemeColors(alice);
