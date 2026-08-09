@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, Page, test } from '@playwright/test';
 
 function uniqueEmail(name: string): string {
   return `e2e-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.test`;
@@ -29,6 +29,26 @@ async function login(page: import('@playwright/test').Page, email: string): Prom
   await page.locator('[formControlName="password"]').fill('Password123!');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/home$/);
+}
+
+async function callThemeColors(page: Page): Promise<{panel: string; text: string; control: string; controlBorder: string; icon: string; scrollTrack: string; scrollThumb: string}> {
+  return page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.call-panel');
+    const control = document.querySelector<HTMLElement>('.call-actions button[mat-stroked-button]');
+    const icon = document.querySelector<HTMLElement>('.call-button');
+    const scrollSurface = document.querySelector<HTMLElement>('.message-history');
+    const panelStyle = panel ? getComputedStyle(panel) : undefined;
+    const scrollStyle = scrollSurface ? getComputedStyle(scrollSurface) : undefined;
+    return {
+      panel: panelStyle?.backgroundColor || '',
+      text: panelStyle?.color || '',
+      control: control ? getComputedStyle(control).color : '',
+      controlBorder: control ? getComputedStyle(control).borderTopColor : '',
+      icon: icon ? getComputedStyle(icon).color : '',
+      scrollTrack: scrollStyle?.getPropertyValue('--chat-scroll-track').trim() || '',
+      scrollThumb: scrollStyle?.getPropertyValue('--chat-scroll-thumb').trim() || '',
+    };
+  });
 }
 
 test('register, create conversation, and deliver a message', async ({ browser }) => {
@@ -71,9 +91,26 @@ test('register, create conversation, and deliver a message', async ({ browser })
    await expect(alice.getByText('Ringing...')).toBeVisible();
    await expect(bob.getByText('Incoming audio call.')).toBeVisible();
    await bob.getByRole('button', {name: 'Accept'}).click();
-   await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
-   await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
-   await alice.getByRole('button', {name: 'Mute'}).click();
+    await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+    await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
+    const darkThemeColors = await callThemeColors(alice);
+    expect(darkThemeColors.panel).not.toBe(darkThemeColors.text);
+    expect(darkThemeColors.panel).not.toBe(darkThemeColors.control);
+    expect(darkThemeColors.panel).not.toBe(darkThemeColors.controlBorder);
+    expect(darkThemeColors.panel).not.toBe(darkThemeColors.icon);
+    expect(darkThemeColors.scrollTrack).not.toBe(darkThemeColors.scrollThumb);
+    await alice.getByRole('button', {name: 'Account menu'}).click();
+    await alice.getByRole('menuitem', {name: 'Switch to light theme'}).click();
+    await expect(alice.locator('html')).toHaveClass(/light-theme/);
+    const lightThemeColors = await callThemeColors(alice);
+    expect(lightThemeColors.panel).not.toBe(lightThemeColors.text);
+    expect(lightThemeColors.panel).not.toBe(lightThemeColors.control);
+    expect(lightThemeColors.panel).not.toBe(lightThemeColors.controlBorder);
+    expect(lightThemeColors.panel).not.toBe(lightThemeColors.icon);
+    expect(lightThemeColors.scrollTrack).not.toBe(lightThemeColors.scrollThumb);
+    expect(lightThemeColors.panel).not.toBe(darkThemeColors.panel);
+    expect(lightThemeColors.scrollThumb).not.toBe(darkThemeColors.scrollThumb);
+    await alice.getByRole('button', {name: 'Mute'}).click();
    await expect(alice.getByRole('button', {name: 'Unmute'})).toBeVisible();
   await alice.getByRole('button', {name: 'End call'}).click();
   await expect(bob.getByText('Call ended.')).toBeVisible();
@@ -95,7 +132,7 @@ test('register, create conversation, and deliver a message', async ({ browser })
   await alice.getByPlaceholder('Write a message…').press('Enter');
   await expect(alice.getByText(messages[0])).toBeVisible({ timeout: 5_000 });
   await expect(bob.getByText(messages[0])).toBeVisible({ timeout: 5_000 });
-  await expect(alice.getByText('Read', {exact: true})).toBeVisible({ timeout: 5_000 });
+   await expect(alice.getByRole('img', {name: 'Read by peer'})).toBeVisible({ timeout: 5_000 });
 
   await alice.getByPlaceholder('Write a message…').fill(messages[1]);
   await expect(alice.getByRole('button', { name: 'Send message' })).toBeEnabled();
@@ -122,9 +159,20 @@ test('register, create conversation, and deliver a message', async ({ browser })
   await expect(alice.locator('.unread-count')).not.toBeVisible();
   await expect(alice.getByText(messages[0]).locator('xpath=ancestor::article')).toHaveClass(/message-own/);
   await expect(alice.getByText(reply).locator('xpath=ancestor::article')).not.toHaveClass(/message-own/);
+  const shortMessageBox = await alice.getByText(messages[0]).locator('xpath=ancestor::article').boundingBox();
+  expect(shortMessageBox?.width).toBeGreaterThanOrEqual(180);
+  expect(shortMessageBox?.height).toBeGreaterThanOrEqual(64);
+  expect(Date.now() - started).toBeLessThan(5_000);
+  const longMessage = `long-message-${'x'.repeat(4_000)}`;
+  await alice.getByPlaceholder('Write a message…').fill(longMessage);
+  await alice.getByRole('button', { name: 'Send message' }).click();
+  const longMessageBubble = alice.locator('.message-bubble').filter({hasText: 'long-message-'});
+  await expect(longMessageBubble).toBeVisible({timeout: 5_000});
+  const longMessageBox = await longMessageBubble.boundingBox();
+  expect(longMessageBox?.width).toBeLessThanOrEqual(680);
+  expect(longMessageBox?.height).toBeLessThanOrEqual(240);
   const messageColumn = await alice.locator('.message-list').boundingBox();
   expect(messageColumn?.width).toBeLessThanOrEqual(980);
-  expect(Date.now() - started).toBeLessThan(5_000);
 
   await aliceContext.close();
   await bobContext.close();

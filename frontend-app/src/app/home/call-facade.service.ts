@@ -82,7 +82,13 @@ export class CallFacade implements OnDestroy {
         const relevant = state.callID === event.payload.call_id || (state.role === 'caller' && state.phase === 'outgoing' && state.conversationID === event.payload.conversation_id);
         if (!relevant || (state.role === 'recipient' && state.phase !== 'connecting')) return;
         let localStream = state.localStream;
-        if (state.role === 'recipient') localStream = await this.requestMicrophone();
+        if (state.role === 'recipient') {
+            localStream = await this.requestMicrophone();
+            if (!localStream) {
+                this.sendCallControl('call.end', event.payload.call_id);
+                return;
+            }
+        }
         if (!localStream || !this.createConnection(event.payload.ice_servers, localStream)) return;
         this.setState({...this.state, phase: 'connecting', callID: event.payload.call_id, conversationID: event.payload.conversation_id, peerID: this.peerFor(event.payload), localStream, statusLabel: 'Connecting call...'});
         for (const signal of this.pendingSignals.splice(0)) await this.applySignal(signal);
@@ -113,8 +119,26 @@ export class CallFacade implements OnDestroy {
         } catch { this.setError('Audio calls are not supported by this browser.'); return false; }
     }
     private sendSignal(signal: Record<string, unknown>): void { const callID = this.state.callID; if (callID && !this.dataProvider.send({type: 'call.signal', request_id: createRandomID(), payload: {call_id: callID, signal}})) this.setError('The secure connection is unavailable.'); }
-    private sendControl(type: 'call.decline' | 'call.cancel' | 'call.end', label: string): void { const callID = this.state.callID; if (callID) this.dataProvider.send({type, request_id: createRandomID(), payload: {call_id: callID}}); this.terminal(label); }
-    private async requestMicrophone(): Promise<MediaStream | undefined> { try { return await navigator.mediaDevices.getUserMedia({audio: true}); } catch { this.setError('Microphone permission was denied.'); return undefined; } }
+    private sendControl(type: 'call.decline' | 'call.cancel' | 'call.end', label: string): void { const callID = this.state.callID; if (callID) this.sendCallControl(type, callID); this.terminal(label); }
+    private sendCallControl(type: 'call.decline' | 'call.cancel' | 'call.end', callID: string): void { this.dataProvider.send({type, request_id: createRandomID(), payload: {call_id: callID}}); }
+    private async requestMicrophone(): Promise<MediaStream | undefined> {
+        if (!window.isSecureContext) { this.setError('Microphone access requires a secure HTTPS connection.'); return undefined; }
+        if (typeof navigator.mediaDevices?.getUserMedia !== 'function') { this.setError('This browser does not support microphone access.'); return undefined; }
+        try {
+            return await navigator.mediaDevices.getUserMedia({audio: true});
+        } catch (error: unknown) {
+            this.setError(this.microphoneErrorLabel(error));
+            return undefined;
+        }
+    }
+    private microphoneErrorLabel(error: unknown): string {
+        const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') return 'Microphone permission was denied. Allow microphone access for this site and try again.';
+        if (name === 'SecurityError') return 'Microphone access is blocked by browser security settings.';
+        if (name === 'NotFoundError') return 'No microphone was found. Connect a microphone and try again.';
+        if (name === 'NotReadableError' || name === 'AbortError') return 'The microphone is unavailable. Close other apps using it and try again.';
+        return 'Microphone access is unavailable. Check the browser permission and microphone, then try again.';
+    }
     private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, statusLabel: label}); this.dismissNotice(); }
     private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
     private cleanup(): void { this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; }

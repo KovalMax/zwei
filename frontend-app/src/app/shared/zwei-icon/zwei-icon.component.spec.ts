@@ -17,4 +17,11 @@ describe('ZweiIconComponent', () => {
         expect(svg.getAttribute('aria-hidden')).toBe('true');
         expect(svg.querySelector('path')?.getAttribute('d')).toContain('23 12');
     });
+
+    it('renders the compact read-state icon', () => {
+        fixture.componentRef.setInput('name', 'done_all');
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('path')?.getAttribute('d')).toContain('20.59 6.41');
+    });
 });

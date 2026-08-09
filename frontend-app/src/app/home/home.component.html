@@ -61,7 +61,7 @@
             <div class="message-list" *ngIf="messages.length; else emptyMessages">
                 <article class="message-bubble" *ngFor="let message of messages" [class.message-own]="isOwnMessage(message)" [class.message-pending]="message.pending">
                     <span class="message-sender">{{ senderName(message) }}</span>
-                    <p>{{ message.body }}</p><time>{{ message.createdAt | date:'shortTime' }}</time><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-read" *ngIf="isLatestReadMessage(message)">Read</span>
+                    <p>{{ message.body }}</p><div class="message-meta"><time>{{ message.createdAt | date:'shortTime' }}</time><span class="message-read" *ngIf="isLatestReadMessage(message)" role="img" aria-label="Read by peer"><zwei-icon name="done_all"></zwei-icon></span></div><span class="message-pending-label" *ngIf="message.pending">Sending…</span>
                 </article>
             </div>
             <ng-template #emptyMessages><div class="empty-messages"><zwei-icon name="mark_chat_unread"></zwei-icon><p>No messages yet.</p></div></ng-template>
