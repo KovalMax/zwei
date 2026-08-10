@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/KovalMax/zwei/services/realtime/internal/application"
@@ -46,12 +47,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	connectionID := uuid.NewString()
+	budget, hasBudget := h.tickets.(application.ConnectionBudget)
+	if hasBudget {
+		allowed, err := budget.AllowConnection(r.Context(), identity.UserID, connectionID)
+		if err != nil {
+			http.Error(w, "connection budget unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "connection limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+	}
 	upgrader := websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 1024, CheckOrigin: func(request *http.Request) bool { _, ok := h.origins[request.Header.Get("Origin")]; return ok }}
 	socket, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		if hasBudget {
+			_ = budget.ReleaseConnection(context.Background(), identity.UserID, connectionID)
+		}
 		return
 	}
-	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16)}
+	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16), budget: budget, connectionID: connectionID}
 	h.hub.Add(r.Context(), client)
 	go client.writePump(h.context)
 	client.readPump(h.context)
@@ -70,16 +88,24 @@ func (h *Handler) authenticate(ctx context.Context, ticket string) (sharedauth.I
 }
 
 type client struct {
-	socket   *websocket.Conn
-	identity sharedauth.Identity
-	hub      *application.Hub
-	send     chan []byte
-	once     sync.Once
+	socket       *websocket.Conn
+	identity     sharedauth.Identity
+	hub          *application.Hub
+	send         chan []byte
+	once         sync.Once
+	budget       application.ConnectionBudget
+	connectionID string
 }
 
 func (c *client) Identity() sharedauth.Identity { return c.identity }
 func (c *client) Close() {
-	c.once.Do(func() { c.hub.Remove(context.Background(), c); _ = c.socket.Close() })
+	c.once.Do(func() {
+		c.hub.Remove(context.Background(), c)
+		if c.budget != nil {
+			_ = c.budget.ReleaseConnection(context.Background(), c.identity.UserID, c.connectionID)
+		}
+		_ = c.socket.Close()
+	})
 }
 func (c *client) SendJSON(value any) {
 	payload, err := json.Marshal(value)

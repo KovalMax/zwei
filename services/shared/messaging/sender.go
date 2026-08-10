@@ -63,7 +63,7 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, false, ErrPersistence
 	}
-	if err = tx.QueryRow(ctx, `UPDATE conversations SET next_sequence = next_sequence + 1 WHERE id = $1 RETURNING next_sequence - 1`, request.ConversationID).Scan(&result.Sequence); err != nil {
+	if err = tx.QueryRow(ctx, `UPDATE conversations SET next_sequence = next_sequence + 1, last_message_at = now() WHERE id = $1 RETURNING next_sequence - 1`, request.ConversationID).Scan(&result.Sequence); err != nil {
 		return Message{}, false, ErrPersistence
 	}
 	ciphertext, nonce, err = sharedmessage.Encrypt(s.key, []byte(request.Body))
@@ -83,6 +83,9 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 		return Message{}, false, ErrPersistence
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO message_delivery (message_id, device_id) SELECT $1, id FROM devices WHERE user_id = $2 AND revoked_at IS NULL`, result.ID, recipient); err != nil {
+		return Message{}, false, ErrPersistence
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO user_read_cursors (user_id, conversation_id, last_read_sequence, unread_count) VALUES ($1, $2, 0, 1) ON CONFLICT (user_id, conversation_id) DO UPDATE SET unread_count = user_read_cursors.unread_count + 1, updated_at = now()`, recipient, request.ConversationID); err != nil {
 		return Message{}, false, ErrPersistence
 	}
 	if err = tx.Commit(ctx); err != nil {

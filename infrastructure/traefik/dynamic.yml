@@ -25,6 +25,16 @@ http:
         average: 30
         period: 1m
         burst: 40
+    chat-rate-limit:
+      rateLimit:
+        average: 120
+        period: 1m
+        burst: 40
+    realtime-rate-limit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 20
   routers:
     dashboard:
       rule: Host(`traefik.localhost`)
@@ -58,14 +68,14 @@ http:
       service: chat
       priority: 100
       tls: {}
-      middlewares: [security-headers]
+      middlewares: [security-headers, chat-rate-limit]
     realtime:
       rule: Host(`ws.chat.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/ws`))
       entryPoints: [websecure]
       service: realtime
       priority: 100
       tls: {}
-      middlewares: [security-headers]
+      middlewares: [security-headers, realtime-rate-limit]
 
   services:
     frontend:

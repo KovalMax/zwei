@@ -15,6 +15,32 @@ type HealthResponse struct {
 	Status  string `json:"status"`
 }
 
+const (
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 15 * time.Second
+	httpWriteTimeout      = 15 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+	httpMaxHeaderBytes    = 1 << 20
+)
+
+// ConfigureHTTPServer applies bounded timeouts to request/response servers.
+// Streaming upgrades use ConfigureWebSocketServer instead because a finite
+// write timeout would terminate an otherwise healthy long-lived socket.
+func ConfigureHTTPServer(server *http.Server) {
+	server.ReadHeaderTimeout = httpReadHeaderTimeout
+	server.ReadTimeout = httpReadTimeout
+	server.WriteTimeout = httpWriteTimeout
+	server.IdleTimeout = httpIdleTimeout
+	server.MaxHeaderBytes = httpMaxHeaderBytes
+}
+
+// ConfigureWebSocketServer protects the HTTP upgrade handshake without
+// imposing request/response deadlines on the hijacked WebSocket connection.
+func ConfigureWebSocketServer(server *http.Server) {
+	server.ReadHeaderTimeout = httpReadHeaderTimeout
+	server.MaxHeaderBytes = httpMaxHeaderBytes
+}
+
 func NewHealthHandler(service string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {

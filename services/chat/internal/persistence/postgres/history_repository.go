@@ -24,14 +24,16 @@ func NewHistoryRepository(db *pgxpool.Pool, encryptionSecret string) *HistoryRep
 }
 
 func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uuid.UUID, before int64, limit int) ([]conversation.Message, string, error) {
-	var member bool
-	if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2)`, conversationID, userID).Scan(&member); err != nil {
-		return nil, "", err
+	query := `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at FROM (SELECT conversation_id FROM conversation_members WHERE conversation_id = $2 AND user_id = $1) member CROSS JOIN LATERAL (SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, expires_at FROM messages WHERE conversation_id = member.conversation_id`
+	args := []any{userID, conversationID}
+	if before > 0 {
+		query += ` AND sequence < $3`
+		args = append(args, before)
 	}
-	if !member {
-		return nil, "", ErrNotFound
-	}
-	rows, err := r.db.Query(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at FROM messages WHERE conversation_id = $1 AND ($2 = 0 OR sequence < $2) AND (expires_at IS NULL OR expires_at > now()) ORDER BY sequence DESC LIMIT $3`, conversationID, before, limit+1)
+	limitArgument := len(args) + 1
+	query += ` AND (expires_at IS NULL OR expires_at > now()) ORDER BY sequence DESC LIMIT $` + strconv.Itoa(limitArgument) + `) m`
+	args = append(args, limit+1)
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -52,6 +54,16 @@ func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uui
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
+	}
+	rows.Close()
+	if len(messages) == 0 {
+		var member bool
+		if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2)`, conversationID, userID).Scan(&member); err != nil {
+			return nil, "", err
+		}
+		if !member {
+			return nil, "", ErrNotFound
+		}
 	}
 	nextCursor := ""
 	if len(messages) > limit {

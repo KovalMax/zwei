@@ -14,7 +14,7 @@ function field(page: Page, name: string) {
   return page.locator('mat-form-field').filter({has: input(page, name)});
 }
 
-async function register(page: Page, email: string, nickname = 'Test User'): Promise<void> {
+async function register(page: Page, email: string, nickname = 'Test User'): Promise<string> {
   await page.goto('/sign-up');
   await input(page, 'email').fill(email);
   await input(page, 'firstName').fill('Test');
@@ -22,8 +22,18 @@ async function register(page: Page, email: string, nickname = 'Test User'): Prom
   await input(page, 'nickName').fill(nickname);
   await input(page, 'password').fill(password);
   await input(page, 'confirmPassword').fill(password);
+  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
+  const response = await responsePromise;
+  if (response.status() !== 201) {
+    throw new Error(`registration failed: ${response.status()} ${await response.text()}`);
+  }
+  const payload = await response.json() as {access_token?: string};
+  if (!payload.access_token) {
+    throw new Error('registration response did not include an access token');
+  }
   await expect(page).toHaveURL(/\/home$/);
+  return payload.access_token;
 }
 
 async function login(page: Page, email: string, value = password): Promise<void> {
@@ -45,6 +55,23 @@ test('serves the browser security headers', async ({request}) => {
   expect(response.headers()['referrer-policy']).toBe('strict-origin-when-cross-origin');
   expect(response.headers()['permissions-policy']).toContain('camera=()');
   expect(response.headers()['permissions-policy']).toContain('microphone=(self)');
+});
+
+test('enforces authenticated chat limits through HTTPS', async ({page, request}) => {
+  const accessToken = await register(page, uniqueEmail('chat-limit'), 'Chat Limit User');
+  const responses: Array<{status: number; retryAfter: string}> = [];
+
+  for (let attempt = 0; attempt < 21; attempt += 1) {
+    const response = await request.post('/api/chat/conversations', {
+      headers: {Authorization: `Bearer ${accessToken}`},
+      data: {other_user_id: '00000000-0000-0000-0000-000000000001'},
+    });
+    responses.push({status: response.status(), retryAfter: response.headers()['retry-after'] || ''});
+    await response.body();
+  }
+
+  expect(responses.slice(0, 20).every(response => response.status === 404)).toBeTruthy();
+  expect(responses[20]).toEqual({status: 429, retryAfter: '60'});
 });
 
 test('shows every registration and login validation state', async ({page}) => {

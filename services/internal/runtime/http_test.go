@@ -4,7 +4,46 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+func TestConfigureHTTPServerSetsBoundedTimeouts(t *testing.T) {
+	server := &http.Server{}
+
+	ConfigureHTTPServer(server)
+
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("read header timeout = %s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 15*time.Second {
+		t.Fatalf("read timeout = %s", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 15*time.Second {
+		t.Fatalf("write timeout = %s", server.WriteTimeout)
+	}
+	if server.IdleTimeout != 60*time.Second {
+		t.Fatalf("idle timeout = %s", server.IdleTimeout)
+	}
+	if server.MaxHeaderBytes != 1<<20 {
+		t.Fatalf("max header bytes = %d", server.MaxHeaderBytes)
+	}
+}
+
+func TestConfigureWebSocketServerOnlyBoundsUpgrade(t *testing.T) {
+	server := &http.Server{}
+
+	ConfigureWebSocketServer(server)
+
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("read header timeout = %s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 0 || server.WriteTimeout != 0 || server.IdleTimeout != 0 {
+		t.Fatalf("streaming server received request/response timeout: %+v", server)
+	}
+	if server.MaxHeaderBytes != 1<<20 {
+		t.Fatalf("max header bytes = %d", server.MaxHeaderBytes)
+	}
+}
 
 func TestWithCORSAllowsConfiguredOrigin(t *testing.T) {
 	nextCalled := false

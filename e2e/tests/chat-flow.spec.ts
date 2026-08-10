@@ -31,21 +31,30 @@ async function login(page: import('@playwright/test').Page, email: string): Prom
   await expect(page).toHaveURL(/\/home$/);
 }
 
-async function callThemeColors(page: Page): Promise<{panel: string; text: string; card: string; cardText: string; control: string; controlBorder: string; icon: string; scrollTrack: string; scrollThumb: string}> {
+async function callThemeColors(page: Page): Promise<{panel: string; text: string; card: string; cardText: string; action: string; actionText: string; device: string; control: string; controlBorder: string; icon: string; scrollTrack: string; scrollThumb: string}> {
   return page.evaluate(() => {
     const panel = document.querySelector<HTMLElement>('.call-panel');
     const card = document.querySelector<HTMLElement>('.call-card');
+    const action = document.querySelector<HTMLElement>('.call-actions');
+    const actionButton = document.querySelector<HTMLElement>('.call-actions button[mat-stroked-button]');
+    const device = document.querySelector<HTMLElement>('.call-devices select');
     const control = document.querySelector<HTMLElement>('.call-actions button[mat-stroked-button]');
     const icon = document.querySelector<HTMLElement>('.call-button');
     const scrollSurface = document.querySelector<HTMLElement>('.message-history');
     const panelStyle = panel ? getComputedStyle(panel) : undefined;
     const cardStyle = card ? getComputedStyle(card) : undefined;
+    const actionStyle = action ? getComputedStyle(action) : undefined;
+    const actionButtonStyle = actionButton ? getComputedStyle(actionButton) : undefined;
+    const deviceStyle = device ? getComputedStyle(device) : undefined;
     const scrollStyle = scrollSurface ? getComputedStyle(scrollSurface) : undefined;
     return {
       panel: panelStyle?.backgroundColor || '',
       text: panelStyle?.color || '',
       card: cardStyle?.backgroundColor || '',
       cardText: cardStyle?.color || '',
+      action: actionStyle?.backgroundColor || '',
+      actionText: actionButtonStyle?.color || '',
+      device: deviceStyle?.backgroundColor || '',
       control: control ? getComputedStyle(control).color : '',
       controlBorder: control ? getComputedStyle(control).borderTopColor : '',
       icon: icon ? getComputedStyle(icon).color : '',
@@ -93,16 +102,20 @@ test('register, create conversation, and deliver a message', async ({ browser })
    await bob.getByRole('button', {name: 'Back to chats'}).click();
    await bob.setViewportSize(desktop.viewport);
 
-    await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
-    await alice.getByRole('button', {name: 'Start audio call'}).click();
-    await expect(alice.getByText('Ringing...')).toBeVisible();
-    await expect(bob.getByText('Incoming audio call.')).toBeVisible();
-    await expect(bob.locator('.call-profile')).toContainText('Alice');
+     await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
+      await alice.getByRole('button', {name: 'Start audio call'}).click();
+      await expect(alice.getByText('Ringing...')).toBeVisible();
+      await expect(bob.getByText('Incoming audio call.')).toBeVisible();
+      await expect(alice.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
+      await expect(bob.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
+      expect(await bob.locator('.call-panel').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
+     await expect(bob.locator('.call-profile')).toContainText('Alice');
     await expect(bob.locator('.person-option.selected')).toContainText('Alice');
     await bob.getByRole('button', {name: 'Accept'}).click();
       await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
       await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
       await expect(bob.locator('.call-profile')).toContainText('Alice');
+      await expect(alice.locator('.call-collapse-button')).toBeVisible();
      await expect(alice.locator('.message-history')).not.toBeVisible();
      await expect(alice.locator('.composer')).not.toBeVisible();
      await expect(alice.locator('.call-profile')).toContainText('Bob');
@@ -111,12 +124,55 @@ test('register, create conversation, and deliver a message', async ({ browser })
      await expect(alice.getByText('Microphone active', {exact: true})).toBeVisible();
      await expect(alice.getByText('Speaker active', {exact: true})).toBeVisible();
      await expect(alice.getByLabel('Microphone input level')).toBeVisible();
-     await expect(alice.getByLabel('Incoming audio level')).toBeVisible();
-     await expect(alice.getByText(/Packets received:/)).toBeVisible();
-     await expect(alice.getByText(/Output path:/)).toBeVisible();
-     await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
-    await expect(bob.locator('audio')).toHaveJSProperty('paused', false);
-    const darkThemeColors = await callThemeColors(alice);
+      await expect(alice.getByLabel('Incoming audio level')).toBeVisible();
+      await expect(alice.getByText(/Packets received:/)).toBeVisible();
+      await expect(alice.getByText(/Output path:/)).toBeVisible();
+      await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
+      await expect(bob.locator('audio')).toHaveJSProperty('paused', false);
+      await bob.getByRole('button', {name: 'Minimize call'}).click();
+      const incomingDuringCall = `incoming-during-call-${Date.now()}`;
+      await bob.getByPlaceholder('Write a message…').fill(incomingDuringCall);
+      await bob.getByRole('button', {name: 'Send message'}).click();
+      await expect(bob.getByText(incomingDuringCall)).toBeVisible();
+      await expect(alice.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).toHaveText('1');
+      await alice.getByRole('button', {name: 'Minimize call'}).click();
+      await expect(alice.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).not.toBeVisible();
+      await expect(bob.getByText(incomingDuringCall).locator('xpath=ancestor::article').getByRole('img', {name: 'Read by peer'})).toBeVisible({timeout: 5_000});
+      await alice.getByRole('button', {name: 'Return to call with Bob'}).click();
+      await bob.getByRole('button', {name: 'Return to call with Alice'}).click();
+      await alice.setViewportSize({width: 390, height: 844});
+      await expect(alice.locator('.call-duration')).not.toHaveText('00:00', {timeout: 3_000});
+      await alice.getByRole('button', {name: 'Minimize call'}).click();
+      await expect(alice.locator('.call-panel-full')).not.toBeVisible();
+      await expect(alice.getByPlaceholder('Write a message…')).toBeVisible();
+      await expect(alice.getByRole('button', {name: 'Return to call with Bob'})).toBeVisible();
+      const duringCallMessage = `during-call-${Date.now()}`;
+      await alice.getByPlaceholder('Write a message…').fill(duringCallMessage);
+      await alice.getByRole('button', {name: 'Send message'}).click();
+      await expect(alice.getByText(duringCallMessage)).toBeVisible();
+      await alice.getByRole('button', {name: 'Return to call with Bob'}).click();
+      await expect(alice.locator('.call-panel-full')).toBeVisible();
+      await alice.getByRole('button', {name: 'Minimize call'}).click();
+      await alice.getByRole('button', {name: 'Back to chats'}).click();
+      await expect(alice.locator('.conversation-rail .call-minimized-banner')).toBeVisible();
+      await alice.locator('.conversation-rail').getByRole('button', {name: 'Return to call with Bob'}).click();
+      await expect(alice.locator('.call-panel-full')).toBeVisible();
+      await expect(alice.getByRole('button', {name: 'Mute'})).toBeVisible();
+     await expect(alice.getByRole('button', {name: 'End call'})).toBeVisible();
+     const mobileMuteBox = await alice.getByRole('button', {name: 'Mute'}).boundingBox();
+     const mobileEndCallBox = await alice.getByRole('button', {name: 'End call'}).boundingBox();
+      if (!mobileMuteBox || !mobileEndCallBox) {
+        throw new Error('Mobile call controls bounds were not available');
+      }
+      expect(mobileEndCallBox.y).toBeGreaterThan(600);
+      expect(mobileMuteBox.y + mobileMuteBox.height).toBeLessThanOrEqual(844);
+      expect(mobileEndCallBox.y + mobileEndCallBox.height).toBeLessThanOrEqual(844);
+      const mobileContent = alice.locator('.call-panel-full .call-card-content');
+      expect(await mobileContent.evaluate(element => {
+        const lastChild = element.lastElementChild;
+        return lastChild ? element.scrollHeight - (lastChild.offsetTop + lastChild.offsetHeight) : 0;
+      })).toBeLessThanOrEqual(2);
+      const darkThemeColors = await callThemeColors(alice);
     expect(darkThemeColors.panel).not.toBe(darkThemeColors.text);
     expect(darkThemeColors.panel).not.toBe(darkThemeColors.control);
     expect(darkThemeColors.panel).not.toBe(darkThemeColors.controlBorder);
@@ -131,35 +187,69 @@ test('register, create conversation, and deliver a message', async ({ browser })
     expect(lightThemeColors.panel).not.toBe(lightThemeColors.controlBorder);
      expect(lightThemeColors.panel).not.toBe(lightThemeColors.icon);
      expect(lightThemeColors.scrollTrack).not.toBe(lightThemeColors.scrollThumb);
-     expect(lightThemeColors.panel).not.toBe(darkThemeColors.panel);
-     expect(lightThemeColors.card).not.toBe(darkThemeColors.card);
-     expect(lightThemeColors.card).not.toBe(lightThemeColors.cardText);
+      expect(lightThemeColors.panel).not.toBe(darkThemeColors.panel);
+      expect(lightThemeColors.card).not.toBe(darkThemeColors.card);
+      expect(lightThemeColors.card).not.toBe(lightThemeColors.cardText);
+      expect(lightThemeColors.action).toBe('rgb(246, 248, 252)');
+      expect(lightThemeColors.actionText).toBe('rgb(23, 32, 51)');
+      expect(lightThemeColors.device).toBe('rgb(255, 255, 255)');
      expect(lightThemeColors.scrollThumb).not.toBe(darkThemeColors.scrollThumb);
      await alice.setViewportSize({width: 1440, height: 900});
      const callCard = alice.locator('.call-panel-full .call-card');
      const callPanel = alice.locator('.call-panel-full');
      const endCall = alice.getByRole('button', {name: 'End call'});
      const cardBox = await callCard.boundingBox();
-     const panelBox = await callPanel.boundingBox();
-     const endCallBox = await endCall.boundingBox();
-     if (!cardBox || !panelBox || !endCallBox) {
-       throw new Error('Active call surface bounds were not available');
-     }
-     expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
-     expect(endCallBox.x + endCallBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
-     await alice.setViewportSize({width: 390, height: 844});
-     await expect(callCard).toBeVisible();
-     const mobileCardBox = await callCard.boundingBox();
-     const mobilePanelBox = await callPanel.boundingBox();
-     if (!mobileCardBox || !mobilePanelBox) {
-       throw new Error('Mobile call surface bounds were not available');
-     }
-     expect(mobileCardBox.x + mobileCardBox.width).toBeLessThanOrEqual(mobilePanelBox.x + mobilePanelBox.width + 1);
-     await alice.setViewportSize(desktop.viewport);
-     await alice.getByRole('button', {name: 'Mute'}).click();
-   await expect(alice.getByRole('button', {name: 'Unmute'})).toBeVisible();
-   await alice.getByRole('button', {name: 'End call'}).click();
-   await expect(bob.getByText('Call ended.')).toBeVisible();
+      const panelBox = await callPanel.boundingBox();
+      const endCallBox = await endCall.boundingBox();
+      if (!cardBox || !panelBox || !endCallBox) {
+        throw new Error('Active call surface bounds were not available');
+      }
+      expect(cardBox.y).toBeGreaterThanOrEqual(panelBox.y);
+      expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
+      expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height + 1);
+      expect(endCallBox.x + endCallBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+      expect(endCallBox.y + endCallBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height + 1);
+      await alice.setViewportSize({width: 1024, height: 900});
+      const mediumCardBox = await callCard.boundingBox();
+      const mediumPanelBox = await callPanel.boundingBox();
+      if (!mediumCardBox || !mediumPanelBox) {
+        throw new Error('Medium call surface bounds were not available');
+      }
+      expect(mediumCardBox.y).toBeGreaterThanOrEqual(mediumPanelBox.y);
+      expect(mediumCardBox.x + mediumCardBox.width).toBeLessThanOrEqual(mediumPanelBox.x + mediumPanelBox.width + 1);
+      expect(mediumCardBox.y + mediumCardBox.height).toBeLessThanOrEqual(mediumPanelBox.y + mediumPanelBox.height + 1);
+      expect(await callPanel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
+      const meters = alice.locator('.call-panel-full .call-meter');
+      for (let index = 0; index < await meters.count(); index += 1) {
+        const meterBox = await meters.nth(index).boundingBox();
+        if (!meterBox) {
+          throw new Error('Medium call meter bounds were not available');
+        }
+        expect(meterBox.x + meterBox.width).toBeLessThanOrEqual(mediumCardBox.x + mediumCardBox.width + 1);
+      }
+      await alice.setViewportSize({width: 390, height: 844});
+      await expect(callCard).toBeVisible();
+      const mobileCardBox = await callCard.boundingBox();
+      const mobilePanelBox = await callPanel.boundingBox();
+      const mobileCollapseBox = await alice.getByRole('button', {name: 'Minimize call'}).boundingBox();
+      const mobileProfileBox = await alice.locator('.call-panel-full .call-profile').boundingBox();
+      const mobileContentBox = await alice.locator('.call-panel-full .call-card-content').boundingBox();
+      if (!mobileCardBox || !mobilePanelBox) {
+        throw new Error('Mobile call surface bounds were not available');
+      }
+      expect(mobileCardBox.x + mobileCardBox.width).toBeLessThanOrEqual(mobilePanelBox.x + mobilePanelBox.width + 1);
+      if (!mobileCollapseBox || !mobileProfileBox || !mobileContentBox) {
+        throw new Error('Mobile collapse-control bounds were not available');
+      }
+      expect(mobileCollapseBox.x).toBeLessThan(mobileContentBox.x);
+      expect(mobileCollapseBox.y + mobileCollapseBox.height).toBeLessThanOrEqual(mobileProfileBox.y);
+      await alice.setViewportSize(desktop.viewport);
+    await alice.getByRole('button', {name: 'Mute'}).click();
+    await expect(alice.getByRole('button', {name: 'Unmute'})).toBeVisible();
+    await alice.getByRole('button', {name: 'End call'}).click();
+    await expect(alice.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).not.toBeVisible();
+    await expect(bob.getByText('Call ended.')).toBeVisible();
+    await expect(bob.locator('.call-diagnostics')).not.toBeVisible();
    await bob.locator('.person-option').filter({hasText: 'Alice'}).click();
 
    await bob.goto('/profile');

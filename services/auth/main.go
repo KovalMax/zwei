@@ -41,6 +41,7 @@ func main() {
 		panic(err)
 	}
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: runtime.WithCORS(cacheControl(mux), origins)}
+	runtime.ConfigureHTTPServer(server)
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {
 		panic(err)
 	}
