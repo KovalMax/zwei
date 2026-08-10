@@ -64,6 +64,18 @@ type TypingRateCoordinator interface {
 	AllowTypingStart(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 }
 
+type RealtimeRateCoordinator interface {
+	AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error)
+	AllowRead(context.Context, uuid.UUID) (bool, error)
+	AllowCall(context.Context, uuid.UUID) (bool, error)
+	AllowSignal(context.Context, uuid.UUID) (bool, error)
+}
+
+type ConnectionBudget interface {
+	AllowConnection(context.Context, uuid.UUID, string) (bool, error)
+	ReleaseConnection(context.Context, uuid.UUID, string) error
+}
+
 type DeliveryRepository interface {
 	Pending(context.Context, uuid.UUID, int) ([]messaging.Message, error)
 	MarkDelivered(context.Context, uuid.UUID, []uuid.UUID) error
@@ -257,6 +269,12 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported protocol version")}
 	}
 	if request.Type == "presence.refresh" {
+		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
+			allowed, err := limiter.AllowPresenceRefresh(ctx, client.Identity().UserID)
+			if err != nil || !allowed {
+				return &RequestError{RequestID: request.RequestID, Err: errors.New("presence refresh rate limit exceeded")}
+			}
+		}
 		h.sendPresenceSnapshot(ctx, client)
 		return nil
 	}
@@ -276,9 +294,24 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 		if request.Type == "call.signal" && (len(bytes.TrimSpace(request.Payload.Signal)) == 0 || bytes.TrimSpace(request.Payload.Signal)[0] != '{') {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("signal must be an object")}
 		}
+		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
+			allowed, err := limiter.AllowCall(ctx, client.Identity().UserID)
+			if request.Type == "call.signal" {
+				allowed, err = limiter.AllowSignal(ctx, client.Identity().UserID)
+			}
+			if err != nil || !allowed {
+				return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
+			}
+		}
 		return h.handleCall(ctx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.CallID, request.Payload.Signal)
 	}
 	if request.Type == "conversation.read" {
+		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
+			allowed, err := limiter.AllowRead(ctx, client.Identity().UserID)
+			if err != nil || !allowed {
+				return &RequestError{RequestID: request.RequestID, Err: errors.New("read rate limit exceeded")}
+			}
+		}
 		if h.cursors == nil || h.presence == nil || request.Payload.Sequence < 1 {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("read cursor unavailable")}
 		}

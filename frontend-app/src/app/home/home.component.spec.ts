@@ -212,6 +212,49 @@ describe('HomeComponent', () => {
         expect(historyComponent.conversations.getValue()[0].unreadCount).toBe(0);
     });
 
+    it('shows an unread badge for an incoming message while the call surface is open', () => {
+        const send = jasmine.createSpy('send').and.returnValue(true);
+        const selected = conversation('selected');
+        const historyComponent = new HomeComponent(
+            {} as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {send} as unknown as DataProviderService,
+            {state: {phase: 'active', conversationID: selected.id}, close: () => undefined} as unknown as CallFacade,
+        );
+        historyComponent.profile = {id: 'user-me'} as Profile;
+        historyComponent.selectedConversation = selected;
+        historyComponent.conversations.next([selected]);
+        historyComponent.socketReady = true;
+
+        historyComponent.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {id: 'call-message', conversation_id: selected.id, sender_id: selected.otherUserId, client_message_id: 'call-message', sequence: 2, body: 'While calling', created_at: '2026-01-01T00:00:02Z'}});
+
+        expect(historyComponent.conversations.getValue()[0].unreadCount).toBe(1);
+        expect(send).not.toHaveBeenCalledWith({type: 'conversation.read', payload: {conversation_id: selected.id, sequence: 2}});
+    });
+
+    it('marks call-time messages read when the call is minimized', () => {
+        const send = jasmine.createSpy('send').and.returnValue(true);
+        const selected = conversation('selected');
+        const historyComponent = new HomeComponent(
+            {} as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {send} as unknown as DataProviderService,
+            {state: {phase: 'active', conversationID: selected.id}, close: () => undefined} as unknown as CallFacade,
+        );
+        historyComponent.profile = {id: 'user-me'} as Profile;
+        historyComponent.selectedConversation = selected;
+        historyComponent.conversations.next([{...selected, unreadCount: 1}]);
+        historyComponent.messages = [{id: 'call-message', conversationId: selected.id, senderId: selected.otherUserId, clientMessageId: 'call-message', sequence: 2, body: 'While calling', createdAt: '2026-01-01T00:00:02Z'}];
+        historyComponent.socketReady = true;
+
+        historyComponent.minimizeCall();
+
+        expect(send).toHaveBeenCalledWith({type: 'conversation.read', payload: {conversation_id: selected.id, sequence: 2}});
+        expect(historyComponent.conversations.getValue()[0].unreadCount).toBe(0);
+    });
+
     it('refreshes typing while composing so the peer indicator does not expire', fakeAsync(() => {
         const send = jasmine.createSpy('send').and.returnValue(true);
         const historyComponent = new HomeComponent(

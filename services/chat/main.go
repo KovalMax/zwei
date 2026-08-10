@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	redisinfra "github.com/KovalMax/zwei/services/chat/internal/infrastructure/redis"
 	"github.com/KovalMax/zwei/services/chat/internal/persistence/postgres"
 	httptransport "github.com/KovalMax/zwei/services/chat/internal/transport/http"
 	"github.com/KovalMax/zwei/services/internal/runtime"
@@ -29,7 +30,15 @@ func main() {
 		panic(err)
 	}
 	encryptionSecret := getenv("MESSAGE_ENCRYPTION_KEY", "local-development-key-change-me")
-	handler := httptransport.NewHandler(messaging.NewSender(db, encryptionSecret), sharedauth.NewSessionValidator(db, []byte(secret)), postgres.NewConversationRepository(db), postgres.NewHistoryRepository(db, encryptionSecret))
+	limiter, err := redisinfra.NewRequestLimiter(getenv("REDIS_URL", "redis://redis:6379/0"))
+	if err != nil {
+		panic(err)
+	}
+	defer limiter.Close()
+	if err := limiter.Ping(ctx); err != nil {
+		panic(err)
+	}
+	handler := httptransport.NewHandler(messaging.NewSender(db, encryptionSecret), sharedauth.NewSessionValidator(db, []byte(secret)), postgres.NewConversationRepository(db), postgres.NewHistoryRepository(db, encryptionSecret), limiter)
 	mux := runtime.NewHealthHandler("chat")
 	handler.Register(mux)
 	origins, err := runtime.ParseOrigins(getenv("ALLOWED_ORIGINS", "https://chat.localhost"))
@@ -37,6 +46,7 @@ func main() {
 		panic(err)
 	}
 	server := &http.Server{Addr: ":" + getenv("CHAT_PORT", "8082"), Handler: runtime.WithCORS(cacheControl(mux), origins)}
+	runtime.ConfigureHTTPServer(server)
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {
 		panic(err)
 	}

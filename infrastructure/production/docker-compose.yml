@@ -82,8 +82,11 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:?MESSAGE_ENCRYPTION_KEY is required}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       database:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/health/ready"]

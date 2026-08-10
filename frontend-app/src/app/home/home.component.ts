@@ -1,5 +1,5 @@
 import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, OnDestroy, OnInit, ViewChild} from '@angular/core';
-import {BehaviorSubject} from 'rxjs';
+import {BehaviorSubject, Subscription} from 'rxjs';
 import {Conversation} from './conversation.model';
 import {ConversationService} from './conversation.service';
 import {Message} from './message.model';
@@ -9,7 +9,7 @@ import {createRandomID} from '../login/login';
 import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
 import {toMessage} from './wire.mapper';
-import {CallFacade} from './call-facade.service';
+import {CallFacade, CallState} from './call-facade.service';
 
 @Component({
     standalone: false,
@@ -35,6 +35,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     public presenceReady = false;
     public sendStatus = '';
     public profile?: Profile;
+    public callElapsedSeconds = 0;
+    private callMinimized = false;
     private typingTimeout?: number;
     private remoteTypingTimeout?: number;
     private lastTypingStartAt = 0;
@@ -44,6 +46,9 @@ export class HomeComponent implements OnInit, OnDestroy {
     private typingConversationID?: string;
     private pendingIncomingCallConversationID?: string;
     private isTyping = false;
+    private callStartedAt?: number;
+    private callTimer?: number;
+    private callStateSubscription?: Subscription;
     private readonly peerReadSequences = new Map<string, number>();
     private readonly ownReadSequences = new Map<string, number>();
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
@@ -75,18 +80,36 @@ export class HomeComponent implements OnInit, OnDestroy {
             if (ready && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
             this.changeDetector.markForCheck();
         });
+        this.callStateSubscription = this.call.state$.subscribe(state => this.handleCallState(state));
     }
 
     public ngOnDestroy(): void {
         for (const pending of this.pendingRequests.values()) window.clearTimeout(pending.timeout);
         window.clearTimeout(this.typingTimeout);
         window.clearTimeout(this.remoteTypingTimeout);
+        this.callStateSubscription?.unsubscribe();
+        this.stopCallTimer();
         this.call.close();
         this.dataProvider.close();
     }
 
     public startCall(): void {
         if (this.selectedConversation) void this.call.start(this.selectedConversation.id, this.selectedConversation.otherUserId);
+    }
+
+    public minimizeCall(): void {
+        if (!this.isOngoingCall()) return;
+        this.callMinimized = true;
+        if (this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
+        this.changeDetector.markForCheck();
+    }
+
+    public restoreCall(): void {
+        if (!this.isOngoingCall()) return;
+        this.callMinimized = false;
+        const conversation = this.callConversation();
+        if (conversation && this.selectedConversation?.id !== conversation.id) this.selectConversation(conversation);
+        this.changeDetector.markForCheck();
     }
 
     public onCallInputDeviceChange(event: Event): void {
@@ -100,7 +123,62 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public isCallSurfaceVisible(): boolean {
+        return this.isOngoingCall() && !this.callMinimized;
+    }
+
+    public isCallMinimized(): boolean {
+        return this.isOngoingCall() && this.callMinimized;
+    }
+
+    public isOngoingCall(): boolean {
         return this.call.state.phase === 'connecting' || this.call.state.phase === 'active';
+    }
+
+    public callDurationLabel(): string {
+        const totalSeconds = this.callElapsedSeconds;
+        const hours = Math.floor(totalSeconds / 3_600);
+        const minutes = Math.floor((totalSeconds % 3_600) / 60);
+        const seconds = totalSeconds % 60;
+        const formatted = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        return hours ? `${hours.toString().padStart(2, '0')}:${formatted}` : formatted;
+    }
+
+    private handleCallState(state: CallState): void {
+        if (state.phase === 'active') {
+            if (!this.callStartedAt) {
+                this.callStartedAt = Date.now();
+                this.callElapsedSeconds = 0;
+                this.startCallTimer();
+            }
+            this.updateCallElapsed();
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (state.phase !== 'connecting') this.callMinimized = false;
+        if (state.phase !== 'connecting') {
+            this.callStartedAt = undefined;
+            this.callElapsedSeconds = 0;
+            this.stopCallTimer();
+            if (this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
+        }
+        this.changeDetector.markForCheck();
+    }
+
+    private startCallTimer(): void {
+        this.stopCallTimer();
+        this.callTimer = window.setInterval(() => {
+            this.updateCallElapsed();
+            this.changeDetector.markForCheck();
+        }, 1_000);
+    }
+
+    private stopCallTimer(): void {
+        window.clearInterval(this.callTimer);
+        this.callTimer = undefined;
+    }
+
+    private updateCallElapsed(): void {
+        if (this.callStartedAt) this.callElapsedSeconds = Math.max(0, Math.floor((Date.now() - this.callStartedAt) / 1_000));
     }
 
     public callConversation(): Conversation | undefined {
@@ -334,8 +412,9 @@ export class HomeComponent implements OnInit, OnDestroy {
         } else if (!this.messages.some(item => item.id === message.id)) {
             this.messages = [...this.messages, message];
         }
-        if (event.type === 'message.created' && !this.isOwnMessage(message)) this.markSelectedConversationRead();
-        this.updateConversationActivity(message.createdAt);
+        const incomingDuringCall = event.type === 'message.created' && !this.isOwnMessage(message) && this.isCallSurfaceVisible() && this.call.state.conversationID === message.conversationId;
+        if (event.type === 'message.created' && !this.isOwnMessage(message) && !incomingDuringCall) this.markSelectedConversationRead();
+        this.updateConversationActivity(message.createdAt, incomingDuringCall);
         this.changeDetector.markForCheck();
         this.scrollToLatest();
     }
@@ -470,9 +549,10 @@ export class HomeComponent implements OnInit, OnDestroy {
         });
     }
 
-    private updateConversationActivity(lastMessageAt: string): void {
+    private updateConversationActivity(lastMessageAt: string, incrementUnread = false): void {
         if (!this.selectedConversation) return;
-        const updated = {...this.selectedConversation, lastMessageAt};
+        const current = this.conversations.getValue().find(item => item.id === this.selectedConversation?.id) || this.selectedConversation;
+        const updated = {...current, lastMessageAt, unreadCount: current.unreadCount + (incrementUnread ? 1 : 0)};
         this.selectedConversation = updated;
         const conversations = this.conversations.getValue();
         this.conversations.next([updated, ...conversations.filter(item => item.id !== updated.id)]);

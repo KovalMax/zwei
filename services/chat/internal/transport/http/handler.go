@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/KovalMax/zwei/services/chat/internal/application"
 	"github.com/KovalMax/zwei/services/chat/internal/domain/conversation"
 	"github.com/KovalMax/zwei/services/chat/internal/persistence/postgres"
 	"github.com/KovalMax/zwei/services/internal/runtime"
@@ -21,10 +22,11 @@ type Handler struct {
 	sessions      *sharedauth.SessionValidator
 	conversations *postgres.Repository
 	history       *postgres.HistoryRepository
+	limiter       application.RequestLimiter
 }
 
-func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history *postgres.HistoryRepository) *Handler {
-	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history}
+func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history *postgres.HistoryRepository, limiter application.RequestLimiter) *Handler {
+	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history, limiter: limiter}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -39,6 +41,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) searchUsers(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketSearch) {
 		return
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -57,6 +62,9 @@ func (h *Handler) searchUsers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createConversation(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketConversationCreate) {
 		return
 	}
 	var request struct {
@@ -83,6 +91,9 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.allow(w, r, userID, application.RateBucketConversationList) {
+		return
+	}
 	items, err := h.conversations.List(r.Context(), userID)
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "could not load conversations")
@@ -94,6 +105,9 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketConversationGet) {
 		return
 	}
 	conversationID, err := uuid.Parse(r.PathValue("id"))
@@ -116,6 +130,9 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketMessage) {
 		return
 	}
 	conversationID, err := uuid.Parse(r.PathValue("id"))
@@ -154,6 +171,9 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) historyMessages(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketHistory) {
 		return
 	}
 	conversationID, err := uuid.Parse(r.PathValue("id"))
@@ -204,6 +224,23 @@ func (h *Handler) identity(w http.ResponseWriter, r *http.Request) (sharedauth.I
 		return sharedauth.Identity{}, false
 	}
 	return identity, true
+}
+
+func (h *Handler) allow(w http.ResponseWriter, r *http.Request, userID uuid.UUID, bucket string) bool {
+	if h.limiter == nil {
+		return true
+	}
+	allowed, err := h.limiter.Allow(r.Context(), userID, bucket)
+	if err != nil {
+		errorJSON(w, http.StatusServiceUnavailable, "request limiter unavailable")
+		return false
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", "60")
+		errorJSON(w, http.StatusTooManyRequests, "request rate limit exceeded")
+		return false
+	}
+	return true
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {

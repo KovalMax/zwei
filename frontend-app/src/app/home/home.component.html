@@ -3,6 +3,12 @@
         <div class="rail-heading">
             <h1>Chats</h1>
         </div>
+        <div class="call-minimized-banner call-minimized-banner-rail" *ngIf="isCallMinimized()" role="status">
+            <button type="button" class="call-minimized-summary" [attr.aria-label]="'Return to call with ' + callDisplayName()" (click)="restoreCall()">
+                <span><strong>Call with {{ callDisplayName() }}</strong><small>{{ callDurationLabel() }}</small></span>
+            </button>
+            <button type="button" class="call-minimized-end" aria-label="End ongoing call" (click)="call.end()">End</button>
+        </div>
 
         <mat-form-field class="search-field" appearance="outline">
             <mat-label>Search people</mat-label>
@@ -28,6 +34,12 @@
     </aside>
 
     <main class="chat-panel">
+        <div class="call-minimized-banner call-minimized-banner-chat" *ngIf="isCallMinimized()" role="status">
+            <button type="button" class="call-minimized-summary" [attr.aria-label]="'Return to call with ' + callDisplayName()" (click)="restoreCall()">
+                <span><strong>Call with {{ callDisplayName() }}</strong><small>{{ callDurationLabel() }}</small></span>
+            </button>
+            <button type="button" class="call-minimized-end" aria-label="End ongoing call" (click)="call.end()">End</button>
+        </div>
         <header class="chat-header">
             <div class="chat-identity">
                 <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><zwei-icon name="arrow_back"></zwei-icon></button>
@@ -36,45 +48,51 @@
             </div>
             <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
         </header>
-        <section class="call-panel" [class.call-panel-full]="isCallSurfaceVisible()" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
+        <section class="call-panel" [class.call-panel-full]="isCallSurfaceVisible()" [class.call-panel-minimized]="isCallMinimized()" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
             <audio autoplay playsinline [srcObject]="call.state.remoteStream" (loadedmetadata)="call.playRemoteAudio($event)" (canplay)="call.playRemoteAudio($event)"></audio>
             <div class="call-card">
-                <div class="call-profile">
-                    <div class="call-avatar">{{ callInitials() }}</div>
-                    <div class="call-profile-copy">
-                        <strong>{{ callDisplayName() }}</strong>
-                        <span [attr.role]="call.state.errorLabel ? 'alert' : 'status'">{{ call.state.statusLabel }}</span>
+                <button class="call-collapse-button" mat-icon-button type="button" aria-label="Minimize call" (click)="minimizeCall()">
+                    <zwei-icon name="expand_more"></zwei-icon>
+                </button>
+                <div class="call-card-content">
+                    <div class="call-profile">
+                        <div class="call-avatar">{{ callInitials() }}</div>
+                        <div class="call-profile-copy">
+                            <strong>{{ callDisplayName() }}</strong>
+                            <span [attr.role]="call.state.errorLabel ? 'alert' : 'status'">{{ call.state.statusLabel }}</span>
+                            <small class="call-duration" *ngIf="call.state.phase === 'active'" aria-label="Call duration">{{ callDurationLabel() }}</small>
+                        </div>
                     </div>
+                    <div class="call-diagnostics" *ngIf="call.state.phase !== 'ended' && call.state.phase !== 'error'" aria-label="Call diagnostics">
+                        <span>Connection: {{ call.connectionLabel() }}</span>
+                        <span>{{ call.iceLabel() }}</span>
+                        <span>{{ call.microphoneLabel() }}</span>
+                        <span>{{ call.speakerLabel() }}</span>
+                    </div>
+                    <div class="call-audio-diagnostics" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" aria-label="Audio diagnostics">
+                        <div class="call-meter"><span>Microphone level</span><meter min="0" max="1" [value]="call.state.audioDiagnostics?.localLevel || 0" [attr.aria-valuetext]="call.microphoneLevelLabel()" aria-label="Microphone input level"></meter><strong>{{ call.microphoneLevelLabel() }}</strong></div>
+                        <div class="call-meter"><span>Incoming audio</span><meter min="0" max="1" [value]="call.state.audioDiagnostics?.remoteLevel || 0" [attr.aria-valuetext]="call.remoteAudioLevelLabel()" aria-label="Incoming audio level"></meter><strong>{{ call.remoteAudioLevelLabel() }}</strong></div>
+                        <div class="call-stat">Packets sent: <strong>{{ call.packetsSentLabel() }}</strong></div>
+                        <div class="call-stat">Packets received: <strong>{{ call.packetsReceivedLabel() }}</strong></div>
+                        <div class="call-stat">Packets lost: <strong>{{ call.packetsLostLabel() }}</strong></div>
+                        <div class="call-stat">Jitter: <strong>{{ call.jitterLabel() }}</strong></div>
+                        <div class="call-stat">Output path: <strong>{{ call.outputPathLabel() }}</strong></div>
+                    </div>
+                    <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
+                        <label>Microphone
+                            <select aria-label="Microphone input" [value]="call.selectedInputDeviceID" (change)="onCallInputDeviceChange($event)">
+                                <option *ngFor="let device of call.inputDevices" [value]="device.deviceID">{{ device.label }}</option>
+                            </select>
+                        </label>
+                        <label>Speaker
+                            <select aria-label="Speaker output" [value]="call.selectedOutputDeviceID" [disabled]="!call.outputSelectionSupported || !call.outputDevices.length" (change)="onCallOutputDeviceChange($event)">
+                                <option value="" disabled>System default</option>
+                                <option *ngFor="let device of call.outputDevices" [value]="device.deviceID">{{ device.label }}</option>
+                            </select>
+                        </label>
+                    </div>
+                    <p class="call-device-note" *ngIf="(call.state.phase === 'connecting' || call.state.phase === 'active') && !call.outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
                 </div>
-                <div class="call-diagnostics" aria-label="Call diagnostics">
-                    <span>Connection: {{ call.connectionLabel() }}</span>
-                    <span>{{ call.iceLabel() }}</span>
-                    <span>{{ call.microphoneLabel() }}</span>
-                    <span>{{ call.speakerLabel() }}</span>
-                </div>
-                <div class="call-audio-diagnostics" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" aria-label="Audio diagnostics">
-                    <div class="call-meter"><span>Microphone level</span><meter min="0" max="1" [value]="call.state.audioDiagnostics?.localLevel || 0" [attr.aria-valuetext]="call.microphoneLevelLabel()" aria-label="Microphone input level"></meter><strong>{{ call.microphoneLevelLabel() }}</strong></div>
-                    <div class="call-meter"><span>Incoming audio</span><meter min="0" max="1" [value]="call.state.audioDiagnostics?.remoteLevel || 0" [attr.aria-valuetext]="call.remoteAudioLevelLabel()" aria-label="Incoming audio level"></meter><strong>{{ call.remoteAudioLevelLabel() }}</strong></div>
-                    <div class="call-stat">Packets sent: <strong>{{ call.packetsSentLabel() }}</strong></div>
-                    <div class="call-stat">Packets received: <strong>{{ call.packetsReceivedLabel() }}</strong></div>
-                    <div class="call-stat">Packets lost: <strong>{{ call.packetsLostLabel() }}</strong></div>
-                    <div class="call-stat">Jitter: <strong>{{ call.jitterLabel() }}</strong></div>
-                    <div class="call-stat">Output path: <strong>{{ call.outputPathLabel() }}</strong></div>
-                </div>
-                <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
-                    <label>Microphone
-                        <select aria-label="Microphone input" [value]="call.selectedInputDeviceID" (change)="onCallInputDeviceChange($event)">
-                            <option *ngFor="let device of call.inputDevices" [value]="device.deviceID">{{ device.label }}</option>
-                        </select>
-                    </label>
-                    <label>Speaker
-                        <select aria-label="Speaker output" [value]="call.selectedOutputDeviceID" [disabled]="!call.outputSelectionSupported || !call.outputDevices.length" (change)="onCallOutputDeviceChange($event)">
-                            <option value="" disabled>System default</option>
-                            <option *ngFor="let device of call.outputDevices" [value]="device.deviceID">{{ device.label }}</option>
-                        </select>
-                    </label>
-                </div>
-                <p class="call-device-note" *ngIf="(call.state.phase === 'connecting' || call.state.phase === 'active') && !call.outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
                 <div class="call-actions">
                     <button mat-flat-button color="primary" type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.accept()">Accept</button>
                     <button mat-stroked-button type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.decline()">Decline</button>

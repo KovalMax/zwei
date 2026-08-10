@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,16 +16,26 @@ import (
 )
 
 const (
-	presenceChannel     = "zwei:presence"
-	conversationChannel = "zwei:conversation"
-	typingChannel       = "zwei:typing"
-	messageChannel      = "zwei:message"
-	readChannel         = "zwei:read"
-	presenceTTL         = 30 * time.Second
-	websocketTicketTTL  = 30 * time.Second
-	messageWindow       = time.Minute
-	messageLimit        = 60
-	typingStartTTL      = time.Second
+	presenceChannel       = "zwei:presence"
+	conversationChannel   = "zwei:conversation"
+	typingChannel         = "zwei:typing"
+	messageChannel        = "zwei:message"
+	readChannel           = "zwei:read"
+	presenceTTL           = 30 * time.Second
+	websocketTicketTTL    = 30 * time.Second
+	messageWindow         = time.Minute
+	messageLimit          = 60
+	typingStartTTL        = time.Second
+	presenceRefreshWindow = time.Minute
+	presenceRefreshLimit  = 30
+	readWindow            = time.Minute
+	readLimit             = 300
+	callWindow            = time.Minute
+	callLimit             = 30
+	signalWindow          = time.Minute
+	signalLimit           = 240
+	connectionBudgetTTL   = 90 * time.Second
+	connectionBudgetLimit = 8
 )
 
 type Change struct {
@@ -56,10 +67,11 @@ type ReadChange struct {
 }
 
 type PresenceCoordinator struct {
-	client      *redis.Client
-	instanceID  string
-	mu          sync.Mutex
-	connections map[string]uuid.UUID
+	client            *redis.Client
+	instanceID        string
+	mu                sync.Mutex
+	connections       map[string]uuid.UUID
+	budgetConnections map[string]uuid.UUID
 }
 
 func NewPresenceCoordinator(rawURL string) (*PresenceCoordinator, error) {
@@ -84,6 +96,42 @@ func (c *PresenceCoordinator) AllowMessage(ctx context.Context, userID uuid.UUID
 
 func (c *PresenceCoordinator) AllowTypingStart(ctx context.Context, userID, conversationID uuid.UUID) (bool, error) {
 	return c.client.SetNX(ctx, typingRateKey(userID, conversationID), "1", typingStartTTL).Result()
+}
+
+func (c *PresenceCoordinator) AllowPresenceRefresh(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return c.allow(ctx, commandRateKey("presence-refresh", userID), presenceRefreshWindow, presenceRefreshLimit)
+}
+
+func (c *PresenceCoordinator) AllowRead(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return c.allow(ctx, commandRateKey("read", userID), readWindow, readLimit)
+}
+
+func (c *PresenceCoordinator) AllowCall(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return c.allow(ctx, commandRateKey("call", userID), callWindow, callLimit)
+}
+
+func (c *PresenceCoordinator) AllowSignal(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return c.allow(ctx, commandRateKey("signal", userID), signalWindow, signalLimit)
+}
+
+func (c *PresenceCoordinator) AllowConnection(ctx context.Context, userID uuid.UUID, connection string) (bool, error) {
+	allowed, err := c.client.Eval(ctx, connectionBudgetScript, []string{connectionBudgetKey(userID)}, time.Now().Unix(), int(connectionBudgetTTL.Seconds()), connectionBudgetLimit, connection).Int()
+	if err == nil && allowed == 1 {
+		c.mu.Lock()
+		if c.budgetConnections == nil {
+			c.budgetConnections = make(map[string]uuid.UUID)
+		}
+		c.budgetConnections[connection] = userID
+		c.mu.Unlock()
+	}
+	return allowed == 1, err
+}
+
+func (c *PresenceCoordinator) ReleaseConnection(ctx context.Context, userID uuid.UUID, connection string) error {
+	c.mu.Lock()
+	delete(c.budgetConnections, connection)
+	c.mu.Unlock()
+	return c.client.ZRem(ctx, connectionBudgetKey(userID), connection).Err()
 }
 
 func (c *PresenceCoordinator) Connect(ctx context.Context, userID uuid.UUID, connection string) (bool, error) {
@@ -174,16 +222,27 @@ func (c *PresenceCoordinator) StartHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			now := time.Now().Unix()
 			c.mu.Lock()
 			connections := make(map[string]uuid.UUID, len(c.connections))
 			for member, userID := range c.connections {
 				connections[member] = userID
+			}
+			budgetConnections := make(map[string]uuid.UUID, len(c.budgetConnections))
+			for connection, userID := range c.budgetConnections {
+				budgetConnections[connection] = userID
 			}
 			c.mu.Unlock()
 			for member, userID := range connections {
 				pipe := c.client.Pipeline()
 				pipe.SAdd(ctx, presenceSetKey(userID), member)
 				pipe.Set(ctx, presenceConnectionKey(userID, member), "1", presenceTTL)
+				_, _ = pipe.Exec(ctx)
+			}
+			for connection, userID := range budgetConnections {
+				pipe := c.client.Pipeline()
+				pipe.ZRemRangeByScore(ctx, connectionBudgetKey(userID), "-inf", strconv.FormatInt(now, 10))
+				pipe.ZAdd(ctx, connectionBudgetKey(userID), redis.Z{Score: float64(now + int64(connectionBudgetTTL.Seconds())), Member: connection})
 				_, _ = pipe.Exec(ctx)
 			}
 		}
@@ -289,6 +348,12 @@ func websocketTicketKey(ticket string) string {
 	return "zwei:websocket-ticket:" + hex.EncodeToString(hash[:])
 }
 func messageRateKey(userID uuid.UUID) string { return "zwei:rate:message:" + userID.String() }
+func commandRateKey(command string, userID uuid.UUID) string {
+	return "zwei:rate:" + command + ":" + userID.String()
+}
+func connectionBudgetKey(userID uuid.UUID) string {
+	return "zwei:websocket:connections:" + userID.String()
+}
 func typingRateKey(userID, conversationID uuid.UUID) string {
 	return "zwei:rate:typing:" + userID.String() + ":" + conversationID.String()
 }
@@ -305,3 +370,4 @@ const connectScript = `redis.call('SET', KEYS[2], '1', 'EX', ARGV[2]); redis.cal
 const disconnectScript = `redis.call('DEL', KEYS[2]); redis.call('SREM', KEYS[1], ARGV[1]); local count = 0; for _, member in ipairs(redis.call('SMEMBERS', KEYS[1])) do if redis.call('EXISTS', string.sub(KEYS[1], 1, -1) .. ':' .. member) == 1 then count = count + 1 else redis.call('SREM', KEYS[1], member) end end; if count == 0 then return 1 end; return 0`
 const countScript = `local count = 0; for _, member in ipairs(redis.call('SMEMBERS', KEYS[1])) do if redis.call('EXISTS', KEYS[1] .. ':' .. member) == 1 then count = count + 1 else redis.call('SREM', KEYS[1], member) end end; return count`
 const rateLimitScript = `local count = redis.call('INCR', KEYS[1]); if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; if count <= tonumber(ARGV[2]) then return 1 end; return 0`
+const connectionBudgetScript = `local now = tonumber(ARGV[1]); redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now); if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then return 0 end; redis.call('ZADD', KEYS[1], now + tonumber(ARGV[2]), ARGV[4]); return 1`

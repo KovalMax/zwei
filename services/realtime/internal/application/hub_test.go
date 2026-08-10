@@ -56,6 +56,27 @@ func TestHubRejectsRateLimitedMessage(t *testing.T) {
 	}
 }
 
+func TestHubRejectsRateLimitedRealtimeCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{name: "presence refresh", payload: `{"version":1,"type":"presence.refresh"}`, want: "presence refresh rate limit exceeded"},
+		{name: "read", payload: `{"version":1,"type":"conversation.read","request_id":"read-1","payload":{"sequence":1}}`, want: "read rate limit exceeded"},
+		{name: "call", payload: `{"version":1,"type":"call.start","request_id":"call-1","payload":{}}`, want: "call rate limit exceeded"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := NewHub(nil, nil, rateLimitedCoordinator{}, nil, nil, nil, nil).Handle(context.Background(), testClient{}, []byte(test.payload))
+			var requestError *RequestError
+			if !errors.As(err, &requestError) || requestError.Error() != test.want {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestHubReplaysAndMarksPendingMessagesOnConnection(t *testing.T) {
 	deviceID := uuid.New()
 	messageID := uuid.New()
@@ -257,6 +278,18 @@ func (rateLimitedCoordinator) Online(context.Context, []uuid.UUID) (map[uuid.UUI
 }
 func (rateLimitedCoordinator) Publish(context.Context, uuid.UUID, bool) error { return nil }
 func (rateLimitedCoordinator) AllowMessage(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (rateLimitedCoordinator) AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (rateLimitedCoordinator) AllowRead(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (rateLimitedCoordinator) AllowCall(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
+}
+func (rateLimitedCoordinator) AllowSignal(context.Context, uuid.UUID) (bool, error) {
 	return false, nil
 }
 

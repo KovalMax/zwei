@@ -20,6 +20,16 @@ http:
         average: 30
         period: 1m
         burst: 40
+    chat-rate-limit:
+      rateLimit:
+        average: 120
+        period: 1m
+        burst: 40
+    realtime-rate-limit:
+      rateLimit:
+        average: 30
+        period: 1m
+        burst: 20
   routers:
     frontend:
       rule: Host(`chat.false.tel`)
@@ -49,14 +59,14 @@ http:
       service: chat
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers]
+      middlewares: [security-headers, chat-rate-limit]
     realtime:
       rule: Host(`ws.chat.false.tel`)
       entryPoints: [websecure]
       service: realtime
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers]
+      middlewares: [security-headers, realtime-rate-limit]
   services:
     frontend:
       loadBalancer:

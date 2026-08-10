@@ -114,10 +114,10 @@ func main() {
 	mux := runtime.NewHealthHandler("realtime")
 	mux.Handle("GET /ws", handler)
 	server := &http.Server{
-		Addr:              ":" + getenv("REALTIME_PORT", "8083"),
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+		Addr:    ":" + getenv("REALTIME_PORT", "8083"),
+		Handler: mux,
 	}
+	runtime.ConfigureWebSocketServer(server)
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {
 		panic(err)
 	}
