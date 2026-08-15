@@ -2,6 +2,9 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
+  // All browser scenarios share one isolated Compose database and SMTP sink.
+  // Keep scenarios serial so one flow cannot race another flow's admin/session setup.
+  workers: 1,
   timeout: 30_000,
   expect: { timeout: 5_000 },
   reporter: [['list']],
