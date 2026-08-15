@@ -13,6 +13,14 @@ type Config struct {
 	AccessLifetime  time.Duration
 	RefreshLifetime time.Duration
 	Port            string
+	SMTPHost        string
+	SMTPPort        string
+	SMTPFrom        string
+	SMTPUsername    string
+	SMTPPassword    string
+	ActivationURL   string
+	InvitationURL   string
+	AdminAllowedIPs string
 }
 
 func Load() (Config, error) {
@@ -34,6 +42,14 @@ func Load() (Config, error) {
 		AccessLifetime:  access,
 		RefreshLifetime: refresh,
 		Port:            getenv("AUTH_PORT", "8081"),
+		SMTPHost:        getenv("SMTP_HOST", "mailpit"),
+		SMTPPort:        getenv("SMTP_PORT", "1025"),
+		SMTPFrom:        getenv("SMTP_FROM", "noreply@chat.localhost"),
+		SMTPUsername:    os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:    os.Getenv("SMTP_PASSWORD"),
+		ActivationURL:   getenv("ACTIVATION_URL", "https://chat.localhost/activate"),
+		InvitationURL:   getenv("INVITATION_URL", "https://chat.localhost/sign-up"),
+		AdminAllowedIPs: getenv("ADMIN_ALLOWED_IPS", "172.16.0.0/12,127.0.0.1/32,::1/128"),
 	}, nil
 }
 

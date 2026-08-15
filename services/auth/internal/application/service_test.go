@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 )
 
 func TestLoginDoesNotRequireDisplayName(t *testing.T) {
-	repository := &fakeRepository{account: user.User{ID: uuid.New(), PasswordHash: "hash", SessionVersion: 1}, deviceID: uuid.New()}
+	repository := &fakeRepository{account: user.User{ID: uuid.New(), PasswordHash: "hash", SessionVersion: 1, KYCStatus: user.KYCActive, EmailVerified: true}, deviceID: uuid.New()}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
 	tokens, err := service.Login(context.Background(), Credentials{Email: "user@example.test", Password: "password", DeviceID: "browser-device"})
 	if err != nil {
@@ -40,13 +41,109 @@ func TestTokensUseAPIFieldNames(t *testing.T) {
 	}
 }
 
-type fakeRepository struct {
-	account  user.User
-	deviceID uuid.UUID
+func TestRegisterCreatesPendingAccountWithoutSession(t *testing.T) {
+	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	result, err := service.Register(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DisplayName: "Pending", DeviceID: "browser-device"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Pending || result.Tokens.AccessToken != "" {
+		t.Fatalf("result = %#v", result)
+	}
+	if repository.params.KYCStatus != user.KYCPending || repository.params.EmailVerified {
+		t.Fatalf("create params = %#v", repository.params)
+	}
 }
 
-func (f *fakeRepository) CreateUserWithDevice(context.Context, string, string, string, string, string) (uuid.UUID, uuid.UUID, error) {
-	return uuid.Nil, uuid.Nil, errors.New("not implemented")
+func TestRegisterWithInvitationCreatesActiveSession(t *testing.T) {
+	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	result, err := service.Register(context.Background(), Credentials{Email: "invited@example.test", Password: "password", DisplayName: "Invited", DeviceID: "browser-device", InvitationCode: "invite-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pending || result.Tokens.AccessToken != "access-token" {
+		t.Fatalf("result = %#v", result)
+	}
+	if repository.params.KYCStatus != user.KYCActive || !repository.params.EmailVerified || len(repository.params.InvitationCode) == 0 {
+		t.Fatalf("create params = %#v", repository.params)
+	}
+}
+
+func TestLoginRejectsInactiveAccount(t *testing.T) {
+	repository := &fakeRepository{account: user.User{ID: uuid.New(), PasswordHash: "hash", SessionVersion: 1, KYCStatus: user.KYCPending}, deviceID: uuid.New()}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	_, err := service.Login(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DeviceID: "browser-device"})
+	if !errors.Is(err, ErrAccountInactive) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestActivateVerifiedAccountDoesNotSendActivationEmail(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, prepareEmail: "user@example.test", prepareVerified: true}
+	email := &fakeEmailSender{}
+	service := NewAdminService(repository, nil, email, "https://chat.localhost/activate", "https://chat.localhost/sign-up")
+
+	err := service.ActivateUser(context.Background(), uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if email.calls != 0 {
+		t.Fatalf("email calls = %d", email.calls)
+	}
+}
+
+func TestActivateUnverifiedAccountSendsActivationEmail(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, prepareEmail: "user@example.test", prepareDisplayName: "User"}
+	email := &fakeEmailSender{}
+	service := NewAdminService(repository, nil, email, "https://chat.localhost/activate", "https://chat.localhost/sign-up")
+
+	err := service.ActivateUser(context.Background(), uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if email.calls != 1 || email.to != "user@example.test" || email.name != "User" {
+		t.Fatalf("email = %#v", email)
+	}
+}
+
+func TestCreateInvitationSendsAccountCreationEmail(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, invitation: user.Invitation{ID: uuid.New(), Email: "invite@example.test"}}
+	email := &fakeEmailSender{}
+	service := NewAdminService(repository, nil, email, "https://chat.localhost/activate", "https://chat.localhost/sign-up")
+
+	code, _, err := service.CreateInvitation(context.Background(), uuid.New(), "invite@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if email.invitationCalls != 1 || email.to != "invite@example.test" {
+		t.Fatalf("email = %#v", email)
+	}
+	parsed, err := url.Parse(email.link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Path != "/sign-up" || parsed.Query().Get("invite") != "1" || parsed.Query().Get("code") != code {
+		t.Fatalf("invitation link = %q", email.link)
+	}
+}
+
+type fakeRepository struct {
+	account            user.User
+	deviceID           uuid.UUID
+	userID             uuid.UUID
+	params             CreateUserParams
+	isAdmin            bool
+	prepareEmail       string
+	prepareDisplayName string
+	prepareVerified    bool
+	invitation         user.Invitation
+}
+
+func (f *fakeRepository) CreateUserWithDevice(_ context.Context, params CreateUserParams) (uuid.UUID, uuid.UUID, error) {
+	f.params = params
+	return f.userID, f.deviceID, nil
 }
 func (f *fakeRepository) FindUserByEmail(context.Context, string) (user.User, error) {
 	return f.account, nil
@@ -67,8 +164,43 @@ func (f *fakeRepository) Profile(context.Context, uuid.UUID) (user.Profile, erro
 func (f *fakeRepository) UpdateProfile(context.Context, uuid.UUID, *string, *string) error {
 	return nil
 }
+func (f *fakeRepository) IsAdmin(context.Context, uuid.UUID) (bool, error)              { return f.isAdmin, nil }
+func (f *fakeRepository) ListAdminUsers(context.Context) ([]user.AdminUser, error)      { return nil, nil }
+func (f *fakeRepository) SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus) error { return nil }
+func (f *fakeRepository) PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error) {
+	return f.prepareEmail, f.prepareDisplayName, f.prepareVerified, nil
+}
+func (f *fakeRepository) VerifyActivation(context.Context, []byte, time.Time) error { return nil }
+func (f *fakeRepository) CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error) {
+	return f.invitation, nil
+}
+func (f *fakeRepository) ListInvitations(context.Context) ([]user.Invitation, error) { return nil, nil }
+func (f *fakeRepository) RevokeInvitation(context.Context, uuid.UUID) error          { return nil }
+func (f *fakeRepository) CreateAdmin(context.Context, string, string, string) error  { return nil }
 
 type fakePasswords struct{}
+
+type fakeEmailSender struct {
+	calls           int
+	invitationCalls int
+	to              string
+	name            string
+	link            string
+}
+
+func (f *fakeEmailSender) SendActivation(_ context.Context, to, name, _ string) error {
+	f.calls++
+	f.to = to
+	f.name = name
+	return nil
+}
+
+func (f *fakeEmailSender) SendInvitation(_ context.Context, to, link string) error {
+	f.invitationCalls++
+	f.to = to
+	f.link = link
+	return nil
+}
 
 func (fakePasswords) Hash(string) (string, error) { return "hash", nil }
 func (fakePasswords) Compare(hash, value string) error {

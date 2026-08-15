@@ -1,6 +1,8 @@
 import {expect, Page, test} from '@playwright/test';
 
 const password = 'Password123!';
+const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
+const adminEmail = process.env.E2E_ADMIN_EMAIL ?? 'e2e-admin@example.test';
 
 function uniqueEmail(name: string): string {
   return `e2e-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.test`;
@@ -15,7 +17,16 @@ function field(page: Page, name: string) {
 }
 
 async function register(page: Page, email: string, nickname = 'Test User'): Promise<string> {
-  await page.goto('/sign-up');
+  const loginResponse = await page.context().request.post(`${adminBase}/api/auth/login`, {
+    data: {email: adminEmail, password, device_id: `e2e-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'},
+  });
+  const loginPayload = await loginResponse.json() as {access_token: string; token_type: string};
+  const invitationResponse = await page.context().request.post(`${adminBase}/api/admin/invitations`, {
+    headers: {Authorization: `${loginPayload.token_type} ${loginPayload.access_token}`},
+    data: {email},
+  });
+  const invitationPayload = await invitationResponse.json() as {code: string};
+  await page.goto(`/sign-up?invite=1&code=${encodeURIComponent(invitationPayload.code)}`);
   await input(page, 'email').fill(email);
   await input(page, 'firstName').fill('Test');
   await input(page, 'lastName').fill('User');
@@ -123,7 +134,14 @@ test('shows every registration and login validation state', async ({page}) => {
   await input(page, 'confirmPassword').blur();
   await expect(page.getByText('Passwords do not match.')).toBeVisible();
 
-  await page.goto('/login');
+  await page.getByRole('link', {name: 'Sign in'}).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByRole('link', {name: 'Create one'}).click();
+  await expect(page).toHaveURL(/\/sign-up$/);
+  for (const fieldName of ['email', 'firstName', 'lastName', 'nickName', 'password', 'confirmPassword']) {
+    await expect(page.locator(`[formControlName="${fieldName}"]`)).toHaveValue('');
+  }
+  await page.getByRole('link', {name: 'Sign in'}).click();
   await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
   await expect(page.getByRole('button', {name: 'Sign in'})).toBeDisabled();
   await input(page, 'email').focus();

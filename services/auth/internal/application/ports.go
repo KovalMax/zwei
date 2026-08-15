@@ -11,7 +11,7 @@ import (
 )
 
 type Repository interface {
-	CreateUserWithDevice(context.Context, string, string, string, string, string) (uuid.UUID, uuid.UUID, error)
+	CreateUserWithDevice(context.Context, CreateUserParams) (uuid.UUID, uuid.UUID, error)
 	FindUserByEmail(context.Context, string) (user.User, error)
 	EnsureDevice(context.Context, uuid.UUID, string, string) (uuid.UUID, error)
 	CreateSession(context.Context, uuid.UUID, uuid.UUID, []byte, int64, time.Time) error
@@ -19,6 +19,31 @@ type Repository interface {
 	RevokeAllSessions(context.Context, uuid.UUID) error
 	Profile(context.Context, uuid.UUID) (user.Profile, error)
 	UpdateProfile(context.Context, uuid.UUID, *string, *string) error
+	IsAdmin(context.Context, uuid.UUID) (bool, error)
+	ListAdminUsers(context.Context) ([]user.AdminUser, error)
+	SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus) error
+	PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error)
+	VerifyActivation(context.Context, []byte, time.Time) error
+	CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error)
+	ListInvitations(context.Context) ([]user.Invitation, error)
+	RevokeInvitation(context.Context, uuid.UUID) error
+	CreateAdmin(context.Context, string, string, string) error
+}
+
+type CreateUserParams struct {
+	Email          string
+	PasswordHash   string
+	DisplayName    string
+	ClientDeviceID string
+	DeviceName     string
+	KYCStatus      user.KYCStatus
+	EmailVerified  bool
+	InvitationCode []byte
+}
+
+type EmailSender interface {
+	SendActivation(context.Context, string, string, string) error
+	SendInvitation(context.Context, string, string) error
 }
 
 type PasswordHasher interface {

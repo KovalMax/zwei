@@ -1,0 +1,1 @@
+.submit-button { min-height: 48px; border-radius: 12px; background: var(--auth-submit) !important; color: var(--auth-submit-text) !important; font-weight: 700; }

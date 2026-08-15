@@ -1,6 +1,6 @@
 <main class="profile-page" aria-labelledby="profile-title">
     <section class="profile-card">
-        <a class="back-link" routerLink="/home"><zwei-icon name="arrow_back"></zwei-icon>Back to chats</a>
+        <a class="back-link" [routerLink]="backRoute"><zwei-icon name="arrow_back"></zwei-icon>{{ backLabel }}</a>
         <span class="eyebrow">Your account</span>
         <h1 id="profile-title">Profile</h1>
         <p class="profile-description">Your identity and message-retention preference for this private space.</p>

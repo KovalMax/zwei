@@ -1,0 +1,55 @@
+<main class="admin-page" aria-labelledby="admin-title">
+    <section class="admin-card">
+        <div class="admin-heading">
+            <div>
+                <span class="eyebrow">Zwei administration</span>
+                <h1 id="admin-title">KYC review</h1>
+                <p>Approve new accounts, block access, and issue invitations.</p>
+            </div>
+            <button mat-stroked-button type="button" (click)="reload()">Refresh</button>
+        </div>
+
+        <nav class="admin-nav" aria-label="Administration views">
+            <button type="button" [class.active]="activeView === 'accounts'" [attr.aria-current]="activeView === 'accounts' ? 'page' : null" (click)="selectView('accounts')">Accounts</button>
+            <button type="button" [class.active]="activeView === 'invitations'" [attr.aria-current]="activeView === 'invitations' ? 'page' : null" (click)="selectView('invitations')">Invitations</button>
+        </nav>
+
+        <div *ngIf="isLoading" class="admin-loading"><app-loading-spinner></app-loading-spinner></div>
+
+        <section *ngIf="!isLoading && activeView === 'accounts'" aria-labelledby="accounts-title">
+            <h2 id="accounts-title">Accounts</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Email verification</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        <tr *ngFor="let user of users">
+                            <td>{{ user.email }}</td><td>{{ user.display_name }}</td>
+                            <td><span class="status" [class]="'status-' + user.kyc_status">{{ statusLabel(user.kyc_status) }}</span></td>
+                            <td>{{ user.email_verified ? 'Verified' : 'Waiting' }}</td>
+                            <td class="actions"><button class="action-button action-activate" type="button" [disabled]="!canActivate(user)" [attr.aria-label]="'Activate account'" (click)="activate(user)"><zwei-icon name="check"></zwei-icon></button><button class="action-button action-block" type="button" [disabled]="user.kyc_status === 3" [attr.aria-label]="'Block account'" (click)="block(user)"><zwei-icon name="block"></zwei-icon></button></td>
+                        </tr>
+                        <tr *ngIf="users.length === 0"><td colspan="5">No accounts yet.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section *ngIf="!isLoading && activeView === 'invitations'" class="invitation-section" aria-labelledby="invitations-title">
+            <h2 id="invitations-title">Invitation codes</h2>
+            <form class="invitation-form" (ngSubmit)="createInvitation()">
+                <mat-form-field appearance="outline"><mat-label>Invite email</mat-label><input matInput type="email" [formControl]="invitationEmail" autocomplete="email"></mat-form-field>
+                <button mat-flat-button color="primary" type="submit" [disabled]="invitationEmail.invalid || isCreatingInvitation">Create invitation</button>
+            </form>
+            <p *ngIf="createdCode" class="created-code" role="status">New code: <code>{{ createdCode }}</code></p>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Email</th><th>Expires</th><th>State</th><th></th></tr></thead>
+                    <tbody>
+                        <tr *ngFor="let invitation of invitations"><td>{{ invitation.email }}</td><td>{{ invitation.expires_at | date:'mediumDate' }}</td><td>{{ invitation.redeemed_at ? 'Redeemed' : invitation.revoked_at ? 'Expired' : 'Available' }}</td><td class="actions"><button class="action-button action-expire" type="button" [disabled]="!!invitation.redeemed_at || !!invitation.revoked_at" aria-label="Expire invitation" (click)="revoke(invitation)"><zwei-icon name="hourglass_top"></zwei-icon></button></td></tr>
+                        <tr *ngIf="invitations.length === 0"><td colspan="4">No invitations yet.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </section>
+</main>

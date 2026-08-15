@@ -1,4 +1,9 @@
 services:
+  traefik:
+    ports:
+      - "80:80"
+      - "443:443"
+
   auth:
     volumes:
       - ../services:/app/services
@@ -24,6 +29,10 @@ services:
       - messenger-db:/var/lib/postgresql
     ports:
       - "3379:5432"
+
+  mailpit:
+    ports:
+      - "8025:8025"
 
   redis:
     ports:

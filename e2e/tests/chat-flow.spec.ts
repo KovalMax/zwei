@@ -1,11 +1,24 @@
 import { expect, Page, test } from '@playwright/test';
 
+const password = 'Password123!';
+const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
+const adminEmail = process.env.E2E_ADMIN_EMAIL ?? 'e2e-admin@example.test';
+
 function uniqueEmail(name: string): string {
   return `e2e-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.test`;
 }
 
 async function register(page: import('@playwright/test').Page, email: string, nickname: string): Promise<void> {
-  await page.goto('/sign-up');
+  const loginResponse = await page.context().request.post(`${adminBase}/api/auth/login`, {
+    data: {email: adminEmail, password, device_id: `e2e-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'},
+  });
+  const loginPayload = await loginResponse.json() as {access_token: string; token_type: string};
+  const invitationResponse = await page.context().request.post(`${adminBase}/api/admin/invitations`, {
+    headers: {Authorization: `${loginPayload.token_type} ${loginPayload.access_token}`},
+    data: {email},
+  });
+  const invitationPayload = await invitationResponse.json() as {code: string};
+  await page.goto(`/sign-up?invite=1&code=${encodeURIComponent(invitationPayload.code)}`);
   await page.locator('form').waitFor();
   await page.locator('[formControlName="email"]').fill(email);
   await page.locator('[formControlName="firstName"]').fill(nickname);

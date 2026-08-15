@@ -22,7 +22,7 @@ func NewConversationRepository(db *pgxpool.Pool) *Repository { return &Repositor
 
 func (r *Repository) SearchUsers(ctx context.Context, userID uuid.UUID, query string) ([]conversation.User, error) {
 	pattern := "%" + strings.ToLower(query) + "%"
-	rows, err := r.db.Query(ctx, `SELECT id, display_name, email FROM users WHERE id <> $1 AND (lower(display_name) LIKE $2 OR lower(email) LIKE $2) ORDER BY display_name, id LIMIT 20`, userID, pattern)
+	rows, err := r.db.Query(ctx, `SELECT id, display_name, email FROM users WHERE id <> $1 AND kyc_status = 1 AND email_verified_at IS NOT NULL AND (lower(display_name) LIKE $2 OR lower(email) LIKE $2) ORDER BY display_name, id LIMIT 20`, userID, pattern)
 	if err != nil {
 		return nil, err
 	}

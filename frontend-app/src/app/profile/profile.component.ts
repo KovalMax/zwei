@@ -1,6 +1,7 @@
 import {ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit} from '@angular/core';
 import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
+import {HostService} from '../auth/host.service';
 
 @Component({
     standalone: false,
@@ -12,8 +13,13 @@ import {Profile} from '../auth/profile.model';
 export class ProfileComponent implements OnInit {
     public profile?: Profile;
     public error = false;
+    public readonly backRoute: string;
+    public readonly backLabel: string;
 
-    constructor(private authService: AuthService, private changeDetector: ChangeDetectorRef) {}
+    constructor(private authService: AuthService, private changeDetector: ChangeDetectorRef, host: HostService) {
+        this.backRoute = host.isAdminHost() ? '/admin' : '/home';
+        this.backLabel = host.isAdminHost() ? 'Back to KYC admin' : 'Back to chats';
+    }
 
     public ngOnInit(): void {
         this.authService.profile().subscribe({

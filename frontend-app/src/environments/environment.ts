@@ -8,6 +8,7 @@ export const environment = {
 
 export const backends = {
     auth: 'https://chat.localhost',
+    admin: 'https://kyc.localhost',
     chat: 'https://api.chat.localhost',
     websocket: 'wss://ws.chat.localhost/ws',
     login: 'https://chat.localhost/api/auth/login',
@@ -15,6 +16,12 @@ export const backends = {
     websocketTicket: 'https://chat.localhost/api/auth/ws-ticket',
     refresh: 'https://chat.localhost/api/auth/refresh',
     logout: 'https://chat.localhost/api/auth/logout',
+    activation: 'https://chat.localhost/api/auth/activate',
+    adminEndpoints: {
+        login: 'https://kyc.localhost/api/auth/login',
+        refresh: 'https://kyc.localhost/api/auth/refresh',
+        logout: 'https://kyc.localhost/api/auth/logout',
+    },
 };
 
 /*

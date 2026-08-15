@@ -8,10 +8,16 @@ services:
         SERVICE: auth
     environment:
       AUTH_PORT: 8081
-      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
-      ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME:-15m}
-      REFRESH_TOKEN_LIFETIME: ${REFRESH_TOKEN_LIFETIME:-720h}
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME}
+      REFRESH_TOKEN_LIFETIME: ${REFRESH_TOKEN_LIFETIME}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_FROM: ${SMTP_FROM}
+      ACTIVATION_URL: ${ACTIVATION_URL}
+      INVITATION_URL: ${INVITATION_URL:-https://chat.localhost/sign-up}
+      ADMIN_ALLOWED_IPS: ${ADMIN_ALLOWED_IPS}
     depends_on:
       database:
         condition: service_healthy
@@ -26,10 +32,10 @@ services:
         SERVICE: chat
     environment:
       CHAT_PORT: 8082
-      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
-      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-local-development-key-change-me}
-      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATABASE_URL: ${DATABASE_URL}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: ${REDIS_URL}
     depends_on:
       database:
         condition: service_healthy
@@ -46,13 +52,13 @@ services:
         SERVICE: realtime
     environment:
       REALTIME_PORT: 8083
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://chat.localhost,https://auth.localhost,https://api.chat.localhost,https://ws.chat.localhost}
-      DATABASE_URL: ${DATABASE_URL:-postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable}
-      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-me-please}
-      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-local-development-key-change-me}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:-local-development-turn-shared-secret-change-me}
-      TURN_URLS: ${TURN_URLS:-turn:turn.chat.localhost:3478?transport=udp,turn:turn.chat.localhost:3478?transport=tcp}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY}
+      REDIS_URL: ${REDIS_URL}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET}
+      TURN_URLS: ${TURN_URLS}
     depends_on:
       database:
         condition: service_healthy
@@ -65,17 +71,24 @@ services:
       context: ../e2e
       dockerfile: ../infrastructure/playwright/Dockerfile
     environment:
-      BASE_URL: https://chat.localhost
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      BASE_URL: ${BASE_URL}
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL}
+      E2E_ADMIN_EMAIL: ${E2E_ADMIN_EMAIL}
+      E2E_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD}
+      KYC_BASIC_AUTH_USER: ${KYC_BASIC_AUTH_USER}
+      KYC_BASIC_AUTH_PASSWORD: ${KYC_BASIC_AUTH_PASSWORD}
+      NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED}
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "chat.localhost:host-gateway"
       - "auth.localhost:host-gateway"
       - "api.chat.localhost:host-gateway"
       - "ws.chat.localhost:host-gateway"
+      - "kyc.localhost:host-gateway"
       - "traefik.localhost:host-gateway"
     depends_on:
       - traefik
+      - mailpit
     networks: [messenger-network]
 
   frontend:
@@ -85,9 +98,9 @@ services:
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
-        NODE_USER_NAME: ${NODE_USER_NAME:-node}
+        NODE_USER_NAME: ${NODE_USER_NAME}
     environment:
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: ${NODE_ENV}
     networks: [messenger-network]
 
   traefik-certgen:
@@ -105,15 +118,16 @@ services:
       - --api.insecure=false
       - --entrypoints.websecure.address=:443
       - --providers.file.filename=/etc/traefik/dynamic.yml
-    ports:
-      - "80:80"
-      - "443:443"
     volumes:
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ./traefik-certs:/certs:ro
     depends_on:
       traefik-certgen:
         condition: service_completed_successfully
+    networks: [messenger-network]
+
+  mailpit:
+    image: axllent/mailpit:v1.21
     networks: [messenger-network]
 
   coturn:
@@ -123,9 +137,9 @@ services:
       - --log-file=stdout
       - --fingerprint
       - --use-auth-secret
-      - --static-auth-secret=${TURN_SHARED_SECRET:-local-development-turn-shared-secret-change-me}
+      - --static-auth-secret=${TURN_SHARED_SECRET}
       - --realm=turn.chat.localhost
-      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      - --external-ip=${TURN_EXTERNAL_IP}
       - --min-port=49160
       - --max-port=49200
       - --no-cli
@@ -139,9 +153,9 @@ services:
   database:
     image: postgres:${APP_DB_VERSION:-18.4}-alpine
     environment:
-      POSTGRES_DB: ${APP_DB_NAME:-messenger}
-      POSTGRES_USER: ${APP_DB_USER:-messenger_user}
-      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-user-password}
+      POSTGRES_DB: ${APP_DB_NAME}
+      POSTGRES_USER: ${APP_DB_USER}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

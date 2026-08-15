@@ -20,7 +20,7 @@ export class AuthResolver implements Resolve<boolean> {
                     return true;
                 }
 
-                return this.router.navigate(['home']);
+                return this.router.navigate([this.authService.defaultAuthenticatedRoute()]);
             })
         );
     }

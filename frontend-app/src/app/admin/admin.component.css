@@ -1,0 +1,24 @@
+.admin-page { height: 100%; min-height: 0; max-height: 100%; overflow: auto; padding: 40px 24px; box-sizing: border-box; background: var(--zwei-canvas); }.admin-card { width: min(100%, 1180px); margin: 0 auto; padding: var(--zwei-card-padding); border: 1px solid var(--auth-card-border); border-radius: var(--zwei-radius-card); background: var(--auth-card-surface); box-shadow: var(--zwei-shadow-card); box-sizing: border-box; }.admin-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }.eyebrow { color: #9a4937; font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }h1 { margin: 8px 0 10px; color: var(--auth-title); font: 700 30px/1.08 'DM Sans', sans-serif; letter-spacing: -.05em; }.admin-heading p { margin: 0; color: var(--auth-muted); }.admin-nav { display: flex; gap: 8px; margin-top: 28px; border-bottom: 1px solid var(--auth-card-border); }.admin-nav button { min-height: 42px; padding: 0 16px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--auth-muted); cursor: pointer; font: inherit; font-weight: 800; }.admin-nav button.active { border-bottom-color: var(--auth-submit); color: var(--auth-title); }.admin-card h2 { margin: 32px 0 14px; color: var(--auth-title); font-size: 18px; }.table-wrap { height: min(64vh, 680px); min-height: 180px; overflow-x: auto; overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; border: 1px solid var(--auth-card-border); border-radius: 12px; scrollbar-width: thin; }table { width: 100%; border-collapse: collapse; min-width: 900px; }th, td { padding: 13px 14px; border-bottom: 1px solid var(--auth-card-border); color: var(--auth-title); font-size: 13px; text-align: left; }th { position: sticky; top: 0; z-index: 1; background: var(--auth-card-surface); color: var(--auth-muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }tr:last-child td { border-bottom: 0; }.actions { display: flex; gap: 8px; }.status { display: inline-flex; border-radius: 999px; padding: 4px 9px; font-size: 11px; font-weight: 800; }.status-1 { background: #d8f1e1; color: #17643a; }.status-2 { background: #fff0c7; color: #795500; }.status-3 { background: #f9d8d5; color: #8c2620; }.invitation-form { display: flex; align-items: center; gap: 12px; }.invitation-form mat-form-field { flex: 1; }.created-code { padding: 12px; overflow-wrap: anywhere; border-radius: 10px; background: var(--zwei-canvas); color: var(--auth-title); }.admin-loading { display: grid; min-height: 180px; place-items: center; }@media (max-width: 600px) { .admin-page { padding: 24px 16px; }.admin-card { padding: 22px 16px; }.admin-heading { flex-direction: column; }.admin-nav { margin-top: 20px; }.admin-nav button { flex: 1; padding: 0 8px; }.table-wrap { max-width: 100%; }.invitation-form { align-items: stretch; flex-direction: column; }.invitation-form button { min-height: 48px; } }
+
+:host-context(.dark-theme) .admin-page { background: #182330; color: #edf2fa; }
+:host-context(.dark-theme) .admin-card { background: #202c3b; border-color: #30465e; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
+:host-context(.dark-theme) h1, :host-context(.dark-theme) h2, :host-context(.dark-theme) th, :host-context(.dark-theme) td { color: #f1f5f9; }
+:host-context(.dark-theme) .admin-heading p, :host-context(.dark-theme) .admin-nav button { color: #aebdd0; }
+:host-context(.dark-theme) .admin-nav { border-color: #30465e; }
+:host-context(.dark-theme) .table-wrap { border-color: #30465e; }
+:host-context(.dark-theme) th { background: #202c3b; }
+:host-context(.dark-theme) .admin-page button.mat-mdc-outlined-button { color: #edf2fa !important; --mdc-outlined-button-label-text-color: #edf2fa; --mdc-outlined-button-outline-color: #6f8daa; }
+
+.invitation-form { display: grid; grid-template-columns: minmax(0, 520px) 220px; align-items: start; gap: 12px; }
+.invitation-form mat-form-field { width: 100%; height: 56px; }
+.invitation-form .mat-mdc-text-field-wrapper { height: 56px; }
+.invitation-form button { height: 56px; min-height: 56px; white-space: nowrap; }
+.invitation-section .table-wrap { margin-top: 16px; }
+.actions { align-items: center; white-space: nowrap; }
+.action-button { display: inline-flex; width: 42px; min-width: 42px; height: 42px; min-height: 42px; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: 10px; cursor: pointer; }
+.action-button zwei-icon { width: 20px; height: 20px; flex-basis: 20px; }
+.action-activate { background: #2f8f68; color: #fff; }
+.action-block { background: #a43b32; color: #fff; }
+.action-expire { background: #d4a72c; color: #2d2412; }
+.action-button:disabled { cursor: not-allowed; opacity: .42; }
+@media (max-width: 640px) { .invitation-form { grid-template-columns: 1fr; } .invitation-form button { width: 100%; } }

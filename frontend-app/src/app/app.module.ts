@@ -16,6 +16,10 @@ import {LoadingSpinnerComponent} from './shared/loading-spinner/loading-spinner.
 import {RegistrationService} from './registration/registration.service';
 import {ProfileComponent} from './profile/profile.component';
 import {ZweiIconComponent} from './shared/zwei-icon/zwei-icon.component';
+import {PendingComponent} from './pending/pending.component';
+import {ActivationComponent} from './activation/activation.component';
+import {AdminComponent} from './admin/admin.component';
+import {RootRedirectComponent} from './shared/root-redirect/root-redirect.component';
 
 @NgModule({
     declarations: [
@@ -27,6 +31,10 @@ import {ZweiIconComponent} from './shared/zwei-icon/zwei-icon.component';
         ProfileComponent,
         LoadingSpinnerComponent,
         ZweiIconComponent,
+        PendingComponent,
+        ActivationComponent,
+        AdminComponent,
+        RootRedirectComponent,
     ],
     imports: [
         BrowserModule,

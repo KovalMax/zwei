@@ -1,8 +1,8 @@
 import {Component} from '@angular/core';
-import {Router} from '@angular/router';
+import {ActivatedRoute, Router} from '@angular/router';
 import {MatSnackBar} from '@angular/material/snack-bar';
 import {FormGroup} from '@angular/forms';
-import {RegistrationForm, RegistrationModel} from './registration.model';
+import {RegistrationForm, RegistrationModel, PendingRegistrationResponse} from './registration.model';
 import {RegistrationService} from './registration.service';
 import {RegistrationErrorResponse} from './registration.error.model';
 import {finalize} from 'rxjs/operators';
@@ -23,6 +23,7 @@ export class RegistrationComponent {
         private service: RegistrationService,
         private authService: AuthService,
         private router: Router,
+        private route: ActivatedRoute,
         private snackBar: MatSnackBar,
     ) {
         this.registrationForm = service.buildForm();
@@ -37,7 +38,10 @@ export class RegistrationComponent {
 
         let model: RegistrationModel;
         try {
-            model = RegistrationModel.createFrom(this.registrationForm.getRawValue()) as RegistrationModel;
+            const invitationCode = this.route.snapshot.queryParamMap.get('invite') === '1'
+                ? this.route.snapshot.queryParamMap.get('code') || undefined
+                : undefined;
+            model = RegistrationModel.createFrom(this.registrationForm.getRawValue(), invitationCode) as RegistrationModel;
         } catch {
             this.showError('Please check the registration details and try again.');
             return;
@@ -48,9 +52,13 @@ export class RegistrationComponent {
             .pipe(finalize(() => this.isLoading = false))
             .subscribe({
                  next: token => {
-                     this.authService.acceptToken(token);
-                     this.snackBar.dismiss();
-                     this.router.navigate(['home']);
+                      this.snackBar.dismiss();
+                      if (this.isPendingResponse(token)) {
+                          void this.router.navigate(['pending']);
+                          return;
+                      }
+                      this.authService.acceptToken(token);
+                      void this.router.navigate([this.authService.defaultAuthenticatedRoute()]);
                  },
                 error: (error: RegistrationErrorResponse) => this.showError(this.registrationErrorMessage(error)),
             });
@@ -106,5 +114,9 @@ export class RegistrationComponent {
             horizontalPosition: 'center',
             verticalPosition: 'top',
         });
+    }
+
+    private isPendingResponse(response: unknown): response is PendingRegistrationResponse {
+        return typeof response === 'object' && response !== null && 'status' in response && response.status === 'pending';
     }
 }

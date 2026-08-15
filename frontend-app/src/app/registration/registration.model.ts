@@ -16,9 +16,14 @@ export interface Registration {
     display_name: string;
     device_id: string;
     device_name?: string;
+    invitation_code?: string;
 }
 
-export type RegistrationResponse = Token;
+export interface PendingRegistrationResponse {
+    status: 'pending';
+}
+
+export type RegistrationResponse = Token | PendingRegistrationResponse;
 
 export class RegistrationModel implements Registration {
     constructor(
@@ -26,10 +31,11 @@ export class RegistrationModel implements Registration {
         public password: string,
         public display_name: string,
         public device_id: string,
+        public invitation_code?: string,
     ) {
     }
 
-    static createFrom(values: RegistrationForm): Registration {
+    static createFrom(values: RegistrationForm, invitationCode?: string): Registration {
         if (!('email' in values)) {
             throw new Error('email key not found');
         }
@@ -51,6 +57,7 @@ export class RegistrationModel implements Registration {
             values.password,
             values.nickName,
             getDeviceID(),
+            invitationCode,
         );
     }
 }

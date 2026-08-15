@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -16,9 +17,10 @@ import (
 )
 
 var (
-	ErrInvalidInput = errors.New("invalid input")
-	ErrCredentials  = errors.New("invalid credentials")
-	ErrRefreshToken = errors.New("invalid refresh token")
+	ErrInvalidInput    = errors.New("invalid input")
+	ErrCredentials     = errors.New("invalid credentials")
+	ErrRefreshToken    = errors.New("invalid refresh token")
+	ErrAccountInactive = errors.New("account is not active")
 )
 
 type Service struct {
@@ -34,7 +36,10 @@ func NewService(repository Repository, passwords PasswordHasher, tokens TokenIss
 	return &Service{repository: repository, passwords: passwords, tokens: tokens, accessLifetime: accessLifetime, refreshLifetime: refreshLifetime, clock: time.Now}
 }
 
-type Credentials struct{ Email, Password, DisplayName, DeviceID, DeviceName string }
+type Credentials struct {
+	Email, Password, DisplayName, DeviceID, DeviceName string
+	InvitationCode                                     string
+}
 type Tokens struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -42,19 +47,46 @@ type Tokens struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-func (s *Service) Register(ctx context.Context, input Credentials) (Tokens, error) {
+type RegistrationResult struct {
+	Tokens  Tokens
+	Pending bool
+}
+
+func (s *Service) Register(ctx context.Context, input Credentials) (RegistrationResult, error) {
 	if !validCredentials(input.Email, input.Password, input.DisplayName, input.DeviceID) {
-		return Tokens{}, ErrInvalidInput
+		return RegistrationResult{}, ErrInvalidInput
 	}
 	hash, err := s.passwords.Hash(input.Password)
 	if err != nil {
-		return Tokens{}, err
+		return RegistrationResult{}, err
 	}
-	userID, deviceID, err := s.repository.CreateUserWithDevice(ctx, normalizeEmail(input.Email), hash, strings.TrimSpace(input.DisplayName), input.DeviceID, input.DeviceName)
+	status := user.KYCPending
+	verified := false
+	var invitationHash []byte
+	if strings.TrimSpace(input.InvitationCode) != "" {
+		status = user.KYCActive
+		verified = true
+		hash := sha256.Sum256([]byte(strings.TrimSpace(input.InvitationCode)))
+		invitationHash = hash[:]
+	}
+	userID, deviceID, err := s.repository.CreateUserWithDevice(ctx, CreateUserParams{
+		Email:          normalizeEmail(input.Email),
+		PasswordHash:   hash,
+		DisplayName:    strings.TrimSpace(input.DisplayName),
+		ClientDeviceID: input.DeviceID,
+		DeviceName:     input.DeviceName,
+		KYCStatus:      status,
+		EmailVerified:  verified,
+		InvitationCode: invitationHash,
+	})
 	if err != nil {
-		return Tokens{}, err
+		return RegistrationResult{}, err
 	}
-	return s.issueTokens(ctx, userID, deviceID, 1)
+	if !verified {
+		return RegistrationResult{Pending: true}, nil
+	}
+	tokens, err := s.issueTokens(ctx, userID, deviceID, 1)
+	return RegistrationResult{Tokens: tokens}, err
 }
 
 func (s *Service) Login(ctx context.Context, input Credentials) (Tokens, error) {
@@ -64,6 +96,9 @@ func (s *Service) Login(ctx context.Context, input Credentials) (Tokens, error) 
 	account, err := s.repository.FindUserByEmail(ctx, normalizeEmail(input.Email))
 	if err != nil || s.passwords.Compare(account.PasswordHash, input.Password) != nil {
 		return Tokens{}, ErrCredentials
+	}
+	if account.KYCStatus != user.KYCActive || !account.EmailVerified {
+		return Tokens{}, ErrAccountInactive
 	}
 	deviceID, err := s.repository.EnsureDevice(ctx, account.ID, input.DeviceID, input.DeviceName)
 	if err != nil {
@@ -133,9 +168,18 @@ func (s *Service) issueTokens(ctx context.Context, userID, deviceID uuid.UUID, v
 }
 
 func validCredentials(email, password, displayName, deviceID string) bool {
-	return strings.Contains(email, "@") && len(password) >= 8 && strings.TrimSpace(displayName) != "" && len(strings.TrimSpace(deviceID)) >= 8
+	return validEmail(email) && len(password) >= 8 && strings.TrimSpace(displayName) != "" && len(strings.TrimSpace(deviceID)) >= 8
 }
 func validLogin(email, password, deviceID string) bool {
-	return strings.Contains(email, "@") && len(password) >= 8 && len(strings.TrimSpace(deviceID)) >= 8
+	return validEmail(email) && len(password) >= 8 && len(strings.TrimSpace(deviceID)) >= 8
 }
 func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
+
+func validEmail(value string) bool {
+	email := normalizeEmail(value)
+	if len(email) == 0 || len(email) > 180 || strings.ContainsAny(email, "\r\n") {
+		return false
+	}
+	parsed, err := mail.ParseAddress(email)
+	return err == nil && parsed.Address == email
+}

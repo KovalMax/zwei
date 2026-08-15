@@ -24,4 +24,14 @@ describe('ZweiIconComponent', () => {
 
         expect(fixture.nativeElement.querySelector('path')?.getAttribute('d')).toContain('20.59 6.41');
     });
+
+    it('renders the admin action icons', () => {
+        fixture.componentRef.setInput('name', 'check');
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('path')?.getAttribute('d')).toContain('9 16.17');
+
+        fixture.componentRef.setInput('name', 'block');
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('path')?.getAttribute('d')).toContain('12 2a10');
+    });
 });

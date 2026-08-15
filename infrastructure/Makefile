@@ -40,3 +40,7 @@ trust-local-ca: ## - Trust the Docker-generated local CA on macOS
 .PHONY: migrate
 migrate: check_dist_files ## - Run PostgreSQL migrations inside the database container
 	@bash scripts/migrate.sh $(APP_NAME)
+
+.PHONY: e2e
+e2e: check_dist_files ## - Run Playwright tests against an isolated PostgreSQL schema
+	@bash scripts/e2e.sh $(APP_NAME)

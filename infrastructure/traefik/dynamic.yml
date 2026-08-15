@@ -35,6 +35,11 @@ http:
         average: 30
         period: 1m
         burst: 20
+    kyc-basic-auth:
+      basicAuth:
+        realm: Zwei KYC (local)
+        users:
+          - "kyc-admin:$2y$05$LNCg9fRrfSFLJ4g4NQaLROysAqCNAlxxlE8xiEjE1N/9iCRI8bf06"
   routers:
     dashboard:
       rule: Host(`traefik.localhost`)
@@ -48,6 +53,13 @@ http:
       service: frontend
       tls: {}
       middlewares: [security-headers]
+    admin-frontend:
+      rule: Host(`kyc.localhost`)
+      entryPoints: [websecure]
+      service: frontend
+      priority: 10
+      tls: {}
+      middlewares: [security-headers, kyc-basic-auth]
     auth:
       rule: Host(`auth.localhost`) || (Host(`chat.localhost`) && PathPrefix(`/api/auth`))
       entryPoints: [websecure]
@@ -55,6 +67,20 @@ http:
       priority: 100
       tls: {}
       middlewares: [security-headers, auth-rate-limit]
+    admin-auth:
+      rule: Host(`kyc.localhost`) && PathPrefix(`/api/auth`)
+      entryPoints: [websecure]
+      service: auth
+      priority: 110
+      tls: {}
+      middlewares: [security-headers, auth-rate-limit]
+    admin-api:
+      rule: Host(`kyc.localhost`) && PathPrefix(`/api/admin`)
+      entryPoints: [websecure]
+      service: auth
+      priority: 110
+      tls: {}
+      middlewares: [security-headers]
     user-search:
       rule: Host(`api.chat.localhost`) && Path(`/api/chat/users/search`)
       entryPoints: [websecure]

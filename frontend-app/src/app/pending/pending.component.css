@@ -1,0 +1,1 @@
+.pending-card { width: min(100%, 440px); max-width: 440px; }.pending-card .submit-button { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; border-radius: 12px; background: var(--auth-submit) !important; color: var(--auth-submit-text) !important; font-weight: 700; text-decoration: none; }
