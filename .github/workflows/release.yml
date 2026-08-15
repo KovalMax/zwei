@@ -163,7 +163,7 @@ jobs:
              . ./.env
              . ./.deploy.env
              set +a
-             test -r "$KYC_BASIC_AUTH_FILE"
+             test -r \"\$KYC_BASIC_AUTH_FILE\"
              docker compose --profile migration pull
             docker compose up -d --wait --wait-timeout 120 database redis
             docker compose run --rm migrate
@@ -175,8 +175,8 @@ jobs:
            kyc_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --output /dev/null --write-out '%{http_code}' https://kyc.chat.false.tel/)"
            test "$kyc_status" = 401
            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
-          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
-          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
+           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
+           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
 
       - name: Verify public security headers
         run: |
