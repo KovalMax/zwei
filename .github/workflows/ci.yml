@@ -98,6 +98,7 @@ jobs:
       - name: Start application stack
         run: >-
           docker compose -p messenger
+          --env-file infrastructure/.env
           -f infrastructure/docker-compose.yml
           -f infrastructure/docker-compose.override.yml
           up -d --build database auth chat realtime frontend traefik
