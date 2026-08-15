@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine AS base
+FROM golang:1.26.6-alpine AS base
 
 # Do not rebuild C libs, no need to use gcc for building Go code
 ENV CGO_ENABLED=0

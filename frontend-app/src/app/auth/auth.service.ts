@@ -6,13 +6,14 @@ import {Injectable} from '@angular/core';
 import {Profile} from './profile.model';
 import {BehaviorSubject, Observable, of, throwError} from 'rxjs';
 import {catchError, shareReplay, tap} from 'rxjs/operators';
+import {HostService} from './host.service';
 
 @Injectable({providedIn: 'root'})
 export class AuthService {
     private tokenSubject: BehaviorSubject<Token | null> = new BehaviorSubject<Token | null>(null);
     private restoreResult?: Observable<Token | null>;
 
-    constructor(private http: HttpClient) {
+    constructor(private http: HttpClient, private host: HostService) {
     }
 
     get token(): BehaviorSubject<Token | null> {
@@ -20,7 +21,7 @@ export class AuthService {
     }
 
     public login(login: Login): Observable<Token> {
-        return this.http.post<Token>(backends.login, login, {withCredentials: true})
+        return this.http.post<Token>(this.host.authEndpoint('login'), login, {withCredentials: true})
             .pipe(
                 catchError((res: HttpErrorResponse) => throwError(() => res)),
                 tap((token: Token) => this.acceptToken(token))
@@ -36,7 +37,7 @@ export class AuthService {
         const token = this.tokenSubject.value;
         if (token) return of(token);
         if (!this.restoreResult) {
-            this.restoreResult = this.http.post<Token>(backends.refresh, {}, {withCredentials: true}).pipe(
+            this.restoreResult = this.http.post<Token>(this.host.authEndpoint('refresh'), {}, {withCredentials: true}).pipe(
                 tap(restored => this.handleToken(restored)),
                 catchError(() => of(null)),
                 shareReplay({bufferSize: 1, refCount: false}),
@@ -51,12 +52,20 @@ export class AuthService {
         this.restoreResult = of(null);
         if (!revoke) return of(void 0);
         const headers = token ? new HttpHeaders().set('Authorization', token.token_type.concat(' ', token.access_token)) : undefined;
-        return this.http.post<void>(backends.logout, {}, {withCredentials: true, headers}).pipe(
+        return this.http.post<void>(this.host.authEndpoint('logout'), {}, {withCredentials: true, headers}).pipe(
             catchError(() => of(void 0)),
         );
     }
 
-    public profile(): Observable<Profile> { return this.http.get<Profile>(`${backends.auth}/api/auth/me`); }
+    public profile(): Observable<Profile> { return this.http.get<Profile>(this.host.authEndpoint('profile')); }
+
+    public activate(token: string): Observable<{status: string}> {
+        return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});
+    }
+
+    public defaultAuthenticatedRoute(): string {
+        return this.host.defaultAuthenticatedRoute();
+    }
 
     private handleToken(token: Token): void {
         if (!token) {

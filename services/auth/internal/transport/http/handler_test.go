@@ -63,3 +63,18 @@ func TestWriteTokensSetsRefreshCookieAndOmitsItFromJSON(t *testing.T) {
 		t.Fatalf("refresh token leaked in JSON: %v", payload)
 	}
 }
+
+func TestKYCAuthenticationRequiresAllowlistedAddress(t *testing.T) {
+	allowlist, err := NewIPAllowlist("203.0.113.10/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://kyc.chat.false.tel/api/auth/login", nil)
+	request.Host = "kyc.chat.false.tel"
+	response := httptest.NewRecorder()
+	(&Handler{adminIPs: allowlist}).login(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}

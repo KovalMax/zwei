@@ -75,13 +75,21 @@ html, body {
     --auth-submit-text: #fff;
 }
 
-:root.dark-theme, body.dark-theme {
+html.dark-theme, body.dark-theme {
+    --zwei-ink: #edf2fa;
+    --zwei-canvas: #182330 !important;
+    --zwei-surface: #202c3b;
+    --zwei-line: #2a394a;
+    --zwei-muted: #aebdd0;
+    --zwei-card-border: #30465e;
+    --zwei-shadow-card: 0 20px 60px rgba(0, 0, 0, .24);
     --auth-card-surface: #202c3b;
     --auth-card-border: #30465e;
     --auth-title: #f1f5f9;
     --auth-muted: #aebdd0;
     --auth-icon: #aebdd0;
     --auth-submit: #4b9ce9;
+    --auth-submit-text: #fff;
 }
 
 :root.light-theme, body.light-theme {
@@ -124,6 +132,14 @@ body :is(a, button, select, [tabindex]):focus-visible {
         transition-duration: .01ms !important;
     }
 }
+
+html.dark-theme .admin-page { background: #182330; color: #edf2fa; }
+html.dark-theme .admin-card { background: #202c3b; border-color: #30465e; box-shadow: 0 20px 60px rgba(0, 0, 0, .24); }
+html.dark-theme .admin-page h1, html.dark-theme .admin-page h2, html.dark-theme .admin-page th, html.dark-theme .admin-page td { color: #f1f5f9; }
+html.dark-theme .admin-page p, html.dark-theme .admin-page .admin-nav button { color: #aebdd0; }
+html.dark-theme .admin-page .admin-nav { border-color: #30465e; }
+html.dark-theme .admin-page .table-wrap { border-color: #30465e; scrollbar-color: #6f8aa5 #202e3d; }
+html.dark-theme .admin-page th { background: #202c3b; }
 
 .light-theme .topbar { background: #fff; color: var(--zwei-ink); box-shadow: 0 1px 0 var(--zwei-line); }
 .light-theme .connection-pill { color: var(--zwei-muted); }

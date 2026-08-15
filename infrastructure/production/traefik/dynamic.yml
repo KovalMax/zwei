@@ -30,6 +30,10 @@ http:
         average: 30
         period: 1m
         burst: 20
+    kyc-basic-auth:
+      basicAuth:
+        realm: Zwei KYC
+        usersFile: /run/secrets/kyc.htpasswd
   routers:
     frontend:
       rule: Host(`chat.false.tel`)
@@ -38,6 +42,14 @@ http:
       tls:
         certResolver: letsencrypt
       middlewares: [security-headers]
+    admin-frontend:
+      rule: Host(`kyc.chat.false.tel`)
+      entryPoints: [websecure]
+      service: frontend
+      priority: 10
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers, kyc-basic-auth]
     auth:
       rule: Host(`auth.chat.false.tel`)
       entryPoints: [websecure]
@@ -45,6 +57,22 @@ http:
       tls:
         certResolver: letsencrypt
       middlewares: [security-headers, auth-rate-limit]
+    admin-auth:
+      rule: Host(`kyc.chat.false.tel`) && PathPrefix(`/api/auth`)
+      entryPoints: [websecure]
+      service: auth
+      priority: 110
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers, auth-rate-limit]
+    admin-api:
+      rule: Host(`kyc.chat.false.tel`) && PathPrefix(`/api/admin`)
+      entryPoints: [websecure]
+      service: auth
+      priority: 110
+      tls:
+        certResolver: letsencrypt
+      middlewares: [security-headers]
     user-search:
       rule: Host(`api.chat.false.tel`) && Path(`/api/chat/users/search`)
       entryPoints: [websecure]

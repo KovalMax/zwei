@@ -62,7 +62,7 @@ export class LoginComponent {
             .subscribe({
                 next: () => {
                     this.snackBar.dismiss();
-                    this.router.navigate(['home']);
+                    void this.router.navigate([this.client.defaultAuthenticatedRoute()]);
                 },
                 error: (error: string | HttpErrorResponse) => this.showError(this.loginErrorMessage(error)),
             });

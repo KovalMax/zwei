@@ -116,21 +116,15 @@ jobs:
         run: mkdir -p e2e/test-results
 
       - name: Run Playwright tests
-        run: >-
-          docker compose -p messenger
-          -f infrastructure/docker-compose.yml
-          -f infrastructure/docker-compose.override.yml
-          run --rm
-          -v "$PWD/e2e/test-results:/e2e/test-results"
-          e2e
+        run: make e2e
 
       - name: Upload Playwright artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-artifacts
           path: e2e/test-results/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
       - name: Stop application stack
         if: always()

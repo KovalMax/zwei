@@ -19,6 +19,7 @@ services:
       - "443:443"
     volumes:
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ${KYC_BASIC_AUTH_FILE:?KYC_BASIC_AUTH_FILE is required}:/run/secrets/kyc.htpasswd:ro
       - traefik-acme:/acme
     networks: [edge]
     restart: unless-stopped
@@ -63,6 +64,14 @@ services:
       ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME:-15m}
       REFRESH_TOKEN_LIFETIME: ${REFRESH_TOKEN_LIFETIME:-720h}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+      SMTP_HOST: ${SMTP_HOST:?SMTP_HOST is required}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM is required}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      ACTIVATION_URL: ${ACTIVATION_URL:-https://chat.false.tel/activate}
+      INVITATION_URL: ${INVITATION_URL:-https://chat.false.tel/sign-up}
+      ADMIN_ALLOWED_IPS: ${ADMIN_ALLOWED_IPS:?ADMIN_ALLOWED_IPS is required}
     depends_on:
       database:
         condition: service_healthy

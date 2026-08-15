@@ -19,7 +19,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go mod verify
-      - run: GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./services/...
+      - run: GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./services/...
 
   npm-vulnerabilities:
     name: npm vulnerabilities (${{ matrix.directory }})

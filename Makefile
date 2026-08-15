@@ -45,7 +45,7 @@ test: ## - Run Go tests in containers
 
 .PHONY: e2e
 e2e: ## - Run Playwright browser E2E tests in Docker
-	docker compose -p messenger -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml run --rm e2e
+	make -C infrastructure e2e
 
 .PHONY: trust-local-ca
 trust-local-ca: ## - Trust the Docker-generated local CA on macOS

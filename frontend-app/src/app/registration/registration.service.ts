@@ -15,79 +15,6 @@ export class RegistrationService {
     ) {
     }
 
-    readonly registrationForm = new FormGroup<ControlsOf<RegistrationForm>>({
-            email: new FormControl<string>(
-                '',
-                {
-                    validators: [
-                        Validators.required,
-                        Validators.email,
-                        Validators.maxLength(180),
-                    ],
-                    nonNullable: true,
-                }
-            ),
-            password: new FormControl<string>(
-                '',
-                {
-                    validators: [
-                        Validators.required,
-                        Validators.minLength(8),
-                        Validators.maxLength(64),
-                    ],
-                    nonNullable: true,
-                }
-            ),
-            confirmPassword: new FormControl<string>(
-                '',
-                {
-                    validators: [
-                        Validators.required,
-                        Validators.minLength(8),
-                        Validators.maxLength(64),
-                    ],
-                    nonNullable: true,
-                }
-            ),
-            firstName: new FormControl<string>(
-                '',
-                {
-                    validators: [
-                        Validators.required,
-                        Validators.minLength(2),
-                        Validators.maxLength(60)
-                    ],
-                    nonNullable: true,
-                }
-            ),
-            lastName: new FormControl<string>(
-                '',
-                {
-                    validators: [
-                        Validators.required,
-                        Validators.minLength(2),
-                        Validators.maxLength(60)
-                    ],
-                    nonNullable: true,
-                }
-            ),
-            nickName: new FormControl<string>(
-                '',
-                {
-                    validators: [
-                        Validators.required,
-                        Validators.minLength(2),
-                        Validators.maxLength(60)
-                    ],
-                    nonNullable: true,
-                }
-            )
-        },
-        {
-            validators: ApplicationValidators.valuesAreEqual('password', 'confirmPassword'),
-        }
-    );
-
     public registration(model: RegistrationModel): Observable<RegistrationResponse> {
         return this.client
             .post<RegistrationResponse>(backends.registration, model)
@@ -101,6 +28,15 @@ export class RegistrationService {
     }
 
     public buildForm(): FormGroup<ControlsOf<RegistrationForm>> {
-        return this.registrationForm;
+        return new FormGroup<ControlsOf<RegistrationForm>>({
+            email: new FormControl('', {validators: [Validators.required, Validators.email, Validators.maxLength(180)], nonNullable: true}),
+            password: new FormControl('', {validators: [Validators.required, Validators.minLength(8), Validators.maxLength(64)], nonNullable: true}),
+            confirmPassword: new FormControl('', {validators: [Validators.required, Validators.minLength(8), Validators.maxLength(64)], nonNullable: true}),
+            firstName: new FormControl('', {validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)], nonNullable: true}),
+            lastName: new FormControl('', {validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)], nonNullable: true}),
+            nickName: new FormControl('', {validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)], nonNullable: true}),
+        }, {
+            validators: ApplicationValidators.valuesAreEqual('password', 'confirmPassword'),
+        });
     }
 }
