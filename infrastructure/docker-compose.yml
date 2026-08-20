@@ -21,6 +21,12 @@ services:
     depends_on:
       database:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
     networks: [messenger-network]
 
   chat:
@@ -41,6 +47,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
     networks: [messenger-network]
 
   realtime:
@@ -64,6 +76,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8083/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
     networks: [messenger-network]
 
   e2e:
@@ -87,8 +105,16 @@ services:
       - "kyc.localhost:host-gateway"
       - "traefik.localhost:host-gateway"
     depends_on:
-      - traefik
-      - mailpit
+      traefik:
+        condition: service_started
+      mailpit:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      chat:
+        condition: service_healthy
+      realtime:
+        condition: service_healthy
     networks: [messenger-network]
 
   frontend:

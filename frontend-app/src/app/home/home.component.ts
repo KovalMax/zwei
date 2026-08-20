@@ -1,8 +1,8 @@
-import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, OnDestroy, OnInit, ViewChild} from '@angular/core';
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild} from '@angular/core';
 import {BehaviorSubject, Subscription} from 'rxjs';
 import {Conversation} from './conversation.model';
 import {ConversationService} from './conversation.service';
-import {Message} from './message.model';
+import {Message, messageDateLabel, messageDateTimeLabel} from './message.model';
 import {UserSearchResult} from './user.model';
 import {DataProviderService, MessageSocketEvent} from './data-provider.service';
 import {createRandomID} from '../login/login';
@@ -48,10 +48,12 @@ export class HomeComponent implements OnInit, OnDestroy {
     private isTyping = false;
     private callStartedAt?: number;
     private callTimer?: number;
+    public screenShareFullscreen = false;
     private callStateSubscription?: Subscription;
     private readonly peerReadSequences = new Map<string, number>();
     private readonly ownReadSequences = new Map<string, number>();
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
+    @ViewChild('screenStage') private screenStage?: ElementRef<HTMLElement>;
 
     constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade) {
     }
@@ -112,14 +114,52 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.changeDetector.markForCheck();
     }
 
-    public onCallInputDeviceChange(event: Event): void {
-        const deviceID = (event.target as HTMLSelectElement | null)?.value;
+    public onCallInputDeviceChange(deviceID: string): void {
         if (deviceID) void this.call.selectInputDevice(deviceID);
     }
 
-    public onCallOutputDeviceChange(event: Event): void {
-        const deviceID = (event.target as HTMLSelectElement | null)?.value;
+    public callSelectPanelClass(): string {
+        return document.documentElement.classList.contains('light-theme') ? 'call-select-panel call-select-panel-light' : 'call-select-panel call-select-panel-dark';
+    }
+
+    public onCallOutputDeviceChange(deviceID: string): void {
         if (deviceID) void this.call.selectOutputDevice(deviceID);
+    }
+
+    public onScreenQualityChange(quality: string): void {
+        switch (quality) {
+            case '360p':
+                void this.call.selectScreenShareQuality('360p');
+                break;
+            case '720p':
+                void this.call.selectScreenShareQuality('720p');
+                break;
+            case '1080p':
+                void this.call.selectScreenShareQuality('1080p');
+                break;
+        }
+    }
+
+    public async toggleScreenShareFullscreen(): Promise<void> {
+        const stage = this.screenStage?.nativeElement;
+        if (!stage) return;
+        try {
+            if (document.fullscreenElement === stage) {
+                await document.exitFullscreen();
+            } else if (typeof stage.requestFullscreen === 'function') {
+                await stage.requestFullscreen();
+            }
+        } catch {
+            this.screenShareFullscreen = false;
+        }
+        this.screenShareFullscreen = document.fullscreenElement === stage;
+        this.changeDetector.markForCheck();
+    }
+
+    @HostListener('document:fullscreenchange')
+    public onFullscreenChange(): void {
+        this.screenShareFullscreen = document.fullscreenElement === this.screenStage?.nativeElement;
+        this.changeDetector.markForCheck();
     }
 
     public isCallSurfaceVisible(): boolean {
@@ -234,6 +274,9 @@ export class HomeComponent implements OnInit, OnDestroy {
     public senderName(message: Message): string {
         return this.isOwnMessage(message) ? (this.profile?.display_name || 'You') : (this.selectedConversation?.otherDisplayName || 'Conversation member');
     }
+
+    public messageDateLabel(message: Message): string { return messageDateLabel(message.createdAt); }
+    public messageDateTimeLabel(message: Message): string { return messageDateTimeLabel(message.createdAt); }
 
     public peerPresenceLabel(): string {
         if (!this.selectedConversation) return this.socketReady ? 'Live connection' : 'Connecting…';

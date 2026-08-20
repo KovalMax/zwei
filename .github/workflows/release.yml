@@ -163,11 +163,12 @@ jobs:
              . ./.env
              . ./.deploy.env
              set +a
-             test -r \"\$KYC_BASIC_AUTH_FILE\"
+             test -f \"\$KYC_BASIC_AUTH_FILE\" && test -s \"\$KYC_BASIC_AUTH_FILE\"
              docker compose --profile migration pull
-            docker compose up -d --wait --wait-timeout 120 database redis
-            docker compose run --rm migrate
-            docker compose up -d --force-recreate --wait --wait-timeout 120 coturn traefik frontend auth chat realtime"
+             docker compose up -d --wait --wait-timeout 120 database redis
+             docker compose run --rm migrate
+             docker compose up -d --force-recreate --wait --wait-timeout 120 coturn traefik frontend auth chat realtime
+             docker compose exec -T traefik sh -c 'test -f /run/secrets/kyc.htpasswd && test -s /run/secrets/kyc.htpasswd'"
 
       - name: Verify public HTTPS endpoints
         run: |

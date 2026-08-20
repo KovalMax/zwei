@@ -2,6 +2,8 @@ services:
   auth:
     environment:
       DATABASE_URL: "postgres://${APP_DB_USER:-messenger_user}:${APP_DB_PASSWORD:-user-password}@database:5432/messenger_test?sslmode=disable"
+      # Docker Desktop routes browser tests through its 192.168.65.0/24 host gateway.
+      # This is isolated to the disposable E2E database/stack; production remains narrow.
       ADMIN_ALLOWED_IPS: "172.16.0.0/12,192.168.65.0/24,127.0.0.1/32,::1/128"
 
   chat:

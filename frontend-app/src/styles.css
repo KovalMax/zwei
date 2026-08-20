@@ -52,6 +52,8 @@ html, body {
     --chat-call-control-text: #f1f5f9;
     --chat-call-icon: #74b7f3;
     --chat-call-icon-disabled: #91abc5;
+    --chat-call-screen-surface: #111923;
+    --chat-call-screen-text: #d8e6f5;
     --chat-scroll-track: #202e3d;
     --chat-scroll-thumb: #6f8aa5;
     --chat-scroll-thumb-hover: #9ab6d1;
@@ -101,6 +103,8 @@ html.dark-theme, body.dark-theme {
     --chat-surface-control: #fff;
     --chat-line: #dce3ef;
     --chat-line-strong: #cfd9e8;
+    --chat-call-screen-surface: #e8edf5;
+    --chat-call-screen-text: #4c6077;
     --chat-text: #172033;
     --chat-text-strong: #172033;
     --chat-muted: #667085;
@@ -121,6 +125,22 @@ body :is(a, button, select, [tabindex]):focus-visible {
     outline: 3px solid var(--zwei-focus) !important;
     outline-offset: 2px;
 }
+
+.call-select-panel, .call-select-panel.mat-mdc-select-panel {
+    --mat-menu-container-shape: 12px;
+    --mat-select-panel-container-shape: 12px;
+    min-width: 220px;
+    padding: 6px;
+    border: 1px solid var(--chat-line-strong);
+    border-radius: 12px !important;
+    box-shadow: 0 18px 40px rgba(17, 28, 43, .24);
+}
+.call-select-panel .mat-mdc-option {
+    min-height: 40px;
+    border-radius: 8px;
+    font: 500 12px/1.2 'Manrope', sans-serif;
+}
+.call-select-panel .mat-pseudo-checkbox { --mat-minimal-pseudo-checkbox-selected-checkmark-color: var(--chat-accent); }
 
 @media (prefers-reduced-motion: reduce) {
     :root { --zwei-motion-duration: 0ms; }
