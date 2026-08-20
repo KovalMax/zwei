@@ -5,19 +5,8 @@ import {createRandomID} from '../login/login';
 
 export type CallPhase = 'idle' | 'requesting' | 'outgoing' | 'incoming' | 'connecting' | 'active' | 'ended' | 'error';
 export type CallRole = 'caller' | 'recipient';
+export type ScreenShareQuality = '360p' | '720p' | '1080p';
 export interface CallDevice { readonly deviceID: string; readonly label: string; }
-export interface CallAudioDiagnostics {
-    readonly available: boolean;
-    readonly localLevel?: number;
-    readonly remoteLevel?: number;
-    readonly packetsSent?: number;
-    readonly packetsReceived?: number;
-    readonly packetsLost?: number;
-    readonly jitterMs?: number;
-    readonly outputPaused?: boolean;
-    readonly outputMuted?: boolean;
-    readonly outputVolume?: number;
-}
 export interface CallState {
     readonly phase: CallPhase;
     readonly role?: CallRole;
@@ -27,33 +16,40 @@ export interface CallState {
     readonly muted: boolean;
     readonly localStream?: MediaStream;
     readonly remoteStream?: MediaStream;
+    readonly screenShareStream?: MediaStream;
+    readonly remoteScreenStream?: MediaStream;
+    readonly screenShareQuality: ScreenShareQuality;
     readonly audioPlaybackBlocked?: boolean;
     readonly inputDevices?: readonly CallDevice[];
     readonly outputDevices?: readonly CallDevice[];
     readonly selectedInputDeviceID?: string;
     readonly selectedOutputDeviceID?: string;
     readonly outputSelectionSupported?: boolean;
-    readonly connectionState?: RTCPeerConnectionState;
-    readonly iceConnectionState?: RTCIceConnectionState;
-    readonly localAudioState?: 'active' | 'muted' | 'ended' | 'unavailable';
-    readonly remoteAudioState?: 'waiting' | 'receiving' | 'playing' | 'blocked' | 'unavailable';
-    readonly audioDiagnostics?: CallAudioDiagnostics;
     readonly statusLabel: string;
     readonly errorLabel?: string;
 }
-const idleState: CallState = Object.freeze({phase: 'idle', muted: false, statusLabel: 'No active call.'});
+type DisplayMediaOptions = DisplayMediaStreamOptions & {
+    readonly selfBrowserSurface?: 'include' | 'exclude';
+    readonly surfaceSwitching?: 'include' | 'exclude';
+    readonly monitorTypeSurfaces?: 'include' | 'exclude';
+};
+const idleState: CallState = Object.freeze({phase: 'idle', muted: false, screenShareQuality: '720p', statusLabel: 'No active call.'});
 const callNoticeDuration = 5_000;
+const screenShareDimensions: Record<ScreenShareQuality, {width: number; height: number}> = {
+    '360p': {width: 640, height: 360},
+    '720p': {width: 1280, height: 720},
+    '1080p': {width: 1920, height: 1080},
+};
 
 @Injectable()
 export class CallFacade implements OnDestroy {
     private readonly stateSubject = new BehaviorSubject<CallState>(idleState);
     private readonly subscription: Subscription;
     private connection?: RTCPeerConnection;
+    private screenSender?: RTCRtpSender;
     private pendingSignals: Record<string, unknown>[] = [];
     private remoteAudio?: HTMLAudioElement;
     private dismissTimer?: number;
-    private diagnosticsTimer?: number;
-    private diagnosticsGeneration = 0;
     private readonly deviceChangeListener = (): void => { void this.refreshDevices(); };
     public readonly state$ = this.stateSubject.asObservable();
 
@@ -68,55 +64,8 @@ export class CallFacade implements OnDestroy {
     public get selectedOutputDeviceID(): string { return this.state.selectedOutputDeviceID || ''; }
     public get outputSelectionSupported(): boolean { return this.state.outputSelectionSupported === true; }
 
-    public connectionLabel(): string {
-        switch (this.state.connectionState) {
-            case 'connected': return 'Connected';
-            case 'connecting': return 'Connecting';
-            case 'disconnected': return 'Connection interrupted';
-            case 'failed': return 'Connection failed';
-            case 'closed': return 'Disconnected';
-            default: return this.state.phase === 'active' ? 'Connected' : 'Waiting for connection';
-        }
-    }
-    public microphoneLabel(): string {
-        if (this.state.muted || this.state.localAudioState === 'muted') return 'Muted';
-        if (this.state.localAudioState === 'active') return 'Microphone active';
-        if (this.state.localAudioState === 'ended') return 'Microphone ended';
-        return 'Microphone waiting';
-    }
-    public iceLabel(): string {
-        switch (this.state.iceConnectionState) {
-            case 'connected':
-            case 'completed': return 'Network connected';
-            case 'checking': return 'Network checking';
-            case 'failed': return 'Network failed';
-            case 'disconnected': return 'Network interrupted';
-            case 'closed': return 'Network closed';
-            default: return 'Network waiting';
-        }
-    }
-    public speakerLabel(): string {
-        if (this.state.remoteAudioState === 'playing') return 'Speaker active';
-        if (this.state.remoteAudioState === 'blocked') return 'Sound blocked';
-        if (this.state.remoteAudioState === 'unavailable') return 'Speaker unavailable';
-        return 'Speaker waiting';
-    }
-    public microphoneLevelLabel(): string { return this.levelLabel(this.state.audioDiagnostics?.localLevel); }
-    public remoteAudioLevelLabel(): string { return this.levelLabel(this.state.audioDiagnostics?.remoteLevel); }
-    public packetsSentLabel(): string { return this.countLabel(this.state.audioDiagnostics?.packetsSent); }
-    public packetsReceivedLabel(): string { return this.countLabel(this.state.audioDiagnostics?.packetsReceived); }
-    public packetsLostLabel(): string { return this.countLabel(this.state.audioDiagnostics?.packetsLost); }
-    public jitterLabel(): string {
-        const jitter = this.state.audioDiagnostics?.jitterMs;
-        return jitter === undefined ? 'Unavailable' : `${Math.round(jitter)} ms`;
-    }
-    public outputPathLabel(): string {
-        const diagnostics = this.state.audioDiagnostics;
-        if (!diagnostics || diagnostics.outputPaused === undefined) return 'Unavailable';
-        if (diagnostics.outputPaused) return 'Paused';
-        if (diagnostics.outputMuted || diagnostics.outputVolume === 0) return 'Muted';
-        return `${Math.round((diagnostics.outputVolume || 0) * 100)}% volume`;
-    }
+    public get screenShareQuality(): ScreenShareQuality { return this.state.screenShareQuality; }
+    public screenShareSupported(): boolean { return typeof navigator.mediaDevices?.getDisplayMedia === 'function'; }
 
     public async start(conversationID: string, peerID: string): Promise<void> {
         if (!this.canStart()) return;
@@ -125,7 +74,7 @@ export class CallFacade implements OnDestroy {
         const stream = await this.requestMicrophone();
         if (!stream) return;
         if (!this.dataProvider.send({type: 'call.start', request_id: createRandomID(), payload: {conversation_id: conversationID}})) { this.stopStream(stream); this.setError('The secure connection is unavailable.'); return; }
-        this.setState({...this.state, phase: 'outgoing', role: 'caller', conversationID, peerID, muted: false, localStream: stream, localAudioState: 'active', statusLabel: 'Calling...'});
+        this.setState({...this.state, phase: 'outgoing', role: 'caller', conversationID, peerID, muted: false, localStream: stream, statusLabel: 'Calling...'});
     }
     public accept(): void {
         const state = this.state;
@@ -141,7 +90,79 @@ export class CallFacade implements OnDestroy {
         if (!state.localStream) return;
         const muted = !state.muted;
         state.localStream.getAudioTracks().forEach(track => track.enabled = !muted);
-        this.setState({...state, muted, localAudioState: muted ? 'muted' : 'active', statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
+        this.setState({...state, muted, statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
+    }
+    public async toggleScreenShare(): Promise<void> {
+        if (this.state.screenShareStream) {
+            await this.stopScreenShare();
+            return;
+        }
+        await this.startScreenShare();
+    }
+    public async selectScreenShareQuality(quality: ScreenShareQuality): Promise<void> {
+        if (!screenShareDimensions[quality]) return;
+        this.setState({...this.state, screenShareQuality: quality});
+        const track = this.state.screenShareStream?.getVideoTracks()[0];
+        if (!track || typeof track.applyConstraints !== 'function') return;
+        try {
+            await track.applyConstraints(this.screenShareConstraints(quality));
+        } catch {
+            this.setState({...this.state, statusLabel: 'Screen quality could not be changed.'});
+        }
+    }
+    private async startScreenShare(): Promise<void> {
+        if (this.state.phase !== 'active' || !this.connection || !this.screenShareSupported()) return;
+        let stream: MediaStream;
+        try {
+            const displayOptions: DisplayMediaOptions = {
+                video: this.screenShareConstraints(this.state.screenShareQuality),
+                audio: false,
+                selfBrowserSurface: 'include',
+                surfaceSwitching: 'include',
+                monitorTypeSurfaces: 'include',
+            };
+            stream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
+        } catch (error: unknown) {
+            const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
+            if (name !== 'AbortError' && name !== 'NotAllowedError') this.setState({...this.state, statusLabel: 'Screen sharing is unavailable.', errorLabel: 'Screen sharing is unavailable.'});
+            return;
+        }
+        const track = stream.getVideoTracks()[0];
+        if (!track) {
+            this.stopStream(stream);
+            this.setState({...this.state, statusLabel: 'No screen was selected.'});
+            return;
+        }
+        const sender = this.screenSender || this.connection.getSenders().find(item => item.track?.kind === 'video');
+        try {
+            if (sender) await sender.replaceTrack(track);
+            else this.screenSender = this.connection.addTrack(track, stream);
+            this.screenSender = sender || this.screenSender;
+            track.onended = () => { void this.stopScreenShare(track); };
+            this.setState({...this.state, screenShareStream: stream, statusLabel: 'You are sharing your screen.', errorLabel: undefined});
+            await this.sendRenegotiationOffer();
+        } catch {
+            this.stopStream(stream);
+            this.setState({...this.state, statusLabel: 'Screen sharing could not start.', errorLabel: 'Screen sharing could not start.'});
+        }
+    }
+    private async stopScreenShare(track?: MediaStreamTrack): Promise<void> {
+        const stream = this.state.screenShareStream;
+        if (!stream || (track && !stream.getVideoTracks().includes(track))) return;
+        const sender = this.screenSender || this.connection?.getSenders().find(item => item.track?.kind === 'video');
+        this.setState({...this.state, screenShareStream: undefined, statusLabel: 'Screen sharing stopped.'});
+        this.stopStream(stream);
+        try {
+            if (sender) await sender.replaceTrack(null);
+            this.sendSignal({type: 'screen-share-stopped'});
+            await this.sendRenegotiationOffer();
+        } catch {
+            this.setState({...this.state, statusLabel: 'Screen sharing could not stop.'});
+        }
+    }
+    private screenShareConstraints(quality: ScreenShareQuality): MediaTrackConstraints {
+        const dimensions = screenShareDimensions[quality];
+        return {width: {ideal: dimensions.width}, height: {ideal: dimensions.height}, frameRate: {ideal: 30, max: 30}};
     }
     public playRemoteAudio(event: Event): void {
         const audio = event.currentTarget as HTMLAudioElement | null;
@@ -151,6 +172,15 @@ export class CallFacade implements OnDestroy {
     }
     public enableRemoteAudio(): void {
         if (this.remoteAudio) void this.tryPlayRemoteAudio(this.remoteAudio);
+    }
+
+    public playRemoteScreen(event: Event): void {
+        const video = event.currentTarget as HTMLVideoElement | null;
+        if (!video) return;
+        video.autoplay = true;
+        video.muted = true;
+        if (this.state.remoteScreenStream && video.srcObject !== this.state.remoteScreenStream) video.srcObject = this.state.remoteScreenStream;
+        void video.play().catch(() => undefined);
     }
 
     public async selectInputDevice(deviceID: string): Promise<void> {
@@ -174,7 +204,7 @@ export class CallFacade implements OnDestroy {
             if (!sender) throw new Error('audio sender unavailable');
             await sender.replaceTrack(track);
             this.stopStream(this.state.localStream);
-            this.setState({...this.state, localStream: replacement, selectedInputDeviceID: deviceID, localAudioState: 'active', errorLabel: undefined, statusLabel: 'Microphone changed.'});
+            this.setState({...this.state, localStream: replacement, selectedInputDeviceID: deviceID, errorLabel: undefined, statusLabel: 'Microphone changed.'});
             await this.refreshDevices();
         } catch {
             this.stopStream(replacement);
@@ -234,20 +264,31 @@ export class CallFacade implements OnDestroy {
         if (!localStream || !this.createConnection(event.payload.ice_servers, localStream)) return;
         this.setState({...this.state, phase: 'connecting', callID: event.payload.call_id, conversationID: event.payload.conversation_id, peerID: this.peerFor(event.payload), localStream, statusLabel: 'Connecting call...'});
         for (const signal of this.pendingSignals.splice(0)) await this.applySignal(signal);
-        if (this.state.role === 'caller') try { const offer = await this.connection!.createOffer(); await this.connection!.setLocalDescription(offer); this.sendSignal({type: offer.type, sdp: offer.sdp}); } catch { this.setError('Could not start the audio call.'); }
+        if (this.state.role === 'caller') await this.sendRenegotiationOffer();
     }
     private async handleSignal(event: CallSignalSocketEvent): Promise<void> {
         if (!this.matches(event.payload.call_id)) return;
+        if (event.payload.signal['type'] === 'screen-share-stopped') {
+            this.clearRemoteScreen();
+            return;
+        }
         if (!this.connection) { this.pendingSignals.push(event.payload.signal); return; }
         await this.applySignal(event.payload.signal);
+    }
+
+    private clearRemoteScreen(): void {
+        const stream = this.state.remoteScreenStream;
+        if (!stream) return;
+        this.setState({...this.state, remoteScreenStream: undefined});
+        this.stopStream(stream);
     }
     private async applySignal(signal: Record<string, unknown>): Promise<void> {
         if (!this.connection) return;
         if (signal['type'] === 'candidate' && typeof signal['candidate'] === 'object' && signal['candidate'] !== null) { try { await this.connection.addIceCandidate(signal['candidate'] as RTCIceCandidateInit); } catch { this.setError('Could not connect the audio call.'); } return; }
         if ((signal['type'] !== 'offer' && signal['type'] !== 'answer') || typeof signal['sdp'] !== 'string') return;
         try {
-            if (signal['type'] === 'offer' && this.state.role === 'recipient') { await this.connection.setRemoteDescription({type: 'offer', sdp: signal['sdp']}); const answer = await this.connection.createAnswer(); await this.connection.setLocalDescription(answer); this.sendSignal({type: answer.type, sdp: answer.sdp}); }
-            else if (signal['type'] === 'answer' && this.state.role === 'caller') await this.connection.setRemoteDescription({type: 'answer', sdp: signal['sdp']});
+            if (signal['type'] === 'offer') { await this.connection.setRemoteDescription({type: 'offer', sdp: signal['sdp']}); const answer = await this.connection.createAnswer(); await this.connection.setLocalDescription(answer); this.sendSignal({type: answer.type, sdp: answer.sdp}); }
+            else if (signal['type'] === 'answer') await this.connection.setRemoteDescription({type: 'answer', sdp: signal['sdp']});
         } catch { this.setError('Could not connect the audio call.'); }
     }
     private createConnection(iceServers: ICEServer[], localStream: MediaStream): boolean {
@@ -257,22 +298,34 @@ export class CallFacade implements OnDestroy {
             this.connection.onicecandidate = event => { if (event.candidate) this.sendSignal({type: 'candidate', candidate: event.candidate.toJSON()}); };
             this.connection.ontrack = event => {
                 const remoteStream = event.streams[0] || new MediaStream([event.track]);
-                this.setState({...this.state, remoteStream, remoteAudioState: 'receiving', audioPlaybackBlocked: false, phase: 'active', statusLabel: 'Audio call connected.'});
+                if (event.track?.kind === 'video') {
+                    event.track.onended = () => {
+                        if (this.state.remoteScreenStream === remoteStream) this.clearRemoteScreen();
+                    };
+                    this.setState({...this.state, remoteScreenStream: remoteStream});
+                    return;
+                }
+                this.setState({...this.state, remoteStream, audioPlaybackBlocked: false, phase: 'active', statusLabel: 'Audio call connected.'});
                 if (this.remoteAudio) {
                     this.remoteAudio.srcObject = remoteStream;
                     void this.tryPlayRemoteAudio(this.remoteAudio);
                 }
             };
             this.connection.onconnectionstatechange = () => {
-                const connectionState = this.connection?.connectionState;
-                const iceConnectionState = this.connection?.iceConnectionState;
-                this.setState({...this.state, connectionState, iceConnectionState});
-                if (connectionState === 'failed') this.setError('Could not connect the audio call.');
+                if (this.connection?.connectionState === 'failed') this.setError('Could not connect the audio call.');
             };
-            this.connection.oniceconnectionstatechange = () => this.setState({...this.state, iceConnectionState: this.connection?.iceConnectionState});
-            this.startDiagnostics();
             return true;
         } catch { this.setError('Audio calls are not supported by this browser.'); return false; }
+    }
+    private async sendRenegotiationOffer(): Promise<void> {
+        if (!this.connection) return;
+        try {
+            const offer = await this.connection.createOffer();
+            await this.connection.setLocalDescription(offer);
+            this.sendSignal({type: offer.type, sdp: offer.sdp});
+        } catch {
+            this.setError('Could not update the call media.');
+        }
     }
     private sendSignal(signal: Record<string, unknown>): void { const callID = this.state.callID; if (callID && !this.dataProvider.send({type: 'call.signal', request_id: createRandomID(), payload: {call_id: callID, signal}})) this.setError('The secure connection is unavailable.'); }
     private sendControl(type: 'call.decline' | 'call.cancel' | 'call.end', label: string): void { const callID = this.state.callID; if (callID) this.sendCallControl(type, callID); this.terminal(label); }
@@ -283,7 +336,7 @@ export class CallFacade implements OnDestroy {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({audio: deviceID ? {deviceId: {exact: deviceID}} : true});
             const track = stream.getAudioTracks()[0];
-            this.setState({...this.state, selectedInputDeviceID: track?.getSettings().deviceId || deviceID, localAudioState: track ? 'active' : 'unavailable'});
+            this.setState({...this.state, selectedInputDeviceID: track?.getSettings().deviceId || deviceID});
             void this.refreshDevices();
             return stream;
         } catch (error: unknown) {
@@ -303,8 +356,8 @@ export class CallFacade implements OnDestroy {
         if (name === 'NotReadableError' || name === 'AbortError') return 'The microphone is unavailable. Close other apps using it and try again.';
         return 'Microphone access is unavailable. Check the browser permission and microphone, then try again.';
     }
-    private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, statusLabel: label}); this.dismissNotice(); }
-    private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
+    private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, screenShareQuality: this.state.screenShareQuality, statusLabel: label}); this.dismissNotice(); }
+    private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, screenShareQuality: this.state.screenShareQuality, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
     private async tryPlayRemoteAudio(audio: HTMLAudioElement): Promise<void> {
         try {
             if (this.state.remoteStream && audio.srcObject !== this.state.remoteStream) audio.srcObject = this.state.remoteStream;
@@ -313,32 +366,11 @@ export class CallFacade implements OnDestroy {
             audio.volume = 1;
             if (this.outputSelectionSupported && this.selectedOutputDeviceID) await this.applyOutputDevice(audio, this.selectedOutputDeviceID);
             await audio.play();
-            this.setState({...this.state, audioPlaybackBlocked: false, remoteAudioState: 'playing', statusLabel: 'Audio call connected.'});
+            this.setState({...this.state, audioPlaybackBlocked: false, statusLabel: 'Audio call connected.'});
         } catch (error: unknown) {
             const name = typeof error === 'object' && error !== null && 'name' in error && typeof error.name === 'string' ? error.name : '';
-            if (name === 'NotAllowedError') this.setState({...this.state, audioPlaybackBlocked: true, remoteAudioState: 'blocked', statusLabel: 'Audio connected. Enable sound to hear the call.'});
-            else this.setState({...this.state, remoteAudioState: 'unavailable', statusLabel: 'Audio connected, but speaker playback failed.'});
-        }
-    }
-    private startDiagnostics(): void {
-        this.stopDiagnostics();
-        const generation = this.diagnosticsGeneration;
-        void this.refreshDiagnostics(generation);
-        this.diagnosticsTimer = window.setInterval(() => { void this.refreshDiagnostics(generation); }, 1_000);
-    }
-    private stopDiagnostics(): void {
-        window.clearInterval(this.diagnosticsTimer);
-        this.diagnosticsTimer = undefined;
-        this.diagnosticsGeneration += 1;
-    }
-    private async refreshDiagnostics(generation: number): Promise<void> {
-        const connection = this.connection;
-        if (!connection || generation !== this.diagnosticsGeneration) return;
-        try {
-            const diagnostics = collectCallAudioDiagnostics(await connection.getStats(), this.remoteAudio);
-            if (generation === this.diagnosticsGeneration) this.setState({...this.state, audioDiagnostics: diagnostics});
-        } catch {
-            if (generation === this.diagnosticsGeneration) this.setState({...this.state, audioDiagnostics: {available: false}});
+            if (name === 'NotAllowedError') this.setState({...this.state, audioPlaybackBlocked: true, statusLabel: 'Audio connected. Enable sound to hear the call.'});
+            else this.setState({...this.state, statusLabel: 'Audio connected, but speaker playback failed.'});
         }
     }
     private async applyOutputDevice(audio: HTMLAudioElement, deviceID: string): Promise<boolean> {
@@ -369,9 +401,19 @@ export class CallFacade implements OnDestroy {
             // Device enumeration is best-effort; active media tracks remain usable.
         }
     }
-    private levelLabel(level: number | undefined): string { return level === undefined ? 'Unavailable' : `${Math.round(level * 100)}%`; }
-    private countLabel(value: number | undefined): string { return value === undefined ? 'Unavailable' : value.toString(); }
-    private cleanup(): void { this.stopDiagnostics(); this.stopStream(this.state.localStream); this.connection?.close(); this.connection = undefined; this.pendingSignals = []; this.remoteAudio?.pause(); if (this.remoteAudio) this.remoteAudio.srcObject = null; this.remoteAudio = undefined; }
+    private cleanup(): void {
+        const screenTracks = this.state.screenShareStream?.getVideoTracks() || [];
+        screenTracks.forEach(track => track.onended = null);
+        this.stopStream(this.state.localStream);
+        this.stopStream(this.state.screenShareStream);
+        this.connection?.close();
+        this.connection = undefined;
+        this.screenSender = undefined;
+        this.pendingSignals = [];
+        this.remoteAudio?.pause();
+        if (this.remoteAudio) this.remoteAudio.srcObject = null;
+        this.remoteAudio = undefined;
+    }
     private stopStream(stream?: MediaStream): void { stream?.getTracks().forEach(track => track.stop()); }
     private dismissNotice(): void {
         this.clearDismissTimer();
@@ -383,67 +425,4 @@ export class CallFacade implements OnDestroy {
     private peerFor(payload: CallPayload): string { return this.state.role === 'caller' ? payload.recipient_id : payload.caller_id; }
     private rejectionLabel(error: string): string { const value = error.toLowerCase(); return value.includes('busy') ? 'The recipient is busy.' : value.includes('answer') || value.includes('timeout') ? 'No answer.' : `Call unavailable: ${error}`; }
     private setState(state: CallState): void { this.stateSubject.next(Object.freeze({...state})); }
-}
-
-interface ParsedCallStats {
-    readonly type: string;
-    readonly kind?: string;
-    readonly audioLevel?: number;
-    readonly packetsSent?: number;
-    readonly packetsReceived?: number;
-    readonly packetsLost?: number;
-    readonly jitter?: number;
-}
-
-export function collectCallAudioDiagnostics(report: RTCStatsReport, audio?: HTMLAudioElement): CallAudioDiagnostics {
-    let localLevel: number | undefined;
-    let remoteLevel: number | undefined;
-    let packetsSent: number | undefined;
-    let packetsReceived: number | undefined;
-    let packetsLost: number | undefined;
-    let jitterMs: number | undefined;
-    report.forEach(stat => {
-        const parsed = parseCallStats(stat);
-        if (!parsed || parsed.kind !== 'audio') return;
-        if (parsed.type === 'media-source' || parsed.type === 'outbound-rtp') localLevel ??= parsed.audioLevel;
-        if (parsed.type === 'outbound-rtp') packetsSent ??= parsed.packetsSent;
-        if (parsed.type === 'inbound-rtp') {
-            remoteLevel ??= parsed.audioLevel;
-            packetsReceived ??= parsed.packetsReceived;
-            packetsLost ??= parsed.packetsLost;
-            jitterMs ??= parsed.jitter === undefined ? undefined : parsed.jitter * 1_000;
-        }
-    });
-    return {
-        available: true,
-        localLevel: normalizeAudioLevel(localLevel),
-        remoteLevel: normalizeAudioLevel(remoteLevel),
-        packetsSent,
-        packetsReceived,
-        packetsLost,
-        jitterMs,
-        outputPaused: audio?.paused,
-        outputMuted: audio?.muted,
-        outputVolume: audio?.volume,
-    };
-}
-
-function parseCallStats(stat: RTCStats): ParsedCallStats | undefined {
-    if (typeof stat !== 'object' || stat === null) return undefined;
-    const value = stat as unknown as Record<string, unknown>;
-    if (typeof value['type'] !== 'string') return undefined;
-    return {
-        type: value['type'],
-        kind: typeof value['kind'] === 'string' ? value['kind'] : undefined,
-        audioLevel: typeof value['audioLevel'] === 'number' ? value['audioLevel'] : undefined,
-        packetsSent: typeof value['packetsSent'] === 'number' ? value['packetsSent'] : undefined,
-        packetsReceived: typeof value['packetsReceived'] === 'number' ? value['packetsReceived'] : undefined,
-        packetsLost: typeof value['packetsLost'] === 'number' ? value['packetsLost'] : undefined,
-        jitter: typeof value['jitter'] === 'number' ? value['jitter'] : undefined,
-    };
-}
-
-function normalizeAudioLevel(level: number | undefined): number | undefined {
-    if (level === undefined || !Number.isFinite(level)) return undefined;
-    return Math.max(0, Math.min(1, level));
 }
