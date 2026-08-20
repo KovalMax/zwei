@@ -116,7 +116,7 @@
 .call-duration { display: block; margin-top: 4px; color: var(--chat-call-text); font-size: 11px; font-variant-numeric: tabular-nums; }
 .call-card-content { display: contents; }
 .call-panel-full .call-card-content { display: flex; width: 100%; min-height: 0; max-height: calc(100% - 140px); flex: 0 0 auto; flex-direction: column; overflow-y: auto; padding-top: 24px; }
-.call-panel-full .call-profile { width: 100%; box-sizing: border-box; padding-bottom: 26px; border-bottom: 1px solid var(--chat-line-strong); }
+.call-panel-full .call-profile { position: sticky; top: 24px; z-index: 1; width: 100%; box-sizing: border-box; padding-bottom: 26px; border-bottom: 1px solid var(--chat-line-strong); background: inherit; }
 .call-sharing-indicator { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--zwei-success) 70%, var(--chat-line-strong)); border-radius: 12px; background: color-mix(in srgb, var(--zwei-success) 16%, var(--chat-surface)); color: var(--chat-text); }
 .call-sharing-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--zwei-success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--zwei-success) 20%, transparent); }
 .call-sharing-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
@@ -142,7 +142,7 @@
 
 
 
-@media (max-width: 760px) { .call-panel-full { box-sizing: border-box; align-items: stretch; justify-content: flex-start; overflow: hidden; flex-direction: column; }.call-panel-full .call-card { width: 100%; height: auto; min-height: 0; flex: 1; padding: 24px 20px; }.call-panel-full .call-collapse-button { top: 6px; left: 6px; }.call-panel-full .call-card-content { padding-top: 24px; }.call-panel-full .call-actions { box-sizing: border-box; flex: 0 0 auto; margin-top: auto; padding: 16px 0 env(safe-area-inset-bottom); border-top: 1px solid var(--chat-line-strong); background: var(--chat-surface); box-shadow: 0 -10px 24px rgba(17, 28, 43, .1); }.call-panel-full .call-devices, .call-panel-full .call-actions { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .call-panel-full { box-sizing: border-box; align-items: stretch; justify-content: flex-start; overflow: hidden; flex-direction: column; }.call-panel-full .call-card { width: 100%; height: auto; min-height: 0; flex: 1; padding: 24px 20px; }.call-panel-full .call-collapse-button { top: 6px; left: 6px; }.call-panel-full .call-card-content { padding-top: 32px; }.call-panel-full .call-profile { top: 32px; }.call-panel-full .call-actions { box-sizing: border-box; flex: 0 0 auto; margin-top: auto; padding: 16px 0 env(safe-area-inset-bottom); border-top: 1px solid var(--chat-line-strong); background: var(--chat-surface); box-shadow: 0 -10px 24px rgba(17, 28, 43, .1); }.call-panel-full .call-devices, .call-panel-full .call-actions { grid-template-columns: 1fr; } }
 
 @media (max-width: 760px) { .call-minimized-banner { gap: 4px; padding: 6px; }.call-minimized-banner-chat { display: flex; margin: 10px 12px 8px; }.call-minimized-banner-rail { margin: 0 0 10px; }.call-minimized-summary { padding: 6px 8px; }.call-minimized-summary span { gap: 8px; }.call-minimized-summary strong { font-size: 11px; }.call-minimized-end { padding: 6px 10px; } }
 
