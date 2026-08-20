@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/assets/zwei-demo.webm"><img src="docs/assets/zwei-demo.gif" alt="Zwei registration, activation, login, and home preview" width="720"></a>
+  <a href="docs/assets/zwei-demo.webm"><img src="docs/assets/zwei-demo.gif" alt="Zwei registration, administrator activation, login, and home preview" width="720"></a>
 </p>
 
 <p align="center"><a href="docs/assets/zwei-demo.webm">Watch the full E2E demo video</a></p>
@@ -24,7 +24,7 @@
 - **Privacy with accurate language** — Zwei protects application data and browser sessions without pretending that server-mediated encryption is end-to-end encryption.
 - **A considerate interface** — dark and light themes, responsive layouts, keyboard-visible focus, reduced motion, and clear empty/loading/error states.
 
-The demo follows the real user journey: registration, account activation, sign-in, and opening a conversation in Home.
+The demo follows the real journey: registration, administrator review, account activation, sign-in, and opening a conversation in Home.
 
 ## Tech stack
 
@@ -52,17 +52,6 @@ make e2e
 ```
 
 The E2E environment is isolated from the normal development database. Mailpit is available locally when inspecting test activation messages.
-
-## Recreate the README demo
-
-The README journey is a real Playwright flow, not a mock recording. Rebuild the images and run the focused recording flow with:
-
-```sh
-make build
-make demo
-```
-
-Playwright writes the full WebM recording and checkpoint screenshots under `e2e/test-results/`. The committed GIF is the lightweight README preview derived from those checkpoints.
 
 ## Contributing
 

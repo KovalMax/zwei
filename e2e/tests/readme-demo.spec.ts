@@ -1,4 +1,4 @@
-import { APIRequestContext, Browser, expect, Page, test } from '@playwright/test';
+import { APIRequestContext, expect, Page, test } from '@playwright/test';
 
 const password = 'Password123!';
 const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
@@ -9,6 +9,7 @@ const basicAuthPassword = process.env.KYC_BASIC_AUTH_PASSWORD ?? 'local-basic-au
 test.use({
   video: 'on',
   viewport: {width: 1280, height: 720},
+  httpCredentials: {username: basicAuthUser, password: basicAuthPassword},
 });
 
 function uniqueEmail(name: string): string {
@@ -74,22 +75,7 @@ async function activationLink(request: APIRequestContext, email: string): Promis
   return link;
 }
 
-async function activateAccount(browser: Browser, email: string): Promise<void> {
-  const context = await browser.newContext({httpCredentials: {username: basicAuthUser, password: basicAuthPassword}});
-  const page = await context.newPage();
-  await page.goto(`${adminBase}/login`);
-  await page.locator('[formControlName="email"]').fill(adminEmail);
-  await page.locator('[formControlName="password"]').fill(password);
-  await page.getByRole('button', {name: 'Sign in'}).click();
-  await expect(page).toHaveURL(/\/admin$/);
-  const row = page.locator('tbody tr').filter({hasText: email});
-  await expect(row.getByRole('button', {name: 'Activate account'})).toBeEnabled();
-  await row.getByRole('button', {name: 'Activate'}).click();
-  await expect(page.getByText('Account activated.')).toBeVisible();
-  await context.close();
-}
-
-test('records the public README journey from registration to the home preview', async ({browser, page, request}, testInfo) => {
+test('records the public README journey including admin activation and the Home preview', async ({browser, page, request}, testInfo) => {
   const demoEmail = uniqueEmail('user');
   const peerEmail = uniqueEmail('peer');
 
@@ -109,27 +95,39 @@ test('records the public README journey from registration to the home preview', 
   await expect(page).toHaveURL(/\/pending$/);
   await capture(page, testInfo, '03-pending');
 
-  await activateAccount(browser, demoEmail);
+  await page.goto(`${adminBase}/login`);
+  await page.locator('[formControlName="email"]').fill(adminEmail);
+  await page.locator('[formControlName="password"]').fill(password);
+  await capture(page, testInfo, '04-admin-login');
+  await page.getByRole('button', {name: 'Sign in'}).click();
+  await expect(page).toHaveURL(/\/admin$/);
+  const pendingRow = page.locator('tbody tr').filter({hasText: demoEmail});
+  await expect(pendingRow.getByRole('button', {name: 'Activate account'})).toBeEnabled();
+  await capture(page, testInfo, '05-admin-panel');
+  await pendingRow.getByRole('button', {name: 'Activate'}).click();
+  await expect(page.getByText('Account activated.')).toBeVisible();
+  await capture(page, testInfo, '06-admin-activated');
+
   const link = await activationLink(request, demoEmail);
   await page.goto(link);
   await expect(page.getByRole('heading', {name: 'Your account is active'})).toBeVisible();
-  await capture(page, testInfo, '04-activated');
+  await capture(page, testInfo, '07-activated');
   await page.getByRole('button', {name: 'Continue to sign in'}).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.locator('[formControlName="email"]').fill(demoEmail);
   await page.locator('[formControlName="password"]').fill(password);
-  await capture(page, testInfo, '05-login');
+  await capture(page, testInfo, '08-login');
   await page.getByRole('button', {name: 'Sign in'}).click();
   await expect(page).toHaveURL(/\/home$/);
   await expect(page.getByRole('heading', {name: 'Choose a conversation'})).toBeVisible();
-  await capture(page, testInfo, '06-home-empty');
+  await capture(page, testInfo, '09-home-empty');
 
   await page.getByPlaceholder('Name or email').fill(peerEmail);
   await expect(page.getByText(peerEmail)).toBeVisible();
   await page.getByText(peerEmail).click();
   await expect(page.getByRole('heading', {name: 'Zwei Guide'})).toBeVisible();
   await expect(page.getByText('No messages yet.')).toBeVisible();
-  await capture(page, testInfo, '07-home-conversation', 1_500);
+  await capture(page, testInfo, '10-home-conversation', 1_500);
 
   await peerContext.close();
 });
