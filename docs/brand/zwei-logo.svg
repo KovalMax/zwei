@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title desc">
+  <title id="title">Zwei logo</title>
+  <desc id="desc">A warm gradient speech mark containing the letter Z</desc>
+  <defs>
+    <linearGradient id="zwei-gradient" x1="24" y1="18" x2="166" y2="174" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffb45c"/>
+      <stop offset="1" stop-color="#e66d58"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#zwei-gradient)" d="M96 12c46.392 0 84 33.579 84 75 0 41.42-37.608 75-84 75-10.41 0-20.373-1.677-29.425-4.74L35.2 177.3c-4.832 2.35-9.93-2.37-7.955-7.37l9.14-23.16C24.63 133.49 12 111.7 12 87c0-41.421 37.608-75 84-75Z"/>
+  <path fill="#fff9f1" d="M55 55h82v17l-48 47h49v18H54v-17l48-47H55V55Z"/>
+</svg>
