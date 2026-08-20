@@ -73,7 +73,7 @@ jobs:
         run: npm test -- --watch=false --browsers=ChromeHeadless --code-coverage
 
       - name: Build Angular application
-        run: npm run build
+        run: npm run build -- --configuration production
 
       - name: Upload Angular coverage
         if: always()
