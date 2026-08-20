@@ -7,6 +7,7 @@ import {finalize} from 'rxjs/operators';
 import {HttpErrorResponse} from '@angular/common/http';
 import {ControlsOf} from '../shared/model/controlOf';
 import {getDeviceID, Login} from './login';
+import {HostService} from '../auth/host.service';
 
 @Component({
     standalone: false,
@@ -17,6 +18,7 @@ import {getDeviceID, Login} from './login';
 
 export class LoginComponent {
     public isLoading = false;
+    public readonly isAdminHost: boolean;
     public loginForm: FormGroup<ControlsOf<Login>>;
 
     constructor(
@@ -24,7 +26,9 @@ export class LoginComponent {
         private router: Router,
         private snackBar: MatSnackBar,
         private changeDetector: ChangeDetectorRef,
+        host: HostService,
     ) {
+        this.isAdminHost = host.isAdminHost();
         this.loginForm = new FormGroup<ControlsOf<Login>>({
             email: new FormControl(
                 '',

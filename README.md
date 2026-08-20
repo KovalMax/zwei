@@ -1,17 +1,41 @@
 # Zwei
 
-Private, server-mediated one-to-one messaging. Users can register, sign in, find other users, create conversations, and exchange messages in real time.
+<p align="center">
+  <img src="docs/brand/zwei-logo.svg" alt="Zwei logo" width="112">
+</p>
 
-## Stack
+<h2 align="center">Private conversations, deliberately simple.</h2>
 
-- Angular 22 frontend
-- Go services for authentication, chat, real-time messaging, and background work
-- PostgreSQL for persistent data
-- Redis for future ephemeral coordination and fan-out
-- Traefik with local TLS
-- Docker Compose for local development
+<p align="center">
+  Zwei gives people a calm, focused place to talk one-to-one—without turning messaging into a
+  noisy social feed. Find someone, open a conversation, and stay present in the exchange.
+</p>
 
-## Run Locally
+<p align="center">
+  <a href="docs/assets/zwei-demo.webm"><img src="docs/assets/zwei-demo.gif" alt="Zwei registration, administrator activation, login, and home preview" width="720"></a>
+</p>
+
+<p align="center"><a href="docs/assets/zwei-demo.webm">Watch the full E2E demo video</a></p>
+
+## What Zwei is about
+
+- **Conversations that feel personal** — one-to-one chats keep attention on the person, not the feed.
+- **A live sense of connection** — messages, presence, typing, delivery recovery, and read state work together naturally.
+- **Privacy with accurate language** — Zwei protects application data and browser sessions without pretending that server-mediated encryption is end-to-end encryption.
+- **A considerate interface** — dark and light themes, responsive layouts, keyboard-visible focus, reduced motion, and clear empty/loading/error states.
+
+The demo follows the real journey: registration, administrator review, account activation, sign-in, and opening a conversation in Home.
+
+## Tech stack
+
+- Angular 22 and TypeScript for the browser client
+- Go services for authentication, chat, and real-time messaging
+- PostgreSQL for durable application data
+- Redis for shared realtime coordination and rate limiting
+- Docker Compose for reproducible local development
+- Playwright for browser-level verification
+
+## Run locally
 
 Requirements: Docker Desktop and `make`.
 
@@ -21,62 +45,32 @@ make migrate
 make trust-local-ca   # macOS, once
 ```
 
-Open `https://chat.localhost` and restart the browser after trusting the local CA. The local environment and Docker Compose override files are created automatically from their `.dist` files.
-
-The application uses these local hosts:
-
-- `chat.localhost` - frontend
-- `kyc.localhost` - administrator frontend (IP-allowlisted by the auth service)
-- `auth.localhost` - authentication API
-- `api.chat.localhost` - chat API
-- `ws.chat.localhost` - WebSocket messaging
-- `turn.chat.localhost` - TURN/STUN endpoint on UDP and TCP port 3478; relayed UDP uses ports 49160-49200 and is published directly by coturn, not Traefik
-
-Run browser tests with `make e2e` and stop the stack with `make stop`. Local Mailpit is available at
-`http://localhost:8025`. Ordinary registrations do not send an email immediately: the activation
-email is sent after an administrator approves the account. Creating an invitation sends the
-recipient a single-use account-creation link containing the invitation query parameters; the code
-also remains visible to the administrator as a fallback. E2E runs reset and migrate
-the isolated PostgreSQL `messenger_test` database, point auth/chat/realtime at it for the duration
-of the run, and restore the development database connections afterward. The `messenger` development
-database is not used or modified by browser tests.
-
-## KYC administration
-
-The production administrator frontend is `https://kyc.chat.false.tel`. It uses the same Angular
-build and visual system as the chat application. The auth service protects the administrator API
-and KYC-host authentication with `ADMIN_ALLOWED_IPS`; configure this as a comma-separated list of
-IP addresses or CIDR ranges in the VM environment. The service trusts the client address forwarded
-by the private Traefik edge, so the auth container must not be published directly.
-
-Traefik also applies Basic Auth to the KYC frontend shell. The API routes remain protected by the
-application admin account and IP allowlist because Angular must use its bearer token there. In
-production, keep the bcrypt htpasswd file outside the synchronized release directory and point
-`KYC_BASIC_AUTH_FILE` at its absolute path.
-
-For example, create it interactively on the VM:
+Open `https://chat.localhost` after trusting the generated local certificate. Run the browser suite with:
 
 ```sh
-install -d -m 700 /home/usermax/zwei-secrets
-htpasswd -cB /home/usermax/zwei-secrets/kyc.htpasswd kyc-admin
-chmod 600 /home/usermax/zwei-secrets/kyc.htpasswd
+make e2e
 ```
 
-Create an administrator manually from the auth container:
+The E2E environment is isolated from the normal development database. Mailpit is available locally when inspecting test activation messages.
 
-```sh
-docker compose exec auth /usr/bin/service admin create
-```
+## Contributing
 
-The command prompts for the administrator email, display name, and password. Normal registrations
-remain pending until an administrator activates them. Activation sends an email through the SMTP
-settings and the recipient must use the single-use link before signing in. Invitation links use the
-form `?invite=1&code=...` and create active, verified accounts immediately.
+Contributions are welcome. A simple workflow:
 
-## Production TURN
+1. Fork the repository and create a focused branch.
+2. Make the smallest coherent change that preserves existing behavior.
+3. Add focused tests for new domain, service, adapter, frontend, or browser behavior.
+4. Run the checks relevant to your change before opening a pull request:
 
-`infrastructure/production/docker-compose.yml` publishes coturn directly at
-`turn.chat.false.tel`; Traefik does not route TURN traffic. Set `TURN_SHARED_SECRET` to a
-high-entropy value and `TURN_EXTERNAL_IP` to the VM public IPv4 address in the production `.env`.
-Allow inbound TCP and UDP 3478 and UDP 49160-49200 in the VM firewall and DNS-resolve
-`turn.chat.false.tel` to that public IP. Do not add a wildcard or Traefik router for the TURN host.
+   ```sh
+   go test ./services/...
+   go test -race ./services/...
+   go vet ./services/...
+   npm --prefix frontend-app test -- --watch=false --browsers=ChromeHeadless
+   npm --prefix frontend-app run build
+   make e2e
+   ```
+
+5. Review the diff for accidental files, leaked credentials, misleading product claims, and accessibility regressions.
+
+Please keep secrets, local environment files, generated test artifacts, and private configuration out of commits. For larger product or compatibility decisions, open an issue first so the behavior and protocol boundaries can be discussed before implementation.

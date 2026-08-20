@@ -44,3 +44,7 @@ migrate: check_dist_files ## - Run PostgreSQL migrations inside the database con
 .PHONY: e2e
 e2e: check_dist_files ## - Run Playwright tests against an isolated PostgreSQL schema
 	@bash scripts/e2e.sh $(APP_NAME)
+
+.PHONY: demo
+demo: check_dist_files ## - Record the README Playwright journey against an isolated schema
+	@bash scripts/e2e.sh $(APP_NAME) demo
