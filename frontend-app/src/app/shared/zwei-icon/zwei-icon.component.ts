@@ -12,6 +12,8 @@ export type ZweiIconName =
     | 'done_all'
     | 'expand_more'
     | 'forum'
+    | 'fullscreen'
+    | 'fullscreen_exit'
     | 'hourglass_top'
     | 'light_mode'
     | 'lock'
@@ -23,6 +25,8 @@ export type ZweiIconName =
     | 'person'
     | 'search'
     | 'send'
+    | 'screen_share'
+    | 'stop_screen_share'
     | 'sync';
 
 const ICON_PATHS: Record<ZweiIconName, string> = {
@@ -37,6 +41,8 @@ const ICON_PATHS: Record<ZweiIconName, string> = {
     done_all: 'M18 7l-1.41-1.41L10 12.17 7.41 9.59 6 11l4 4 8-8zm-5.5 8.5-1.41-1.41-1.42 1.41L12.5 17.32 22 7.82 20.59 6.41l-8.09 8.09z',
     expand_more: 'M16.59 8.59 12 13.17 7.41 8.59 6 10l6 6 6-6z',
     forum: 'M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 11H4V9h2v2zm4 0H8V9h2v2zm4 0h-2V9h2v2zm4 0h-2V9h2v2z',
+    fullscreen: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
+    fullscreen_exit: 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z',
     hourglass_top: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L14 12l4-3.99V2H6zm10 14.5V20H8v-3.5l4-4 4 4zM12 11.5l-4-4V4h8v3.5l-4 4z',
     light_mode: 'M12 4a1 1 0 0 1-1-1V1h2v2a1 1 0 0 1-1 1zm0 16a1 1 0 0 1 1 1v2h-2v-2a1 1 0 0 1 1-1zM4 12a1 1 0 0 1-1 1H1v-2h2a1 1 0 0 1 1 1zm16 0a1 1 0 0 1 1-1h2v2h-2a1 1 0 0 1-1-1zM6.34 7.76 4.93 6.34l1.41-1.41 1.42 1.41-1.42 1.42zm11.32 11.31-1.42-1.41 1.42-1.42 1.41 1.42-1.41 1.41zM17.66 7.76l-1.42-1.42 1.42-1.41 1.41 1.41-1.41 1.42zM7.76 19.07l-1.42-1.41-1.41 1.41 1.41 1.42 1.42-1.42zM12 6a6 6 0 1 1 0 12 6 6 0 0 1 0-12zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
     lock: 'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z',
@@ -48,6 +54,8 @@ const ICON_PATHS: Record<ZweiIconName, string> = {
     person: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
     search: 'M9.5 3a6.5 6.5 0 0 1 5.2 10.4L21 19.7 19.7 21l-6.3-6.3A6.5 6.5 0 1 1 9.5 3zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z',
     send: 'm2.01 21L23 12 2.01 3 2 10l15 2-15 2 .01 7z',
+    screen_share: 'M21 3H3c-1.1 0-2 .9-2 2v12h2V5h18v12h2V5c0-1.1-.9-2-2-2zm-9 5-5 5h3v4h4v-4h3l-5-5zm-7 13h14v-2H5v2z',
+    stop_screen_share: 'M21 3H3c-1.1 0-2 .9-2 2v12h2V5h18v12h2V5c0-1.1-.9-2-2-2zM7 11h10v5H7v-5zm-2 8h14v2H5v-2z',
     sync: 'M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.96-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm-6.76 3.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3c-3.31 0-6-2.69-6-6 0-1.01.25-1.96.7-2.8L5.24 7.74z',
 };
 
