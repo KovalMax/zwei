@@ -96,6 +96,9 @@ test('records the public README journey including admin activation and the Home 
   await capture(page, testInfo, '03-pending');
 
   await page.goto(`${adminBase}/login`);
+  await expect(page.getByText('ZWEI admin panel')).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'Sign in to the admin panel'})).toBeVisible();
+  await expect(page.getByText('Review accounts and manage invitations.')).toBeVisible();
   await page.locator('[formControlName="email"]').fill(adminEmail);
   await page.locator('[formControlName="password"]').fill(password);
   await capture(page, testInfo, '04-admin-login');
