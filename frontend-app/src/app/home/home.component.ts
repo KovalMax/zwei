@@ -110,7 +110,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.isOngoingCall()) return;
         this.callMinimized = false;
         const conversation = this.callConversation();
-        if (conversation && this.selectedConversation?.id !== conversation.id) this.selectConversation(conversation);
+        if (conversation && this.selectedConversation?.id !== conversation.id) this.selectConversation(conversation, true);
         this.changeDetector.markForCheck();
     }
 
@@ -136,6 +136,9 @@ export class HomeComponent implements OnInit, OnDestroy {
                 break;
             case '1080p':
                 void this.call.selectScreenShareQuality('1080p');
+                break;
+            case '2k':
+                void this.call.selectScreenShareQuality('2k');
                 break;
         }
     }
@@ -171,7 +174,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public isOngoingCall(): boolean {
-        return this.call.state.phase === 'connecting' || this.call.state.phase === 'active';
+        return this.call.state?.phase === 'connecting' || this.call.state?.phase === 'active';
     }
 
     public callDurationLabel(): string {
@@ -237,11 +240,11 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public headerDisplayName(): string {
-        return this.callConversation()?.otherDisplayName || 'Choose a conversation';
+        return this.selectedConversation?.otherDisplayName || this.callConversation()?.otherDisplayName || 'Choose a conversation';
     }
 
     public headerInitials(): string {
-        return this.callConversation() ? this.callInitials() : 'L';
+        return this.selectedConversation ? this.initials(this.selectedConversation) : this.callConversation() ? this.callInitials() : 'L';
     }
 
     public initials(conversation: Conversation): string {
@@ -324,7 +327,8 @@ export class HomeComponent implements OnInit, OnDestroy {
         });
     }
 
-    public selectConversation(conversation: Conversation): void {
+    public selectConversation(conversation: Conversation, preserveCallSurface = false): void {
+        if (!preserveCallSurface && this.isOngoingCall()) this.minimizeCall();
         const selectedConversation = {...conversation};
         this.selectedConversation = selectedConversation;
         window.localStorage.setItem(this.selectedConversationKey, conversation.id);

@@ -80,16 +80,20 @@ async function callThemeColors(page: Page): Promise<{panel: string; text: string
 test('register, create conversation, and deliver a message', async ({ browser }, testInfo) => {
   const aliceEmail = uniqueEmail('alice');
   const bobEmail = uniqueEmail('bob');
+  const charlieEmail = uniqueEmail('charlie');
   const desktop = { viewport: { width: 2560, height: 1440 } };
   const aliceContext = await browser.newContext(desktop);
   const bobContext = await browser.newContext(desktop);
+  const charlieContext = await browser.newContext(desktop);
   await aliceContext.grantPermissions(['microphone'], {origin: 'https://chat.localhost'});
   await bobContext.grantPermissions(['microphone'], {origin: 'https://chat.localhost'});
   const alice = await aliceContext.newPage();
   const bob = await bobContext.newPage();
+  const charlie = await charlieContext.newPage();
 
   await register(alice, aliceEmail, 'Alice');
   await register(bob, bobEmail, 'Bob');
+  await register(charlie, charlieEmail, 'Charlie');
   await expect(alice.getByRole('button', { name: 'Account menu' })).toBeVisible();
   await expect(alice.locator('.conversation-rail')).toBeVisible();
   await expect(alice.getByText(/is typing/)).not.toBeVisible();
@@ -146,13 +150,14 @@ test('register, create conversation, and deliver a message', async ({ browser },
          expect(qualitySelectStyle.borderRadius).toBe('12px');
          await qualitySelect.click();
          await expect(alice.locator('.call-select-panel')).toBeVisible();
-         await expect(alice.locator('.call-select-panel mat-option')).toHaveCount(3);
-         await alice.waitForTimeout(250);
-           const qualityPanelStyle = await alice.locator('.call-select-panel').evaluate(element => {
-             const style = getComputedStyle(element);
-             return {classes: element.className, background: style.backgroundColor};
-           });
-           expect(qualityPanelStyle.classes).toContain('call-select-panel');
+          await expect(alice.locator('.call-select-panel mat-option')).toHaveCount(4);
+          await alice.waitForTimeout(250);
+            const qualityPanelStyle = await alice.locator('.call-select-panel').evaluate(element => {
+              const style = getComputedStyle(element);
+              return {classes: element.className, background: style.backgroundColor};
+            });
+            await expect(alice.locator('.call-select-panel mat-option').filter({hasText: '2K · ultra'})).toBeVisible();
+            expect(qualityPanelStyle.classes).toContain('call-select-panel');
            expect(qualityPanelStyle.classes).toContain('call-select-panel-dark');
            expect(qualityPanelStyle).toMatchObject({background: 'rgb(38, 57, 79)'});
            const darkQualityOption = alice.locator('.call-select-panel mat-option').nth(1);
@@ -211,10 +216,29 @@ test('register, create conversation, and deliver a message', async ({ browser },
         await expect(alice.locator('.call-screen-stage')).not.toBeVisible();
         await expect(bob.locator('.call-screen-stage')).not.toBeVisible({timeout: 5_000});
         await expect(alice.locator('.call-sharing-indicator')).not.toBeVisible();
-        await expect(bob.locator('.call-sharing-indicator')).not.toBeVisible();
-        await alice.getByRole('button', {name: 'Share screen'}).click();
-        await expect(alice.locator('.call-screen-stage')).toBeVisible();
-        const desktopCallControls = [
+         await expect(bob.locator('.call-sharing-indicator')).not.toBeVisible();
+         await alice.getByRole('button', {name: 'Share screen'}).click();
+         await expect(alice.locator('.call-screen-stage')).toBeVisible();
+         await expect(bob.locator('.call-screen-stage')).toBeVisible({timeout: 10_000});
+         await expect(bob.locator('.call-screen-remote')).toBeVisible({timeout: 10_000});
+         expect(await bob.locator('.call-screen-remote').evaluate(element => {
+           const video = element as HTMLVideoElement;
+           return video.srcObject?.active === true && video.muted;
+         })).toBeTruthy();
+         await expect.poll(async () => bob.locator('.call-screen-remote').evaluate(element => {
+           const video = element as HTMLVideoElement;
+           return !video.paused && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+         }), {timeout: 10_000}).toBeTruthy();
+         await alice.getByRole('button', {name: 'Stop sharing'}).click();
+         await expect(bob.locator('.call-screen-stage')).not.toBeVisible({timeout: 5_000});
+         await alice.getByRole('button', {name: 'Share screen'}).click();
+         await expect(bob.locator('.call-screen-remote')).toBeVisible({timeout: 10_000});
+         await expect.poll(async () => bob.locator('.call-screen-remote').evaluate(element => {
+           const video = element as HTMLVideoElement;
+           return video.srcObject?.active === true && !video.paused && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+         }), {timeout: 10_000}).toBeTruthy();
+         await bob.screenshot({path: testInfo.outputPath('call-screen-share-restarted-remote-dark.png'), fullPage: false});
+         const desktopCallControls = [
           alice.getByLabel('Microphone input', {exact: true}),
           alice.getByLabel('Speaker output', {exact: true}),
           alice.getByLabel('Screen share quality', {exact: true}),
@@ -238,17 +262,25 @@ test('register, create conversation, and deliver a message', async ({ browser },
        await expect(alice.locator('.call-audio-diagnostics')).not.toBeAttached();
        await expect(alice.locator('audio')).toHaveJSProperty('paused', false);
        await expect(bob.locator('audio')).toHaveJSProperty('paused', false);
-       await expect(alice.locator('.call-duration')).toBeVisible();
-       expect(await alice.locator('.call-panel').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
-       await alice.screenshot({path: testInfo.outputPath('call-active-dark.png'), fullPage: false});
+        await expect(alice.locator('.call-duration')).toBeVisible();
+        expect(await alice.locator('.call-panel').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
+        await alice.screenshot({path: testInfo.outputPath('call-active-dark.png'), fullPage: false});
        await bob.getByRole('button', {name: 'Minimize call'}).click();
-      const incomingDuringCall = `incoming-during-call-${Date.now()}`;
+       const incomingDuringCall = `incoming-during-call-${Date.now()}`;
       await bob.getByPlaceholder('Write a message…').fill(incomingDuringCall);
       await bob.getByRole('button', {name: 'Send message'}).click();
       await expect(bob.getByText(incomingDuringCall)).toBeVisible();
       await expect(alice.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).toHaveText('1');
-       await alice.getByRole('button', {name: 'Minimize call'}).click();
-       await expect(alice.locator('.call-minimized-banner-chat .call-minimized-sharing-label')).toHaveText('Sharing screen · ');
+        await alice.getByPlaceholder('Name or email').fill(charlieEmail);
+        await expect(alice.getByText(charlieEmail)).toBeVisible();
+        await alice.getByText(charlieEmail).click();
+        await expect(alice.locator('.call-panel-full')).not.toBeVisible();
+        await expect(alice.getByRole('heading', {name: 'Charlie'})).toBeVisible();
+        await expect(alice.locator('.chat-presence')).toContainText('Online');
+        await expect(alice.getByPlaceholder('Write a message…')).toBeVisible();
+        await alice.getByPlaceholder('Write a message…').fill('');
+        await alice.screenshot({path: testInfo.outputPath('call-minimized-other-chat.png'), fullPage: false});
+        await expect(alice.locator('.call-minimized-banner-chat .call-minimized-sharing-label')).toHaveText('Sharing screen · ');
       await expect(alice.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).not.toBeVisible();
       await expect(bob.getByText(incomingDuringCall).locator('xpath=ancestor::article').getByRole('img', {name: 'Read by peer'})).toBeVisible({timeout: 5_000});
       await alice.getByRole('button', {name: 'Return to call with Bob'}).click();
@@ -390,9 +422,22 @@ test('register, create conversation, and deliver a message', async ({ browser },
        const mobileControlBoxes = await Promise.all(mobileCallControls.map(control => control.boundingBox()));
        const mobileControlHeights = mobileControlBoxes.filter((box): box is NonNullable<typeof box> => Boolean(box)).map(box => box.height);
        expect(mobileControlHeights.length).toBe(mobileCallControls.length);
-       expect(Math.max(...mobileControlHeights) - Math.min(...mobileControlHeights)).toBeLessThanOrEqual(2);
-       await expect(alice.getByRole('button', {name: 'Expand shared screen'})).toBeVisible();
-       await alice.screenshot({path: testInfo.outputPath('call-active-mobile-light.png'), fullPage: false});
+         expect(Math.max(...mobileControlHeights) - Math.min(...mobileControlHeights)).toBeLessThanOrEqual(2);
+         await expect(alice.getByRole('button', {name: 'Expand shared screen'})).toBeVisible();
+         await alice.screenshot({path: testInfo.outputPath('call-active-mobile-light-top.png'), fullPage: false});
+         const mobileStickyGeometry = await alice.locator('.call-panel-full .call-card-content').evaluate(element => {
+           const content = element as HTMLElement;
+           const profile = document.querySelector<HTMLElement>('.call-panel-full .call-profile');
+           const contentBox = content.getBoundingClientRect();
+           const profileAtTop = profile?.getBoundingClientRect();
+           content.scrollTop = content.scrollHeight;
+           const profileAtEnd = profile?.getBoundingClientRect();
+           return {scrollTop: content.scrollTop, scrollHeight: content.scrollHeight, clientHeight: content.clientHeight, contentTop: contentBox.top, profileAtTop, profileAtEnd};
+         });
+         expect(mobileStickyGeometry.scrollTop).toBeGreaterThan(0);
+         expect(Math.abs((mobileStickyGeometry.profileAtTop?.top || 0) - (mobileStickyGeometry.profileAtEnd?.top || 0))).toBeLessThanOrEqual(1);
+         expect(mobileStickyGeometry.profileAtEnd?.bottom).toBeLessThanOrEqual(mobileStickyGeometry.contentTop + 1);
+         await alice.screenshot({path: testInfo.outputPath('call-active-mobile-light.png'), fullPage: false});
        await alice.getByRole('button', {name: 'Expand shared screen'}).click();
        await expect(alice.getByRole('button', {name: 'Exit fullscreen'})).toBeVisible();
        await alice.screenshot({path: testInfo.outputPath('call-screen-share-fullscreen-mobile-light.png'), fullPage: false});
@@ -466,9 +511,10 @@ test('register, create conversation, and deliver a message', async ({ browser },
   const messageColumn = await alice.locator('.message-list').boundingBox();
   expect(messageColumn?.width).toBeLessThanOrEqual(980);
 
-  await aliceContext.close();
-  await bobContext.close();
-});
+   await aliceContext.close();
+   await bobContext.close();
+   await charlieContext.close();
+ });
 
 test('replays a message sent while the recipient is offline', async ({ browser }) => {
   const aliceEmail = uniqueEmail('offline-alice');

@@ -1,11 +1,11 @@
 import {Injectable, OnDestroy} from '@angular/core';
 import {BehaviorSubject, Subscription} from 'rxjs';
-import {CallAcceptedSocketEvent, CallPayload, CallSignalSocketEvent, CallSocketEvent, DataProviderService, ICEServer} from './data-provider.service';
+import {CallAcceptedSocketEvent, CallPayload, CallSignal, CallSignalSocketEvent, CallSocketEvent, DataProviderService, ICEServer} from './data-provider.service';
 import {createRandomID} from '../login/login';
 
 export type CallPhase = 'idle' | 'requesting' | 'outgoing' | 'incoming' | 'connecting' | 'active' | 'ended' | 'error';
 export type CallRole = 'caller' | 'recipient';
-export type ScreenShareQuality = '360p' | '720p' | '1080p';
+export type ScreenShareQuality = '360p' | '720p' | '1080p' | '2k';
 export interface CallDevice { readonly deviceID: string; readonly label: string; }
 export interface CallState {
     readonly phase: CallPhase;
@@ -19,6 +19,7 @@ export interface CallState {
     readonly screenShareStream?: MediaStream;
     readonly remoteScreenStream?: MediaStream;
     readonly screenShareQuality: ScreenShareQuality;
+    readonly screenShareTransition: boolean;
     readonly audioPlaybackBlocked?: boolean;
     readonly inputDevices?: readonly CallDevice[];
     readonly outputDevices?: readonly CallDevice[];
@@ -33,12 +34,13 @@ type DisplayMediaOptions = DisplayMediaStreamOptions & {
     readonly surfaceSwitching?: 'include' | 'exclude';
     readonly monitorTypeSurfaces?: 'include' | 'exclude';
 };
-const idleState: CallState = Object.freeze({phase: 'idle', muted: false, screenShareQuality: '720p', statusLabel: 'No active call.'});
+const idleState: CallState = Object.freeze({phase: 'idle', muted: false, screenShareQuality: '720p', screenShareTransition: false, statusLabel: 'No active call.'});
 const callNoticeDuration = 5_000;
 const screenShareDimensions: Record<ScreenShareQuality, {width: number; height: number}> = {
     '360p': {width: 640, height: 360},
     '720p': {width: 1280, height: 720},
     '1080p': {width: 1920, height: 1080},
+    '2k': {width: 2560, height: 1440},
 };
 
 @Injectable()
@@ -47,7 +49,10 @@ export class CallFacade implements OnDestroy {
     private readonly subscription: Subscription;
     private connection?: RTCPeerConnection;
     private screenSender?: RTCRtpSender;
-    private pendingSignals: Record<string, unknown>[] = [];
+    private pendingSignals: CallSignal[] = [];
+    private remoteScreenStream?: MediaStream;
+    private remoteScreenSharing = false;
+    private renegotiationChain: Promise<void> = Promise.resolve();
     private remoteAudio?: HTMLAudioElement;
     private dismissTimer?: number;
     private readonly deviceChangeListener = (): void => { void this.refreshDevices(); };
@@ -93,11 +98,14 @@ export class CallFacade implements OnDestroy {
         this.setState({...state, muted, statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
     }
     public async toggleScreenShare(): Promise<void> {
-        if (this.state.screenShareStream) {
-            await this.stopScreenShare();
-            return;
+        if (this.state.screenShareTransition) return;
+        this.setState({...this.state, screenShareTransition: true});
+        try {
+            if (this.state.screenShareStream) await this.stopScreenShare();
+            else await this.startScreenShare();
+        } finally {
+            this.setState({...this.state, screenShareTransition: false});
         }
-        await this.startScreenShare();
     }
     public async selectScreenShareQuality(quality: ScreenShareQuality): Promise<void> {
         if (!screenShareDimensions[quality]) return;
@@ -140,6 +148,7 @@ export class CallFacade implements OnDestroy {
             this.screenSender = sender || this.screenSender;
             track.onended = () => { void this.stopScreenShare(track); };
             this.setState({...this.state, screenShareStream: stream, statusLabel: 'You are sharing your screen.', errorLabel: undefined});
+            this.sendSignal({type: 'screen-share-started'});
             await this.sendRenegotiationOffer();
         } catch {
             this.stopStream(stream);
@@ -268,8 +277,14 @@ export class CallFacade implements OnDestroy {
     }
     private async handleSignal(event: CallSignalSocketEvent): Promise<void> {
         if (!this.matches(event.payload.call_id)) return;
-        if (event.payload.signal['type'] === 'screen-share-stopped') {
+        if (event.payload.signal.type === 'screen-share-stopped') {
+            this.remoteScreenSharing = false;
             this.clearRemoteScreen();
+            return;
+        }
+        if (event.payload.signal.type === 'screen-share-started') {
+            this.remoteScreenSharing = true;
+            this.restoreRemoteScreen();
             return;
         }
         if (!this.connection) { this.pendingSignals.push(event.payload.signal); return; }
@@ -277,18 +292,24 @@ export class CallFacade implements OnDestroy {
     }
 
     private clearRemoteScreen(): void {
-        const stream = this.state.remoteScreenStream;
-        if (!stream) return;
         this.setState({...this.state, remoteScreenStream: undefined});
-        this.stopStream(stream);
     }
-    private async applySignal(signal: Record<string, unknown>): Promise<void> {
+    private restoreRemoteScreen(): void {
+        if (this.remoteScreenSharing && this.remoteScreenStream) this.setState({...this.state, remoteScreenStream: this.remoteScreenStream});
+    }
+    private async applySignal(signal: CallSignal): Promise<void> {
         if (!this.connection) return;
-        if (signal['type'] === 'candidate' && typeof signal['candidate'] === 'object' && signal['candidate'] !== null) { try { await this.connection.addIceCandidate(signal['candidate'] as RTCIceCandidateInit); } catch { this.setError('Could not connect the audio call.'); } return; }
-        if ((signal['type'] !== 'offer' && signal['type'] !== 'answer') || typeof signal['sdp'] !== 'string') return;
+        if (signal.type === 'candidate') { try { await this.connection.addIceCandidate(signal.candidate as RTCIceCandidateInit); } catch { this.setError('Could not connect the audio call.'); } return; }
         try {
-            if (signal['type'] === 'offer') { await this.connection.setRemoteDescription({type: 'offer', sdp: signal['sdp']}); const answer = await this.connection.createAnswer(); await this.connection.setLocalDescription(answer); this.sendSignal({type: answer.type, sdp: answer.sdp}); }
-            else if (signal['type'] === 'answer') await this.connection.setRemoteDescription({type: 'answer', sdp: signal['sdp']});
+            if (signal.type === 'offer') {
+                await this.connection.setRemoteDescription({type: 'offer', sdp: signal.sdp});
+                const answer = await this.connection.createAnswer();
+                if (answer.type !== 'answer' || typeof answer.sdp !== 'string') throw new Error('answer unavailable');
+                await this.connection.setLocalDescription(answer);
+                this.sendSignal({type: 'answer', sdp: answer.sdp});
+                this.restoreRemoteScreen();
+            }
+            else if (signal.type === 'answer') await this.connection.setRemoteDescription({type: 'answer', sdp: signal.sdp});
         } catch { this.setError('Could not connect the audio call.'); }
     }
     private createConnection(iceServers: ICEServer[], localStream: MediaStream): boolean {
@@ -299,8 +320,14 @@ export class CallFacade implements OnDestroy {
             this.connection.ontrack = event => {
                 const remoteStream = event.streams[0] || new MediaStream([event.track]);
                 if (event.track?.kind === 'video') {
+                    this.remoteScreenStream = remoteStream;
+                    this.remoteScreenSharing = true;
                     event.track.onended = () => {
-                        if (this.state.remoteScreenStream === remoteStream) this.clearRemoteScreen();
+                        if (this.remoteScreenStream === remoteStream) {
+                            this.remoteScreenStream = undefined;
+                            this.remoteScreenSharing = false;
+                            this.clearRemoteScreen();
+                        }
                     };
                     this.setState({...this.state, remoteScreenStream: remoteStream});
                     return;
@@ -318,16 +345,41 @@ export class CallFacade implements OnDestroy {
         } catch { this.setError('Audio calls are not supported by this browser.'); return false; }
     }
     private async sendRenegotiationOffer(): Promise<void> {
-        if (!this.connection) return;
-        try {
-            const offer = await this.connection.createOffer();
-            await this.connection.setLocalDescription(offer);
-            this.sendSignal({type: offer.type, sdp: offer.sdp});
-        } catch {
-            this.setError('Could not update the call media.');
-        }
+        const operation = this.renegotiationChain.then(async () => {
+            const connection = this.connection;
+            if (!connection) return;
+            try {
+                const offer = await connection.createOffer();
+                if (offer.type !== 'offer' || typeof offer.sdp !== 'string') throw new Error('offer unavailable');
+                await connection.setLocalDescription(offer);
+                this.sendSignal({type: 'offer', sdp: offer.sdp});
+                if (!await this.waitForStable(connection)) this.setError('Could not update the call media.');
+            } catch {
+                this.setError('Could not update the call media.');
+            }
+        });
+        this.renegotiationChain = operation.catch(() => undefined);
+        await operation;
     }
-    private sendSignal(signal: Record<string, unknown>): void { const callID = this.state.callID; if (callID && !this.dataProvider.send({type: 'call.signal', request_id: createRandomID(), payload: {call_id: callID, signal}})) this.setError('The secure connection is unavailable.'); }
+    private waitForStable(connection: RTCPeerConnection): Promise<boolean> {
+        if (this.connection !== connection || connection.signalingState === 'stable' || connection.signalingState === 'closed') return Promise.resolve(true);
+        const deadline = Date.now() + 5_000;
+        return new Promise(resolve => {
+            const check = (): void => {
+                if (this.connection !== connection || connection.signalingState === 'stable' || connection.signalingState === 'closed') {
+                    resolve(true);
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    resolve(false);
+                    return;
+                }
+                window.setTimeout(check, 25);
+            };
+            check();
+        });
+    }
+    private sendSignal(signal: CallSignal): void { const callID = this.state.callID; if (callID && !this.dataProvider.send({type: 'call.signal', request_id: createRandomID(), payload: {call_id: callID, signal}})) this.setError('The secure connection is unavailable.'); }
     private sendControl(type: 'call.decline' | 'call.cancel' | 'call.end', label: string): void { const callID = this.state.callID; if (callID) this.sendCallControl(type, callID); this.terminal(label); }
     private sendCallControl(type: 'call.decline' | 'call.cancel' | 'call.end', callID: string): void { this.dataProvider.send({type, request_id: createRandomID(), payload: {call_id: callID}}); }
     private async requestMicrophone(deviceID?: string, endCallOnError = true): Promise<MediaStream | undefined> {
@@ -356,8 +408,8 @@ export class CallFacade implements OnDestroy {
         if (name === 'NotReadableError' || name === 'AbortError') return 'The microphone is unavailable. Close other apps using it and try again.';
         return 'Microphone access is unavailable. Check the browser permission and microphone, then try again.';
     }
-    private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, screenShareQuality: this.state.screenShareQuality, statusLabel: label}); this.dismissNotice(); }
-    private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, screenShareQuality: this.state.screenShareQuality, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
+    private terminal(label: string): void { this.cleanup(); this.setState({phase: 'ended', muted: false, screenShareQuality: this.state.screenShareQuality, screenShareTransition: false, statusLabel: label}); this.dismissNotice(); }
+    private setError(label: string): void { this.cleanup(); this.setState({phase: 'error', muted: false, screenShareQuality: this.state.screenShareQuality, screenShareTransition: false, statusLabel: label, errorLabel: label}); this.dismissNotice(); }
     private async tryPlayRemoteAudio(audio: HTMLAudioElement): Promise<void> {
         try {
             if (this.state.remoteStream && audio.srcObject !== this.state.remoteStream) audio.srcObject = this.state.remoteStream;
@@ -409,6 +461,8 @@ export class CallFacade implements OnDestroy {
         this.connection?.close();
         this.connection = undefined;
         this.screenSender = undefined;
+        this.remoteScreenStream = undefined;
+        this.remoteScreenSharing = false;
         this.pendingSignals = [];
         this.remoteAudio?.pause();
         if (this.remoteAudio) this.remoteAudio.srcObject = null;

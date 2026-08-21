@@ -176,6 +176,48 @@ describe('HomeComponent', () => {
         expect(historyComponent.headerInitials()).toBe('IN');
     });
 
+    it('renders the selected chat header while an active call is minimized', () => {
+        const callConversation = conversation('call-peer');
+        const selectedConversation = conversation('other-peer');
+        const historyComponent = new HomeComponent(
+            {} as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {} as DataProviderService,
+            {state: {phase: 'active', conversationID: callConversation.id}, close: () => undefined} as unknown as CallFacade,
+        );
+        historyComponent.conversations.next([callConversation, selectedConversation]);
+        historyComponent.selectedConversation = selectedConversation;
+
+        expect(historyComponent.callDisplayName()).toBe('call-peer');
+        expect(historyComponent.headerDisplayName()).toBe('other-peer');
+        expect(historyComponent.headerInitials()).toBe('OT');
+    });
+
+    it('minimizes an active call when another conversation is selected and preserves it when restored', () => {
+        const callConversation = conversation('call-peer');
+        const selectedConversation = conversation('other-peer');
+        const historyComponent = new HomeComponent(
+            {history: () => of({messages: []})} as unknown as ConversationService,
+            {} as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {} as DataProviderService,
+            {state: {phase: 'active', conversationID: callConversation.id}, close: () => undefined} as unknown as CallFacade,
+        );
+        historyComponent.conversations.next([callConversation, selectedConversation]);
+        historyComponent.selectedConversation = callConversation;
+
+        historyComponent.selectConversation(selectedConversation);
+
+        expect(historyComponent.isCallMinimized()).toBeTrue();
+        expect(historyComponent.selectedConversation?.id).toBe(selectedConversation.id);
+
+        historyComponent.restoreCall();
+
+        expect(historyComponent.isCallSurfaceVisible()).toBeTrue();
+        expect(historyComponent.selectedConversation?.id).toBe(callConversation.id);
+    });
+
     it('selects the caller conversation when an incoming call arrives', () => {
         const incoming = conversation('incoming');
         const historyComponent = new HomeComponent(

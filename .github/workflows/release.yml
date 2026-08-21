@@ -176,6 +176,8 @@ jobs:
            kyc_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --output /dev/null --write-out '%{http_code}' https://kyc.chat.false.tel/)"
            test "$kyc_status" = 401
            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
+           activation_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --request POST --data '{}' --output /dev/null --write-out '%{http_code}' 'https://auth.chat.false.tel/api/auth/activate?token=invalid')"
+           test "$activation_status" = 400
            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
 

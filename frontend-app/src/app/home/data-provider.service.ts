@@ -41,8 +41,13 @@ export interface CallControlEvent {
 export interface CallSignalEvent {
     type: 'call.signal';
     request_id: string;
-    payload: { call_id: string; signal: Record<string, unknown> };
+    payload: { call_id: string; signal: CallSignal };
 }
+
+export type CallSignal =
+    | { type: 'offer' | 'answer'; sdp: string }
+    | { type: 'candidate'; candidate: object }
+    | { type: 'screen-share-started' | 'screen-share-stopped' };
 
 export type ClientSocketEvent = MessageSendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent | CallStartEvent | CallControlEvent | CallSignalEvent;
 
@@ -138,7 +143,7 @@ export interface CallAcceptedSocketEvent {
 export interface CallSignalSocketEvent {
     version: typeof WEBSOCKET_PROTOCOL_VERSION;
     type: 'call.signal';
-    payload: { call_id: string; signal: Record<string, unknown> };
+    payload: { call_id: string; signal: CallSignal };
 }
 
 export interface CallRejectedSocketEvent {
@@ -167,13 +172,20 @@ function isICEServers(value: unknown): value is ICEServer[] {
     return Array.isArray(value) && value.length > 0 && value.every(server => isRecord(server) && Array.isArray(server.urls) && server.urls.every(url => typeof url === 'string') && typeof server.username === 'string' && typeof server.credential === 'string');
 }
 
+function isValidCallSignal(value: unknown): value is CallSignal {
+    if (!isRecord(value) || typeof value.type !== 'string') return false;
+    if (value.type === 'offer' || value.type === 'answer') return typeof value.sdp === 'string' && value.sdp.length > 0;
+    if (value.type === 'candidate') return isRecord(value.candidate);
+    return value.type === 'screen-share-started' || value.type === 'screen-share-stopped';
+}
+
 function isAcceptedCallPayload(value: unknown): value is CallPayload & {ice_servers: ICEServer[]} {
     return isRecord(value) && isCallPayload(value) && isICEServers(value['ice_servers']);
 }
 
 export function isValidCallSocketEvent(event: unknown): event is CallSocketEvent {
     if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || typeof event.type !== 'string' || !('payload' in event)) return false;
-    if (event.type === 'call.signal') return isRecord(event.payload) && typeof event.payload.call_id === 'string' && isRecord(event.payload.signal);
+    if (event.type === 'call.signal') return isRecord(event.payload) && typeof event.payload.call_id === 'string' && isValidCallSignal(event.payload.signal);
     if (event.type === 'call.rejected') return isRecord(event.payload) && typeof event.payload.error === 'string';
     if (event.type === 'call.accepted') return isAcceptedCallPayload(event.payload);
     return ['call.incoming', 'call.ringing', 'call.declined', 'call.ended'].includes(event.type) && isCallPayload(event.payload);

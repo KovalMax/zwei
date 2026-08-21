@@ -12,7 +12,7 @@ export const backends = {
     websocketTicket: 'https://auth.chat.false.tel/api/auth/ws-ticket',
     refresh: 'https://auth.chat.false.tel/api/auth/refresh',
     logout: 'https://auth.chat.false.tel/api/auth/logout',
-    activation: 'https://chat.false.tel/api/auth/activate',
+    activation: 'https://auth.chat.false.tel/api/auth/activate',
     adminEndpoints: {
         login: 'https://kyc.chat.false.tel/api/auth/login',
         refresh: 'https://kyc.chat.false.tel/api/auth/refresh',

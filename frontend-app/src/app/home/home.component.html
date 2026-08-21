@@ -54,15 +54,15 @@
                 <button class="call-collapse-button" mat-icon-button type="button" aria-label="Minimize call" (click)="minimizeCall()">
                     <zwei-icon name="expand_more"></zwei-icon>
                 </button>
-                <div class="call-card-content">
-                    <div class="call-profile">
-                        <div class="call-avatar">{{ callInitials() }}</div>
-                        <div class="call-profile-copy">
-                            <strong>{{ callDisplayName() }}</strong>
-                            <span [attr.role]="call.state.errorLabel ? 'alert' : 'status'">{{ call.state.statusLabel }}</span>
-                            <small class="call-duration" *ngIf="call.state.phase === 'active'" aria-label="Call duration">{{ callDurationLabel() }}</small>
-                        </div>
+                <div class="call-profile">
+                    <div class="call-avatar">{{ callInitials() }}</div>
+                    <div class="call-profile-copy">
+                        <strong>{{ callDisplayName() }}</strong>
+                        <span [attr.role]="call.state.errorLabel ? 'alert' : 'status'">{{ call.state.statusLabel }}</span>
+                        <small class="call-duration" *ngIf="call.state.phase === 'active'" aria-label="Call duration">{{ callDurationLabel() }}</small>
                     </div>
+                </div>
+                <div class="call-card-content">
                     <div class="call-sharing-indicator" *ngIf="call.state.screenShareStream || call.state.remoteScreenStream" role="status" aria-live="polite">
                         <span class="call-sharing-dot" aria-hidden="true"></span>
                         <span class="call-sharing-copy">
@@ -86,29 +86,30 @@
                         </ng-template>
                         <video class="call-screen-preview" *ngIf="call.state.screenShareStream && call.state.remoteScreenStream" autoplay muted playsinline aria-label="Your shared screen preview" [srcObject]="call.state.screenShareStream"></video>
                     </section>
-                     <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
-                         <label>Microphone
+                    <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
+                        <label>Microphone
                             <mat-select class="call-select" aria-label="Microphone input" [panelClass]="callSelectPanelClass()" [value]="call.selectedInputDeviceID" (selectionChange)="onCallInputDeviceChange($event.value)">
                                 <mat-option *ngFor="let device of call.inputDevices" [value]="device.deviceID">{{ device.label }}</mat-option>
                             </mat-select>
-                         </label>
-                         <label>Speaker
+                        </label>
+                        <label>Speaker
                             <mat-select class="call-select" aria-label="Speaker output" [panelClass]="callSelectPanelClass()" [value]="call.selectedOutputDeviceID" [disabled]="!call.outputSelectionSupported || !call.outputDevices.length" (selectionChange)="onCallOutputDeviceChange($event.value)">
                                 <mat-option value="" disabled>System default</mat-option>
                                 <mat-option *ngFor="let device of call.outputDevices" [value]="device.deviceID">{{ device.label }}</mat-option>
                             </mat-select>
-                         </label>
+                        </label>
                     </div>
                     <p class="call-device-note" *ngIf="(call.state.phase === 'connecting' || call.state.phase === 'active') && !call.outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
                     <div class="call-screen-tools" *ngIf="call.state.phase === 'active'">
-                         <label>Screen quality
+                        <label>Screen quality
                             <mat-select class="call-select" aria-label="Screen share quality" [panelClass]="callSelectPanelClass()" [value]="call.screenShareQuality" (selectionChange)="onScreenQualityChange($event.value)">
                                 <mat-option value="360p">360p · economy</mat-option>
                                 <mat-option value="720p">720p · balanced</mat-option>
                                 <mat-option value="1080p">1080p · detail</mat-option>
+                                <mat-option value="2k">2K · ultra</mat-option>
                             </mat-select>
-                         </label>
-                        <button mat-stroked-button type="button" class="screen-share-button" [disabled]="!call.screenShareSupported()" (click)="call.toggleScreenShare()">
+                        </label>
+                        <button mat-stroked-button type="button" class="screen-share-button" [disabled]="!call.screenShareSupported() || call.state.screenShareTransition" (click)="call.toggleScreenShare()">
                             <zwei-icon *ngIf="!call.state.screenShareStream" name="screen_share"></zwei-icon>
                             <zwei-icon *ngIf="call.state.screenShareStream" name="stop_screen_share"></zwei-icon>
                             {{ call.state.screenShareStream ? 'Stop sharing' : 'Share screen' }}
