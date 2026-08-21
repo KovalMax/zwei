@@ -56,20 +56,28 @@ async function adminLogin(page: Page): Promise<void> {
 }
 
 async function activationLink(request: APIRequestContext, email: string): Promise<string> {
-  let link = '';
+  const links = await activationLinks(request, email);
+  return links[0];
+}
+
+async function activationLinks(request: APIRequestContext, email: string, minimum = 1): Promise<string[]> {
+  let links: string[] = [];
   await expect.poll(async () => {
     const response = await request.get('http://mailpit:8025/api/v1/messages?limit=50');
-    if (!response.ok()) return '';
+    if (!response.ok()) return 0;
     const payload = await response.json() as {messages?: Array<{ID: string; To?: Array<{Address?: string}>}>};
-    const message = payload.messages?.find(item => item.To?.some(recipient => recipient.Address === email));
-    if (!message) return '';
-    const detail = await request.get(`http://mailpit:8025/api/v1/message/${message.ID}`);
-    if (!detail.ok()) return '';
-    const text = JSON.stringify(await detail.json());
-    link = text.match(/https:\/\/chat\.localhost\/activate\?token=[A-Za-z0-9_-]+/)?.[0] ?? '';
-    return link;
-  }, {timeout: 10_000}).toBeTruthy();
-  return link;
+    const messages = payload.messages?.filter(item => item.To?.some(recipient => recipient.Address === email)) ?? [];
+    const details = await Promise.all(messages.map(item => request.get(`http://mailpit:8025/api/v1/message/${item.ID}`)));
+    links = [];
+    for (const detail of details) {
+      if (!detail.ok()) continue;
+      const text = JSON.stringify(await detail.json());
+      const link = text.match(/https:\/\/chat\.localhost\/activate\?token=[A-Za-z0-9_-]+/)?.[0];
+      if (link) links.push(link);
+    }
+    return links.length;
+  }, {timeout: 10_000}).toBeGreaterThanOrEqual(minimum);
+  return links;
 }
 
 async function invitationLink(request: APIRequestContext, email: string): Promise<string> {
@@ -162,17 +170,56 @@ test('pending registration, admin approval, activation email, and blocked login'
   expect(activationResponse.status()).toBe(204);
   await expect(admin.getByText('Account activated.')).toBeVisible();
 
-  const link = await activationLink(request, pendingEmail);
+  const firstLink = await activationLink(request, pendingEmail);
+  await admin.reload();
+  const activePendingRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
+  await expect(activePendingRow).toContainText('Active');
+  await expect(activePendingRow.getByRole('button', {name: 'Resend activation link'})).toBeEnabled();
+  const resendResponsePromise = admin.waitForResponse(response => response.url().includes('/api/admin/users/') && response.url().endsWith('/resend-activation') && response.request().method() === 'POST');
+  await activePendingRow.getByRole('button', {name: 'Resend activation link'}).click();
+  const resendResponse = await resendResponsePromise;
+  expect(resendResponse.status()).toBe(204);
+  await expect(admin.getByText('Activation link sent.')).toBeVisible();
+  const resendButton = admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Resend activation link'});
+  await expect(resendButton).toBeEnabled();
+  await admin.setViewportSize({width: 1440, height: 900});
+  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-desktop.png'), fullPage: false});
+  await admin.setViewportSize({width: 390, height: 844});
+  const resendGeometry = await resendButton.evaluate(button => {
+    const table = button.closest<HTMLElement>('.table-wrap');
+    if (!table) return null;
+    table.scrollLeft = table.scrollWidth;
+    const rect = button.getBoundingClientRect();
+    return {left: rect.left, right: rect.right, viewport: document.documentElement.clientWidth};
+  });
+  if (!resendGeometry) throw new Error('resend action is not inside the table');
+  expect(resendGeometry.left).toBeGreaterThanOrEqual(0);
+  expect(resendGeometry.right).toBeLessThanOrEqual(resendGeometry.viewport + 1);
+  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-mobile.png'), fullPage: false});
+  await admin.getByRole('button', {name: 'Account menu'}).click();
+  await admin.getByRole('menuitem', {name: 'Switch to light theme'}).click();
+  await expect(admin.locator('html')).toHaveClass(/light-theme/);
+  await admin.keyboard.press('Escape');
+  await admin.setViewportSize({width: 1440, height: 900});
+  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-light.png'), fullPage: false});
+  await admin.getByRole('button', {name: 'Account menu'}).click();
+  await admin.getByRole('menuitem', {name: 'Switch to dark theme'}).click();
+  await expect(admin.locator('html')).toHaveClass(/dark-theme/);
+  const activationMessages = await activationLinks(request, pendingEmail, 2);
+  const secondLink = activationMessages.find(candidate => candidate !== firstLink);
+  if (!secondLink) throw new Error('resend did not produce a new activation link');
   await searcher.getByPlaceholder('Name or email').fill('');
   await searcher.getByPlaceholder('Name or email').fill(pendingEmail);
   await expect(searchResult).toHaveCount(0);
   await user.evaluate(() => localStorage.setItem('zwei_theme', 'dark'));
-  await user.goto(link);
+  await user.goto(firstLink);
+  await expect(user.getByRole('heading', {name: 'Activation link unavailable'})).toBeVisible();
+  await user.goto(secondLink);
   await expect(user.getByRole('heading', {name: 'Your account is active'})).toBeVisible();
   await expect(user.locator('.auth-card')).toBeVisible();
   await user.screenshot({path: testInfo.outputPath('kyc-activation-dark.png'), fullPage: false});
   await user.getByRole('button', {name: 'Continue to sign in'}).click();
-  await user.goto(link);
+  await user.goto(secondLink);
   await expect(user.getByRole('heading', {name: 'Activation link unavailable'})).toBeVisible();
   await login(user, pendingEmail);
   await expect(user).toHaveURL(/\/home$/);
@@ -183,6 +230,7 @@ test('pending registration, admin approval, activation email, and blocked login'
   await admin.reload();
   const activeRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
   await expect(activeRow.getByRole('button', {name: 'Activate account'})).toBeDisabled();
+  await expect(activeRow.getByRole('button', {name: 'Resend activation link'})).toHaveCount(0);
   await expect(activeRow.getByRole('button', {name: 'Block account'})).toBeEnabled();
   await activeRow.getByRole('button', {name: 'Block account'}).click();
   await expect(admin.getByText('Account blocked.')).toBeVisible();

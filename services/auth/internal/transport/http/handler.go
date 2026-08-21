@@ -36,6 +36,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/users", h.adminUsers)
 	mux.HandleFunc("GET /api/admin/me", h.adminMe)
 	mux.HandleFunc("POST /api/admin/users/{id}/activate", h.activateUser)
+	mux.HandleFunc("POST /api/admin/users/{id}/resend-activation", h.resendActivation)
 	mux.HandleFunc("POST /api/admin/users/{id}/block", h.blockUser)
 	mux.HandleFunc("GET /api/admin/invitations", h.adminInvitations)
 	mux.HandleFunc("POST /api/admin/invitations", h.createInvitation)
@@ -309,6 +310,23 @@ func (h *Handler) activateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.admins.ActivateUser(r.Context(), adminID, targetID); err != nil {
 		h.adminError(w, err, "could not activate user")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) resendActivation(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := h.adminID(w, r)
+	if !ok {
+		return
+	}
+	targetID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	if err := h.admins.ResendActivation(r.Context(), adminID, targetID); err != nil {
+		h.adminError(w, err, "could not resend activation link")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

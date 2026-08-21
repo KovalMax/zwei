@@ -44,6 +44,10 @@ export class AdminService {
         return this.http.post<void>(this.host.adminEndpoint(`/api/admin/users/${id}/activate`), {});
     }
 
+    public resendActivationLink(id: string): Observable<void> {
+        return this.http.post<void>(this.host.adminEndpoint(`/api/admin/users/${id}/resend-activation`), {});
+    }
+
     public blockUser(id: string): Observable<void> {
         return this.http.post<void>(this.host.adminEndpoint(`/api/admin/users/${id}/block`), {});
     }

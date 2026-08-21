@@ -18,6 +18,7 @@
 .action-button { display: inline-flex; width: 42px; min-width: 42px; height: 42px; min-height: 42px; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: 10px; cursor: pointer; }
 .action-button zwei-icon { width: 20px; height: 20px; flex-basis: 20px; }
 .action-activate { background: #2f8f68; color: #fff; }
+.action-resend { background: #396fa3; color: #fff; }
 .action-block { background: #a43b32; color: #fff; }
 .action-expire { background: #d4a72c; color: #2d2412; }
 .action-button:disabled { cursor: not-allowed; opacity: .42; }

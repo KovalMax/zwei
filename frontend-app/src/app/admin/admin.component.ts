@@ -17,6 +17,7 @@ export class AdminComponent implements OnInit {
     public invitationEmail = new FormControl('', {nonNullable: true, validators: [Validators.required, Validators.email]});
     public isLoading = true;
     public isCreatingInvitation = false;
+    public resendingActivationID: string | null = null;
     public createdCode = '';
     private reloadGeneration = 0;
 
@@ -61,6 +62,22 @@ export class AdminComponent implements OnInit {
         });
     }
 
+    public resendActivation(user: AdminUser): void {
+        if (this.resendingActivationID === user.id) return;
+        this.resendingActivationID = user.id;
+        this.admins.resendActivationLink(user.id).pipe(finalize(() => {
+            if (this.resendingActivationID === user.id) this.resendingActivationID = null;
+            this.changeDetector.markForCheck();
+        })).subscribe({
+            next: () => { this.showMessage('Activation link sent.'); this.reload(); },
+            error: () => this.showError('Could not resend the activation link.'),
+        });
+    }
+
+    public isResendingActivation(user: AdminUser): boolean {
+        return this.resendingActivationID === user.id;
+    }
+
     public block(user: AdminUser): void {
         this.admins.blockUser(user.id).subscribe({
             next: () => { this.showMessage('Account blocked.'); this.reload(); },
@@ -96,7 +113,11 @@ export class AdminComponent implements OnInit {
     }
 
     public canActivate(user: AdminUser): boolean {
-        return user.kyc_status === 2 || user.kyc_status === 3 || (user.kyc_status === 1 && !user.email_verified);
+        return user.kyc_status === 2 || user.kyc_status === 3;
+    }
+
+    public canResendActivation(user: AdminUser): boolean {
+        return user.kyc_status === 1 && !user.email_verified;
     }
 
     private showMessage(message: string): void { this.snack.open(message, 'Close', {duration: 5000}); }

@@ -23,6 +23,7 @@ type Repository interface {
 	ListAdminUsers(context.Context) ([]user.AdminUser, error)
 	SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus) error
 	PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error)
+	PrepareActivationEmail(context.Context, uuid.UUID, []byte, time.Time) (string, string, error)
 	VerifyActivation(context.Context, []byte, time.Time) error
 	CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error)
 	ListInvitations(context.Context) ([]user.Invitation, error)
