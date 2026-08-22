@@ -93,12 +93,17 @@ type client struct {
 	hub          *application.Hub
 	send         chan []byte
 	once         sync.Once
+	sendMu       sync.RWMutex
+	closed       bool
 	budget       application.ConnectionBudget
 	connectionID string
 }
 
 func (c *client) Identity() sharedauth.Identity { return c.identity }
 func (c *client) Close() {
+	c.sendMu.Lock()
+	c.closed = true
+	c.sendMu.Unlock()
 	c.once.Do(func() {
 		c.hub.Remove(context.Background(), c)
 		if c.budget != nil {
@@ -107,15 +112,24 @@ func (c *client) Close() {
 		_ = c.socket.Close()
 	})
 }
-func (c *client) SendJSON(value any) {
+func (c *client) SendJSON(value any) bool {
 	payload, err := json.Marshal(value)
 	if err != nil {
-		return
+		return false
+	}
+	c.sendMu.RLock()
+	if c.closed {
+		c.sendMu.RUnlock()
+		return false
 	}
 	select {
 	case c.send <- payload:
+		c.sendMu.RUnlock()
+		return true
 	default:
+		c.sendMu.RUnlock()
 		c.Close()
+		return false
 	}
 }
 func (c *client) readPump(ctx context.Context) {
@@ -129,7 +143,8 @@ func (c *client) readPump(ctx context.Context) {
 			return
 		}
 		if messageType != websocket.TextMessage {
-			continue
+			_ = c.socket.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, "text frames only"), time.Now().Add(writeTimeout))
+			return
 		}
 		if !json.Valid(payload) {
 			_ = c.socket.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, "invalid JSON"), time.Now().Add(writeTimeout))

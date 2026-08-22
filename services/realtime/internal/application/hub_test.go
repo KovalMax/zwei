@@ -17,7 +17,7 @@ import (
 type testClient struct{}
 
 func (testClient) Identity() sharedauth.Identity { return sharedauth.Identity{} }
-func (testClient) SendJSON(any)                  {}
+func (testClient) SendJSON(any) bool             { return true }
 func (testClient) Close()                        {}
 
 func TestHubHandlePreservesRequestIDForRejectedCommand(t *testing.T) {
@@ -95,6 +95,50 @@ func TestHubReplaysAndMarksPendingMessagesOnConnection(t *testing.T) {
 	}
 	if delivery.markedDeviceID != deviceID || len(delivery.markedMessageIDs) != 1 || delivery.markedMessageIDs[0] != messageID {
 		t.Fatalf("marked delivery = device %s messages %v", delivery.markedDeviceID, delivery.markedMessageIDs)
+	}
+}
+
+func TestHubDoesNotMarkPendingMessageWhenSocketQueueRejects(t *testing.T) {
+	deviceID := uuid.New()
+	delivery := &fakeDelivery{pending: []messaging.Message{{ID: uuid.New(), ConversationID: uuid.New(), SenderID: uuid.New(), Body: "offline message"}}}
+	client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New(), DeviceID: deviceID.String()}, sendFailure: true}
+	hub := NewHub(nil, nil, nil, delivery, nil, nil, nil)
+
+	hub.replayPending(context.Background(), client)
+
+	if len(delivery.markedMessageIDs) != 0 {
+		t.Fatalf("marked delivery after queue rejection = %v", delivery.markedMessageIDs)
+	}
+}
+
+func TestHubMarksOnlyQueuedPrefixDuringReplay(t *testing.T) {
+	deviceID := uuid.New()
+	firstID, secondID := uuid.New(), uuid.New()
+	delivery := &fakeDelivery{pending: []messaging.Message{
+		{ID: firstID, ConversationID: uuid.New(), SenderID: uuid.New(), Body: "first"},
+		{ID: secondID, ConversationID: uuid.New(), SenderID: uuid.New(), Body: "second"},
+	}}
+	client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New(), DeviceID: deviceID.String()}, sendLimit: 1}
+	hub := NewHub(nil, nil, nil, delivery, nil, nil, nil)
+
+	hub.replayPending(context.Background(), client)
+
+	if len(delivery.markedMessageIDs) != 1 || delivery.markedMessageIDs[0] != firstID {
+		t.Fatalf("marked delivery = %v, want only %s", delivery.markedMessageIDs, firstID)
+	}
+}
+
+func TestHubRetainsLiveDeliveryWhenSocketQueueRejects(t *testing.T) {
+	recipientID := uuid.New()
+	delivery := &fakeDelivery{}
+	client := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: uuid.NewString()}, sendFailure: true}
+	hub := NewHub(nil, nil, nil, delivery, nil, nil, nil)
+	hub.Add(context.Background(), client)
+
+	hub.DeliverMessageCreated(messaging.Message{ID: uuid.New(), RecipientID: recipientID})
+
+	if len(delivery.markedMessageIDs) != 0 {
+		t.Fatalf("marked live delivery after queue rejection = %v", delivery.markedMessageIDs)
 	}
 }
 
@@ -307,13 +351,21 @@ func (rateLimitedCoordinator) AllowSignal(context.Context, uuid.UUID) (bool, err
 }
 
 type recordingClient struct {
-	identity sharedauth.Identity
-	events   []any
+	identity    sharedauth.Identity
+	events      []any
+	sendFailure bool
+	sendLimit   int
 }
 
 func (c *recordingClient) Identity() sharedauth.Identity { return c.identity }
-func (c *recordingClient) SendJSON(event any)            { c.events = append(c.events, event) }
-func (*recordingClient) Close()                          {}
+func (c *recordingClient) SendJSON(event any) bool {
+	if c.sendFailure || (c.sendLimit > 0 && len(c.events) >= c.sendLimit) {
+		return false
+	}
+	c.events = append(c.events, event)
+	return true
+}
+func (*recordingClient) Close() {}
 
 type fakeDelivery struct {
 	pending          []messaging.Message

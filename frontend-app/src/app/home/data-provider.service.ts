@@ -1,10 +1,16 @@
 import {HttpClient} from '@angular/common/http';
-import {Injectable} from '@angular/core';
-import {webSocket, WebSocketSubject} from 'rxjs/webSocket';
+import {Inject, Injectable, InjectionToken} from '@angular/core';
+import {webSocket, WebSocketSubject, WebSocketSubjectConfig} from 'rxjs/webSocket';
 import {backends} from '../../environments/environment';
 import {BehaviorSubject, Observable, Subject} from 'rxjs';
 
 export const WEBSOCKET_PROTOCOL_VERSION = 1 as const;
+export type WebSocketFactory = <T>(config: WebSocketSubjectConfig<T>) => WebSocketSubject<T>;
+const defaultWebSocketFactory: WebSocketFactory = <T>(config: WebSocketSubjectConfig<T>) => webSocket(config);
+export const WEBSOCKET_FACTORY = new InjectionToken<WebSocketFactory>('ZWEI_WEBSOCKET_FACTORY', {
+    providedIn: 'root',
+    factory: () => defaultWebSocketFactory,
+});
 
 export interface MessageSendEvent {
     type: 'message.send';
@@ -183,6 +189,17 @@ function isAcceptedCallPayload(value: unknown): value is CallPayload & {ice_serv
     return isRecord(value) && isCallPayload(value) && isICEServers(value['ice_servers']);
 }
 
+function isMessagePayload(value: unknown): value is MessagePayload {
+    if (!isRecord(value)) return false;
+    const required = ['id', 'conversation_id', 'sender_id', 'client_message_id', 'body', 'created_at'];
+    return required.every(key => typeof value[key] === 'string') &&
+        typeof value.sequence === 'number' && Number.isSafeInteger(value.sequence) && value.sequence > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
 export function isValidCallSocketEvent(event: unknown): event is CallSocketEvent {
     if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || typeof event.type !== 'string' || !('payload' in event)) return false;
     if (event.type === 'call.signal') return isRecord(event.payload) && typeof event.payload.call_id === 'string' && isValidCallSignal(event.payload.signal);
@@ -194,6 +211,39 @@ export function isValidCallSocketEvent(event: unknown): event is CallSocketEvent
 export function isValidConversationReadEvent(event: unknown): event is ConversationReadSocketEvent {
     if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || event.type !== 'conversation.read' || !isRecord(event.payload)) return false;
     return typeof event.payload.conversation_id === 'string' && typeof event.payload.user_id === 'string' && typeof event.payload.sequence === 'number' && Number.isSafeInteger(event.payload.sequence) && event.payload.sequence > 0;
+}
+
+function isValidSocketEvent(event: unknown): event is MessageSocketEvent {
+    if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || typeof event.type !== 'string' || !('payload' in event)) return false;
+    switch (event.type) {
+        case 'message.accepted':
+            return typeof event.request_id === 'string' && isMessagePayload(event.payload);
+        case 'message.created':
+            return isMessagePayload(event.payload);
+        case 'message.rejected':
+            return isRecord(event.payload) && typeof event.payload.error === 'string' && (event.request_id === undefined || typeof event.request_id === 'string');
+        case 'presence.snapshot':
+            return isRecord(event.payload) && isStringArray(event.payload.user_ids);
+        case 'presence.changed':
+            return isRecord(event.payload) && typeof event.payload.user_id === 'string' && typeof event.payload.online === 'boolean';
+        case 'typing.started':
+        case 'typing.stopped':
+            return isRecord(event.payload) && typeof event.payload.conversation_id === 'string' && typeof event.payload.user_id === 'string';
+        case 'conversation.created':
+            return isRecord(event.payload) && typeof event.payload.conversation_id === 'string';
+        case 'conversation.read':
+            return isValidConversationReadEvent(event);
+        case 'call.incoming':
+        case 'call.ringing':
+        case 'call.declined':
+        case 'call.ended':
+        case 'call.accepted':
+        case 'call.signal':
+        case 'call.rejected':
+            return isValidCallSocketEvent(event);
+        default:
+            return false;
+    }
 }
 
 interface WebSocketTicketResponse { ticket: string; }
@@ -209,7 +259,7 @@ export class DataProviderService {
     private readonly readySubject = new BehaviorSubject<boolean>(false);
     private readonly events = new Subject<MessageSocketEvent>();
 
-    public constructor(private http: HttpClient) {}
+    public constructor(private http: HttpClient, @Inject(WEBSOCKET_FACTORY) private readonly socketFactory: WebSocketFactory) {}
 
     public getObservable(): Observable<MessageSocketEvent> {
         if (!this.started) {
@@ -231,6 +281,7 @@ export class DataProviderService {
     public get readyChanges(): Observable<boolean> { return this.readySubject.asObservable(); }
 
     public close(): void {
+        if (this.closed) return;
         this.closed = true;
         window.clearTimeout(this.reconnectTimer);
         this.readySubject.next(false);
@@ -243,8 +294,9 @@ export class DataProviderService {
         if (this.closed) return;
         this.http.post<WebSocketTicketResponse>(backends.websocketTicket, {}).subscribe({
             next: ({ticket}) => {
+                if (this.closed) return;
                 const url = `${backends.websocket}?ticket=${encodeURIComponent(ticket)}`;
-                this.socket = webSocket<MessageSocketEvent | (ClientSocketEvent & {version: typeof WEBSOCKET_PROTOCOL_VERSION})>({
+                this.socket = this.socketFactory<MessageSocketEvent | (ClientSocketEvent & {version: typeof WEBSOCKET_PROTOCOL_VERSION})>({
                     url,
                     openObserver: {next: () => {
                         this.reconnectAttempt = 0;
@@ -258,7 +310,7 @@ export class DataProviderService {
                 });
                 this.socket.subscribe({
                     next: event => {
-                        if (event.version === WEBSOCKET_PROTOCOL_VERSION && (!event.type.startsWith('call.') || isValidCallSocketEvent(event)) && (event.type !== 'conversation.read' || isValidConversationReadEvent(event))) this.events.next(event as MessageSocketEvent);
+                        if (isValidSocketEvent(event)) this.events.next(event);
                     },
                     error: () => this.scheduleReconnect(),
                     complete: () => this.scheduleReconnect(),
