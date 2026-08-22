@@ -2,6 +2,7 @@ import {HttpClientTestingModule, HttpTestingController} from '@angular/common/ht
 import {TestBed} from '@angular/core/testing';
 
 import {backends} from '../../environments/environment';
+import {backends as productionBackends} from '../../environments/environment.prod';
 import {AuthService} from './auth.service';
 
 describe('AuthService', () => {
@@ -36,5 +37,10 @@ describe('AuthService', () => {
 
         expect(service.token.value?.access_token).toBe('registered-access');
         expect(service.token.value?.expires_in).toBeGreaterThan(Date.now());
+    });
+
+    it('routes activation verification through the configured auth service in every build', () => {
+        expect(backends.activation).toBe(`${backends.auth}/api/auth/activate`);
+        expect(productionBackends.activation).toBe(`${productionBackends.auth}/api/auth/activate`);
     });
 });

@@ -138,6 +138,12 @@ func (r *Repository) PrepareActivation(ctx context.Context, userID uuid.UUID, to
 	return email, displayName, verified, err
 }
 
+func (r *Repository) PrepareActivationEmail(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, error) {
+	var email, displayName string
+	err := r.db.QueryRow(ctx, `UPDATE users SET activation_token_hash = $1, activation_expires_at = $2, updated_at = now() WHERE id = $3 AND kyc_status = $4 AND email_verified_at IS NULL RETURNING email, display_name`, tokenHash, expiresAt, userID, user.KYCActive).Scan(&email, &displayName)
+	return email, displayName, err
+}
+
 func (r *Repository) VerifyActivation(ctx context.Context, tokenHash []byte, now time.Time) error {
 	result, err := r.db.Exec(ctx, `UPDATE users SET email_verified_at = $1, activation_token_hash = NULL, activation_expires_at = NULL, updated_at = $1 WHERE activation_token_hash = $2 AND activation_expires_at > $1 AND kyc_status = $3`, now, tokenHash, user.KYCActive)
 	if err != nil {

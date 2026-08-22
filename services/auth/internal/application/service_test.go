@@ -1,7 +1,9 @@
 package application
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -108,6 +110,58 @@ func TestActivateUnverifiedAccountSendsActivationEmail(t *testing.T) {
 	}
 }
 
+func TestResendActivationRotatesTokenAndExpiry(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, resendEmail: "user@example.test", resendDisplayName: "User"}
+	email := &fakeEmailSender{}
+	service := NewAdminService(repository, nil, email, "https://chat.localhost/activate", "https://chat.localhost/sign-up")
+	firstNow := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	service.clock = func() time.Time { return firstNow }
+
+	if err := service.ResendActivation(context.Background(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	firstHash := append([]byte(nil), repository.resendHash...)
+	firstExpiry := repository.resendExpiresAt
+	firstLink := email.activationLinks[0]
+	firstTokenHash := sha256.Sum256([]byte(mustActivationToken(t, firstLink)))
+	if !bytes.Equal(firstTokenHash[:], firstHash) {
+		t.Fatal("stored activation hash does not match the emailed token")
+	}
+
+	secondNow := firstNow.Add(2 * time.Hour)
+	service.clock = func() time.Time { return secondNow }
+	if err := service.ResendActivation(context.Background(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Equal(firstHash, repository.resendHash) {
+		t.Fatal("resend reused the activation token hash")
+	}
+	if !repository.resendExpiresAt.After(firstExpiry) || !repository.resendExpiresAt.Equal(secondNow.Add(service.activationLife)) {
+		t.Fatalf("resend expiry = %v, want %v", repository.resendExpiresAt, secondNow.Add(service.activationLife))
+	}
+	if email.calls != 2 || email.activationLinks[1] == firstLink {
+		t.Fatalf("activation emails = %#v", email.activationLinks)
+	}
+	secondTokenHash := sha256.Sum256([]byte(mustActivationToken(t, email.activationLinks[1])))
+	if !bytes.Equal(secondTokenHash[:], repository.resendHash) {
+		t.Fatal("rotated activation hash does not match the new emailed token")
+	}
+}
+
+func mustActivationToken(t *testing.T, link string) string {
+	t.Helper()
+	parsed, err := url.Parse(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatalf("activation link has no token: %q", link)
+	}
+	return token
+}
+
 func TestCreateInvitationSendsAccountCreationEmail(t *testing.T) {
 	repository := &fakeRepository{isAdmin: true, invitation: user.Invitation{ID: uuid.New(), Email: "invite@example.test"}}
 	email := &fakeEmailSender{}
@@ -138,6 +192,10 @@ type fakeRepository struct {
 	prepareEmail       string
 	prepareDisplayName string
 	prepareVerified    bool
+	resendEmail        string
+	resendDisplayName  string
+	resendHash         []byte
+	resendExpiresAt    time.Time
 	invitation         user.Invitation
 }
 
@@ -170,6 +228,11 @@ func (f *fakeRepository) SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus
 func (f *fakeRepository) PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error) {
 	return f.prepareEmail, f.prepareDisplayName, f.prepareVerified, nil
 }
+func (f *fakeRepository) PrepareActivationEmail(_ context.Context, _ uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, error) {
+	f.resendHash = append([]byte(nil), tokenHash...)
+	f.resendExpiresAt = expiresAt
+	return f.resendEmail, f.resendDisplayName, nil
+}
 func (f *fakeRepository) VerifyActivation(context.Context, []byte, time.Time) error { return nil }
 func (f *fakeRepository) CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error) {
 	return f.invitation, nil
@@ -186,12 +249,14 @@ type fakeEmailSender struct {
 	to              string
 	name            string
 	link            string
+	activationLinks []string
 }
 
-func (f *fakeEmailSender) SendActivation(_ context.Context, to, name, _ string) error {
+func (f *fakeEmailSender) SendActivation(_ context.Context, to, name, link string) error {
 	f.calls++
 	f.to = to
 	f.name = name
+	f.activationLinks = append(f.activationLinks, link)
 	return nil
 }
 

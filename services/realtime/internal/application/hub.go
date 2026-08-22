@@ -284,6 +284,9 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 	if len(request.Payload.Signal) > 0 && !json.Valid(request.Payload.Signal) {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("invalid call signal")}
 	}
+	if request.Type == "call.signal" && !validCallSignal(request.Payload.Signal) {
+		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported call signal")}
+	}
 	if request.Type == "call.start" || request.Type == "call.accept" || request.Type == "call.decline" || request.Type == "call.cancel" || request.Type == "call.end" || request.Type == "call.signal" {
 		if request.RequestID == "" {
 			return &RequestError{Err: errors.New("call request ID is required")}
@@ -645,6 +648,28 @@ func (h *Hub) allowMessage(identity sharedauth.Identity) bool {
 	}
 	h.messageAt[key] = now
 	return true
+}
+
+func validCallSignal(signal json.RawMessage) bool {
+	var value struct {
+		Type      string          `json:"type"`
+		SDP       string          `json:"sdp"`
+		Candidate json.RawMessage `json:"candidate"`
+	}
+	if err := json.Unmarshal(signal, &value); err != nil {
+		return false
+	}
+	switch value.Type {
+	case "offer", "answer":
+		return value.SDP != ""
+	case "candidate":
+		candidate := bytes.TrimSpace(value.Candidate)
+		return len(candidate) > 0 && candidate[0] == '{'
+	case "screen-share-started", "screen-share-stopped":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Hub) DeliverTyping(eventType string, conversationID, userID, recipientID uuid.UUID) {

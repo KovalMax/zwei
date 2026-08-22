@@ -63,24 +63,36 @@ func (s *AdminService) ActivateUser(ctx context.Context, adminID, targetID uuid.
 	if targetID == adminID {
 		return ErrAdminTarget
 	}
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	token, tokenHash, err := activationToken()
+	if err != nil {
 		return err
 	}
-	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
-	hash := sha256.Sum256([]byte(token))
-	email, displayName, verified, err := s.repository.PrepareActivation(ctx, targetID, hash[:], s.clock().Add(s.activationLife))
+	email, displayName, verified, err := s.repository.PrepareActivation(ctx, targetID, tokenHash, s.clock().Add(s.activationLife))
 	if err != nil {
 		return err
 	}
 	if verified {
 		return nil
 	}
-	link := s.activationURL + "?token=" + token
-	if err := s.email.SendActivation(ctx, email, displayName, link); err != nil {
+	return s.sendActivationEmail(ctx, email, displayName, token)
+}
+
+func (s *AdminService) ResendActivation(ctx context.Context, adminID, targetID uuid.UUID) error {
+	if err := s.requireAdmin(ctx, adminID); err != nil {
 		return err
 	}
-	return nil
+	if targetID == adminID {
+		return ErrAdminTarget
+	}
+	token, tokenHash, err := activationToken()
+	if err != nil {
+		return err
+	}
+	email, displayName, err := s.repository.PrepareActivationEmail(ctx, targetID, tokenHash, s.clock().Add(s.activationLife))
+	if err != nil {
+		return err
+	}
+	return s.sendActivationEmail(ctx, email, displayName, token)
 }
 
 func (s *AdminService) BlockUser(ctx context.Context, adminID, targetID uuid.UUID) error {
@@ -163,4 +175,18 @@ func (s *AdminService) requireAdmin(ctx context.Context, userID uuid.UUID) error
 		return ErrNotAdmin
 	}
 	return nil
+}
+
+func (s *AdminService) sendActivationEmail(ctx context.Context, email, displayName, token string) error {
+	return s.email.SendActivation(ctx, email, displayName, s.activationURL+"?token="+token)
+}
+
+func activationToken() (string, []byte, error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", nil, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	hash := sha256.Sum256([]byte(token))
+	return token, hash[:], nil
 }

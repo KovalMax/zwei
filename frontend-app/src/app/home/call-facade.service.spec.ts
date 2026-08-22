@@ -1,6 +1,6 @@
 import {Subject} from 'rxjs';
 import {CallFacade} from './call-facade.service';
-import {DataProviderService, MessageSocketEvent, WEBSOCKET_PROTOCOL_VERSION} from './data-provider.service';
+import {CallSignal, DataProviderService, MessageSocketEvent, WEBSOCKET_PROTOCOL_VERSION} from './data-provider.service';
 
 describe('CallFacade', () => {
     let events: Subject<MessageSocketEvent>;
@@ -20,7 +20,7 @@ describe('CallFacade', () => {
         originalPeerConnection = window.RTCPeerConnection;
         Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {
             getUserMedia: jasmine.createSpy('getUserMedia').and.returnValue(Promise.resolve(stream)),
-            getDisplayMedia: jasmine.createSpy('getDisplayMedia').and.returnValue(Promise.resolve(new MockScreenStream())),
+            getDisplayMedia: jasmine.createSpy('getDisplayMedia').and.callFake(() => Promise.resolve(new MockScreenStream())),
             enumerateDevices: jasmine.createSpy('enumerateDevices').and.returnValue(Promise.resolve([
                 {deviceId: 'microphone-1', kind: 'audioinput', label: 'Built-in microphone'},
                 {deviceId: 'microphone-2', kind: 'audioinput', label: 'USB microphone'},
@@ -239,13 +239,13 @@ describe('CallFacade', () => {
         await flush();
         connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
 
-        await facade.selectScreenShareQuality('1080p');
+        await facade.selectScreenShareQuality('2k');
         await facade.toggleScreenShare();
 
         const displayOptions = (navigator.mediaDevices.getDisplayMedia as jasmine.Spy).calls.mostRecent().args[0] as DisplayMediaStreamOptions & {selfBrowserSurface?: string; surfaceSwitching?: string; monitorTypeSurfaces?: string};
-        expect(displayOptions).toEqual({video: {width: {ideal: 1920}, height: {ideal: 1080}, frameRate: {ideal: 30, max: 30}}, audio: false, selfBrowserSurface: 'include', surfaceSwitching: 'include', monitorTypeSurfaces: 'include'});
+        expect(displayOptions).toEqual({video: {width: {ideal: 2560}, height: {ideal: 1440}, frameRate: {ideal: 30, max: 30}}, audio: false, selfBrowserSurface: 'include', surfaceSwitching: 'include', monitorTypeSurfaces: 'include'});
         expect(facade.state.screenShareStream).toBeTruthy();
-        expect(facade.state.screenShareQuality).toBe('1080p');
+        expect(facade.state.screenShareQuality).toBe('2k');
         expect(send.calls.allArgs().some(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'offer')).toBeTrue();
     });
 
@@ -276,6 +276,24 @@ describe('CallFacade', () => {
         events.next(signal('call-1', {type: 'screen-share-stopped'}));
 
         expect(facade.state.remoteScreenStream).toBeUndefined();
+    });
+
+    it('restores a reused remote screen track after the peer starts sharing again', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const remote = new MockScreenStream();
+        connections[0].ontrack?.({streams: [remote], track: remote.track} as unknown as RTCTrackEvent);
+
+        events.next(signal('call-1', {type: 'screen-share-stopped'}));
+        expect(facade.state.remoteScreenStream).toBeUndefined();
+        expect(remote.track.stop).not.toHaveBeenCalled();
+
+        events.next(signal('call-1', {type: 'screen-share-started'}));
+
+        expect(facade.state.remoteScreenStream).toBe(remote as unknown as MediaStream);
+        expect(remote.track.stop).not.toHaveBeenCalled();
     });
 
     it('ignores irrelevant and malformed call events while retaining its call state', async () => {
@@ -313,6 +331,7 @@ class MockPeerConnection {
     public ontrack: ((event: RTCTrackEvent) => void) | null = null;
     public onconnectionstatechange: (() => void) | null = null;
     public connectionState: RTCPeerConnectionState = 'new';
+    public signalingState: RTCSignalingState = 'stable';
     public remoteDescription?: RTCSessionDescriptionInit;
     public close = jasmine.createSpy('close');
     public constructor(public readonly configuration: RTCConfiguration) {}
@@ -334,6 +353,6 @@ class MockPeerConnection {
 function incoming(): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.incoming', payload: callPayload('ringing')}; }
 function ringing(): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.ringing', payload: callPayload('ringing')}; }
 function accepted(): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.accepted', payload: {...callPayload('active'), ice_servers: [{urls: ['turn:turn.example.test:3478'], username: 'user', credential: 'credential'}]}}; }
-function signal(callID: string, value: Record<string, unknown>): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: callID, signal: value}}; }
+function signal(callID: string, value: CallSignal): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: callID, signal: value}}; }
 function callPayload(status: 'ringing' | 'active') { return {call_id: 'call-1', conversation_id: 'conversation-1', caller_id: 'caller-1', recipient_id: 'peer-1', caller_device_id: 'device-1', status, expires_at: '2026-08-05T12:00:00Z'}; }
 async function flush(): Promise<void> { await Promise.resolve(); await Promise.resolve(); }

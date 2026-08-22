@@ -244,6 +244,19 @@ func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
 	}
 }
 
+func TestHubRejectsUnsupportedCallSignal(t *testing.T) {
+	callerID := uuid.New()
+	recipientID := uuid.New()
+	call := Call{ID: uuid.New(), ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: "caller-device", AcceptedDeviceID: "accepted-device", Status: CallActive}
+	hub := NewHub(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, &fakeCalls{call: call}, nil)
+	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: call.CallerDeviceID}}
+
+	err := hub.Handle(context.Background(), caller, []byte(`{"version":1,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"unknown"}}}`))
+	if err == nil || !strings.Contains(err.Error(), "unsupported call signal") {
+		t.Fatalf("Handle() error = %v", err)
+	}
+}
+
 func TestHubLogsAcceptedCallDeclineWithActorAndCallContext(t *testing.T) {
 	callerID := uuid.New()
 	recipientID := uuid.New()

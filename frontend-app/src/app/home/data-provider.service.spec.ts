@@ -28,6 +28,12 @@ describe('call socket event validation', () => {
     it('rejects malformed call events before UI state can consume them', () => {
         expect(isValidCallSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.incoming', payload: {call_id: 'call-1'}})).toBeFalse();
         expect(isValidCallSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: 'call-1', signal: 'offer'}})).toBeFalse();
+        expect(isValidCallSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: 'call-1', signal: {type: 'unknown'}}})).toBeFalse();
+    });
+
+    it('accepts versioned screen-share lifecycle signals', () => {
+        expect(isValidCallSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: 'call-1', signal: {type: 'screen-share-started'}}})).toBeTrue();
+        expect(isValidCallSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: 'call-1', signal: {type: 'screen-share-stopped'}}})).toBeTrue();
     });
 });
 

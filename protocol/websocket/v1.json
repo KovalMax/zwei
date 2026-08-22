@@ -13,6 +13,7 @@
     "call.end": ["request_id", "payload.call_id"],
     "call.signal": ["request_id", "payload.call_id", "payload.signal"]
   },
+  "callSignalTypes": ["offer", "answer", "candidate", "screen-share-started", "screen-share-stopped"],
   "serverEvents": [
     "message.accepted",
     "message.created",
