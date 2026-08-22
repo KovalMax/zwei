@@ -17,7 +17,9 @@ import (
 
 type Client interface {
 	Identity() sharedauth.Identity
-	SendJSON(any)
+	// SendJSON reports whether the event was accepted by the socket's send queue.
+	// Delivery state must not advance when the queue rejects an event.
+	SendJSON(any) bool
 	Close()
 }
 
@@ -387,8 +389,9 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 
 func (h *Hub) DeliverMessageCreated(message messaging.Message) {
 	for _, recipient := range h.recipients(message.RecipientID) {
-		recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "message.created", Payload: message})
-		_ = h.markDelivered(context.Background(), recipient, []uuid.UUID{message.ID})
+		if recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "message.created", Payload: message}) {
+			_ = h.markDelivered(context.Background(), recipient, []uuid.UUID{message.ID})
+		}
 	}
 }
 
@@ -606,7 +609,14 @@ func (h *Hub) replayPending(ctx context.Context, client Client) {
 		}
 		messageIDs := make([]uuid.UUID, 0, len(messages))
 		for _, message := range messages {
-			client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "message.created", Payload: message})
+			if !client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "message.created", Payload: message}) {
+				if len(messageIDs) > 0 {
+					if err := h.markDelivered(ctx, client, messageIDs); err != nil {
+						return
+					}
+				}
+				return
+			}
 			messageIDs = append(messageIDs, message.ID)
 		}
 		if h.markDelivered(ctx, client, messageIDs) != nil || len(messages) < 100 {
