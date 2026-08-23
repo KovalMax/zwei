@@ -539,15 +539,16 @@ test('register, create conversation, and deliver a message', async ({ browser },
        }
        expect(mobileCollapseBox.x).toBeLessThan(mobileContentBox.x);
        expect(mobileCollapseBox.y + mobileCollapseBox.height).toBeLessThanOrEqual(mobileProfileBox.y + 2);
-       const mobileScreenStage = alice.locator('.call-screen-stage');
-       await expect(mobileScreenStage).toBeVisible();
+        const mobileScreenStage = alice.locator('.call-screen-stage');
+        await expect(mobileScreenStage).toBeVisible();
+        await expect(alice.locator('.call-sharing-indicator')).toBeHidden();
        const mobileScreenBox = await mobileScreenStage.boundingBox();
         if (!mobileScreenBox || mobileScreenBox.x < mobilePanelBox.x || mobileScreenBox.x + mobileScreenBox.width > mobilePanelBox.x + mobilePanelBox.width + 1) {
           throw new Error('Mobile shared-screen stage escaped the call panel');
         }
         const mobileViewportMetrics = await alice.evaluate(() => ({scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth}));
         expect(mobileViewportMetrics.scrollWidth).toBeLessThanOrEqual(mobileViewportMetrics.clientWidth + 1);
-       const mobileCallControls = [
+        const mobileCallControls = [
           alice.getByLabel('Microphone input', {exact: true}),
           alice.getByLabel('Speaker output', {exact: true}),
           alice.getByLabel('Screen share quality', {exact: true}),
@@ -557,6 +558,9 @@ test('register, create conversation, and deliver a message', async ({ browser },
         const mobileControlHeights = mobileControlBoxes.filter((box): box is NonNullable<typeof box> => Boolean(box)).map(box => box.height);
         expect(mobileControlHeights.length).toBe(mobileCallControls.length);
           expect(Math.max(...mobileControlHeights) - Math.min(...mobileControlHeights)).toBeLessThanOrEqual(2);
+          const mobileStopShareBox = await alice.getByRole('button', {name: 'Stop sharing'}).boundingBox();
+          if (!mobileStopShareBox) throw new Error('Mobile stop-sharing bounds were not available');
+          expect(mobileStopShareBox.y + mobileStopShareBox.height).toBeLessThanOrEqual(mobileContentBox.y + mobileContentBox.height + 1);
           await expect(alice.getByText('Share system audio', {exact: true})).toBeVisible();
           const mobileAudioCheckboxBox = await screenAudioCheckbox.boundingBox();
           if (!mobileAudioCheckboxBox) throw new Error('Mobile system-audio checkbox bounds were not available');

@@ -180,10 +180,12 @@
 :host-context(.light-theme) .call-screen-preview { border-color: #fff; }
 
 @media (max-width: 760px) {
+    .call-panel-full .call-sharing-indicator { display: none; }
     .call-screen-tools { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: stretch; gap: 8px; }
     .screen-share-button { grid-column: 1 / -1; width: 100%; min-width: 0; }
     .screen-share-audio-option { min-height: 48px; }
     .call-panel-full .call-screen-stage { min-height: 120px; margin-top: 16px; }
+    .call-panel-full.call-screen-active .call-devices { margin-top: 48px; }
     .call-screen-main { max-height: 180px; }
 }
 
