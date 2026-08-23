@@ -222,18 +222,11 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await expect(page.getByLabel('Message composer disabled until a conversation is selected')).toBeVisible();
 
   await page.getByRole('button', {name: 'Account menu'}).click();
-  const notificationMenuItem = page.getByRole('menuitem', {name: /notifications|sounds/i});
-  await expect(notificationMenuItem).toBeVisible();
-  await expect(notificationMenuItem).toContainText(/Enable|enabled|blocked/);
-  await notificationMenuItem.focus();
-  await expect(notificationMenuItem).toBeFocused();
-  await page.screenshot({path: testInfo.outputPath('notifications-menu.png'), fullPage: false});
   await expect(page.getByRole('menuitem', {name: 'Profile'})).toBeVisible();
   await expect(page.getByRole('menuitem', {name: 'Sign out'})).toBeVisible();
   await page.getByRole('menuitem', {name: 'Switch to light theme'}).click();
   await page.getByRole('button', {name: 'Account menu'}).click();
-  await expect(page.getByRole('menuitem', {name: /notifications|sounds/i})).toBeVisible();
-  await page.getByRole('menu').screenshot({path: testInfo.outputPath('notifications-menu-light.png')});
+  await page.getByRole('menu').screenshot({path: testInfo.outputPath('account-menu-light.png')});
   await page.setViewportSize({width: 390, height: 844});
   const mobileMenuBox = await page.evaluate(() => {
     const menu = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-menu-panel')).find(element => {
@@ -247,7 +240,7 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   expect(mobileMenuBox).toBeTruthy();
   expect(mobileMenuBox?.left).toBeGreaterThanOrEqual(0);
   expect(mobileMenuBox?.right).toBeLessThanOrEqual(390);
-  await page.screenshot({path: testInfo.outputPath('notifications-menu-mobile.png'), fullPage: false});
+  await page.screenshot({path: testInfo.outputPath('account-menu-mobile.png'), fullPage: false});
   await page.keyboard.press('Escape');
   await page.setViewportSize({width: 1280, height: 720});
   await page.getByRole('button', {name: 'Account menu'}).click();
@@ -255,6 +248,7 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await expect(page).toHaveURL(/\/profile$/);
   await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await expect(page.locator('.profile-card').getByText(email)).toBeVisible();
+  await expect(page.getByRole('radio', {name: /Notifications and sounds/})).toBeVisible();
   await expect(page.getByRole('link', {name: 'Back to chats'})).toBeVisible();
 
   await page.getByRole('button', {name: 'Account menu'}).click();

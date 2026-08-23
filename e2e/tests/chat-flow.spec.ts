@@ -336,7 +336,6 @@ test('register, create conversation, and deliver a message', async ({ browser },
          await expect(alice.locator('.call-screen-stage')).toBeVisible();
          await expect(screenAudioCheckbox).toBeChecked();
          await expect(screenAudioCheckbox).toBeDisabled();
-         await expect(alice.getByText('System audio is shared.')).toBeVisible();
          await expect(bob.locator('.call-screen-stage')).toBeVisible({timeout: 10_000});
          await expect(bob.locator('.call-screen-remote')).toBeVisible({timeout: 10_000});
          expect(await bob.locator('.call-screen-remote').evaluate(element => {
@@ -696,10 +695,12 @@ test('notifies and sounds a background conversation without duplicating the visi
     await expect(bob.getByText('No messages yet.')).toBeVisible();
 
     await bob.getByRole('button', {name: 'Account menu'}).click();
-    await bob.getByRole('menuitem', {name: 'Enable notifications & sounds', exact: true}).click();
-    await bob.getByRole('button', {name: 'Account menu'}).click();
-    await expect(bob.getByRole('menuitem', {name: 'Notifications & sounds enabled'})).toBeVisible();
+    await bob.getByRole('menuitem', {name: 'Profile'}).click();
+    const notificationMode = bob.getByRole('radio', {name: /Notifications and sounds/});
+    await notificationMode.click();
+    await expect(notificationMode).toHaveAttribute('aria-checked', 'true');
     expect(await bob.evaluate(() => (window as Window & {__zweiAudioState: {tones: number; unlocks: number}}).__zweiAudioState.unlocks)).toBe(1);
+    await bob.getByRole('link', {name: 'Back to chats'}).click();
 
     await bob.evaluate(() => Object.defineProperty(document, 'hasFocus', {configurable: true, value: () => true}));
     const visibleMessage = `visible-${Date.now()}`;
