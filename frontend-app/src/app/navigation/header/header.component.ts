@@ -3,7 +3,6 @@ import {AuthService} from '../../auth/auth.service';
 import {Router} from '@angular/router';
 import {Subscription} from 'rxjs';
 import {Profile} from '../../auth/profile.model';
-import {BrowserNotificationService} from '../../notifications/notification.service';
 
 @Component({
     standalone: false,
@@ -18,7 +17,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     private readonly subscriptions = new Subscription();
     private readonly themeKey = 'zwei_theme';
 
-    constructor(private authService: AuthService, private router: Router, private changeDetector: ChangeDetectorRef, public readonly notifications: BrowserNotificationService) {
+    constructor(private authService: AuthService, private router: Router, private changeDetector: ChangeDetectorRef) {
     }
 
     public ngOnInit(): void {
@@ -48,22 +47,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     public onLogout(): void {
         this.authService.logout().subscribe(() => void this.router.navigate(['login']));
-    }
-
-    public get notificationMenuLabel(): string {
-        if (!this.notifications.notificationsSupported) return this.notifications.areSoundsEnabled ? 'Sounds enabled' : 'Enable sounds';
-        if (this.notifications.notificationPermission === 'denied') return this.notifications.areSoundsEnabled ? 'Sounds enabled · notifications blocked' : 'Enable sounds · notifications blocked';
-        if (this.notifications.notificationPermission === 'granted' && this.notifications.areSoundsEnabled) return 'Notifications & sounds enabled';
-        return this.notifications.areSoundsEnabled ? 'Enable notifications' : 'Enable notifications & sounds';
-    }
-
-    public get notificationMenuDisabled(): boolean {
-        return this.notifications.areSoundsEnabled && this.notifications.notificationPermission !== 'default';
-    }
-
-    public async enableNotifications(): Promise<void> {
-        await this.notifications.enable();
-        this.changeDetector.markForCheck();
     }
 
     public toggleTheme(): void {

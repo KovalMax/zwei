@@ -149,7 +149,7 @@
 :host-context(.light-theme) .call-panel-full .call-actions { border-color: #cfd9e8; background: #f6f8fc; box-shadow: 0 -10px 24px rgba(23, 32, 51, .08); color: #172033; }
 :host-context(.light-theme) .call-panel-full .call-profile { background-color: #fff; }
 :host-context(.light-theme) .call-panel-full .call-actions button[mat-stroked-button] { border-color: #6d89a7; color: #172033; }
-:host-context(.light-theme) .call-panel-full .call-screen-tools .call-select { background: #fff; color: #172033; border-color: #6d89a7; }
+:host-context(.light-theme) .call-panel-full .call-screen-tools .call-select, :host-context(.light-theme) .call-panel-full .screen-share-audio-option { background: #fff; color: #172033; border-color: #6d89a7; }
 
 /* The call card is intentionally task-focused: devices, duration, sharing, and actions. */
 .call-panel:not(.call-panel-full) .call-card { grid-template-columns: minmax(180px, 1fr) auto; }
@@ -163,17 +163,16 @@
 .call-screen-stage:fullscreen { width: 100vw; height: 100vh; min-height: 0; margin: 0; border: 0; border-radius: 0; background: #080e18; }
 .call-screen-stage:fullscreen .call-screen-main { width: 100%; max-width: none; height: 100%; max-height: none; aspect-ratio: auto; }
 .call-screen-stage:fullscreen .call-screen-preview { width: min(24vw, 320px); max-height: none; }
-.call-screen-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(156px, auto) minmax(180px, auto); align-items: end; gap: 12px; padding-top: 20px; }
+.call-screen-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; padding-top: 20px; }
 .call-screen-tools label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--chat-call-text); font-size: 10px; font-weight: 700; }
 .call-screen-tools .call-select { min-width: 0; padding: 8px 28px 8px 10px; border: 1px solid var(--chat-call-control-border); border-radius: 9px; background: var(--chat-surface-control); color: var(--chat-call-control-text); font: inherit; font-size: 12px; }
-.screen-share-audio-option { min-height: 46px; align-items: center; flex-direction: row !important; gap: 8px !important; padding: 0 10px; border: 1px solid var(--chat-call-control-border); border-radius: 9px; background: var(--chat-surface-control); cursor: pointer; }
+.screen-share-audio-option { box-sizing: border-box; height: 48px; min-height: 48px; align-self: end; align-items: center; flex-direction: row !important; gap: 8px !important; padding: 0 10px; border: 1px solid var(--chat-call-control-border); border-radius: 9px; background: var(--chat-surface-control); cursor: pointer; }
 .screen-share-audio-option input { width: 16px; height: 16px; margin: 0 2px 0 0; accent-color: var(--chat-accent); }
-.screen-share-audio-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.screen-share-audio-copy { display: flex; min-width: 0; flex-direction: column; }
 .screen-share-audio-copy > span { font-size: 12px; }
-.screen-share-audio-copy small { color: var(--chat-muted); font-size: 9px; font-weight: 500; }
 .screen-share-audio-option:has(input:focus-visible) { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 .screen-share-audio-option:has(input:disabled) { cursor: not-allowed; opacity: .65; }
-.screen-share-button { display: inline-flex; min-width: 180px; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; border-color: var(--chat-call-control-border) !important; color: var(--chat-call-control-text) !important; }
+.screen-share-button { display: inline-flex; grid-column: 1 / -1; min-width: 180px; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; border-color: var(--chat-call-control-border) !important; color: var(--chat-call-control-text) !important; }
 .screen-share-button zwei-icon { width: 18px; height: 18px; flex-basis: 18px; }
 .screen-share-button[disabled] { opacity: .6; }
 .message-bubble time { white-space: nowrap; }

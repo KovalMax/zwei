@@ -2,6 +2,7 @@ import {Inject, Injectable, InjectionToken} from '@angular/core';
 import {BehaviorSubject, Observable} from 'rxjs';
 
 export type BrowserNotificationPermission = NotificationPermission | 'unsupported';
+export type AlertMode = 'off' | 'sounds' | 'notifications';
 
 export interface BrowserNotificationPort {
     readonly supported: boolean;
@@ -126,9 +127,13 @@ export const SOUND_PORT = new InjectionToken<SoundPort>('ZWEI_SOUND_PORT', {
 
 @Injectable({providedIn: 'root'})
 export class BrowserNotificationService {
+    private readonly storageKey = 'zwei_alert_mode';
     private readonly permissionSubject: BehaviorSubject<BrowserNotificationPermission>;
-    private soundsEnabled: boolean;
+    private alertMode: AlertMode = 'off';
     public readonly permissionChanges: Observable<BrowserNotificationPermission>;
+    private readonly unlockOnGesture = (): void => {
+        if (this.areSoundsEnabled) void this.sound.unlock();
+    };
 
     public constructor(
         @Inject(BROWSER_NOTIFICATION_PORT) private readonly browser: BrowserNotificationPort,
@@ -136,12 +141,14 @@ export class BrowserNotificationService {
     ) {
         this.permissionSubject = new BehaviorSubject<BrowserNotificationPermission>(browser.permission);
         this.permissionChanges = this.permissionSubject.asObservable();
-        this.soundsEnabled = false;
+        this.alertMode = this.readStoredMode();
+        if (this.alertMode !== 'off') window.addEventListener('pointerdown', this.unlockOnGesture, {once: true});
     }
 
     public get notificationPermission(): BrowserNotificationPermission { return this.permissionSubject.value; }
     public get notificationsSupported(): boolean { return this.browser.supported; }
-    public get areSoundsEnabled(): boolean { return this.soundsEnabled; }
+    public get areSoundsEnabled(): boolean { return this.alertMode !== 'off'; }
+    public get mode(): AlertMode { return this.alertMode; }
 
     public async enable(): Promise<BrowserNotificationPermission> {
         // Start both browser capabilities in the original click task. Browsers may
@@ -155,9 +162,18 @@ export class BrowserNotificationService {
                 permission = this.browser.permission;
             }
         }
-        this.soundsEnabled = await soundsPromise;
+        this.setMode(await soundsPromise ? permission === 'granted' ? 'notifications' : 'sounds' : 'off');
         this.permissionSubject.next(permission);
         return permission;
+    }
+
+    public async enableSounds(): Promise<void> {
+        this.setMode(await this.unlockSounds() ? 'sounds' : 'off');
+    }
+
+    public disable(): void {
+        this.setMode('off');
+        this.stopCallRingtone();
     }
 
     public showMessageNotification(conversationID: string): void {
@@ -169,17 +185,17 @@ export class BrowserNotificationService {
     }
 
     public playMessageSound(): void {
-        if (this.soundsEnabled) this.sound.playMessage();
+        if (this.areSoundsEnabled) this.sound.playMessage();
     }
 
     public startCallRingtone(): void {
-        if (this.soundsEnabled) this.sound.startCall();
+        if (this.areSoundsEnabled) this.sound.startCall();
     }
 
     public stopCallRingtone(): void { this.sound.stopCall(); }
 
     private show(title: string, body: string, tag: string): void {
-        if (this.notificationPermission !== 'granted') return;
+        if (this.alertMode !== 'notifications' || this.notificationPermission !== 'granted') return;
         this.browser.show(title, {body, tag});
     }
 
@@ -189,5 +205,15 @@ export class BrowserNotificationService {
         } catch {
             return false;
         }
+    }
+
+    private setMode(mode: AlertMode): void {
+        this.alertMode = mode;
+        window.localStorage.setItem(this.storageKey, mode);
+    }
+
+    private readStoredMode(): AlertMode {
+        const mode = window.localStorage.getItem(this.storageKey);
+        return mode === 'sounds' || mode === 'notifications' ? mode : 'off';
     }
 }

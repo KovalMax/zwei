@@ -109,11 +109,10 @@
                                 <mat-option value="2k">2K · ultra</mat-option>
                             </mat-select>
                         </label>
-                        <label class="screen-share-audio-option">
+                        <label class="screen-share-audio-option" title="Optional when your browser supports it.">
                             <input #screenAudio type="checkbox" [checked]="call.state.screenShareAudioEnabled" [disabled]="call.state.screenShareTransition || !!call.state.screenShareStream || !call.screenShareSupported()" (change)="call.setScreenShareAudioEnabled(screenAudio.checked)">
                             <span class="screen-share-audio-copy">
-                                <span>Share system audio</span>
-                                <small>{{ call.state.screenShareAudioActive ? 'System audio is shared.' : 'Optional when your browser supports it.' }}</small>
+                                <span>Share audio</span>
                             </span>
                         </label>
                         <button mat-stroked-button type="button" class="screen-share-button" [disabled]="!call.screenShareSupported() || call.state.screenShareTransition" (click)="call.toggleScreenShare()">

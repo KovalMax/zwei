@@ -226,7 +226,7 @@ test('register, create conversation, and deliver a message', async ({ browser },
          await alice.screenshot({path: testInfo.outputPath('call-select-open-dark.png'), fullPage: false});
           await alice.keyboard.press('Escape');
           await expect(alice.getByRole('button', {name: 'Share screen'})).toBeVisible();
-          const screenAudioCheckbox = alice.getByRole('checkbox', {name: 'Share system audio'});
+          const screenAudioCheckbox = alice.getByRole('checkbox', {name: 'Share audio'});
           await expect(screenAudioCheckbox).toBeVisible();
           await screenAudioCheckbox.check();
          await alice.evaluate(() => {
@@ -380,7 +380,7 @@ test('register, create conversation, and deliver a message', async ({ browser },
           const desktopContent = alice.locator('.call-panel-full .call-card-content');
           const desktopContentMetrics = await desktopContent.evaluate(element => ({scrollWidth: element.scrollWidth, clientWidth: element.clientWidth, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight}));
           expect(desktopContentMetrics.scrollWidth).toBeLessThanOrEqual(desktopContentMetrics.clientWidth + 1);
-          await expect(alice.getByText('Share system audio', {exact: true})).toBeVisible();
+          await expect(alice.getByText('Share audio', {exact: true})).toBeVisible();
          for (const control of desktopCallControls.slice(2)) {
            await control.scrollIntoViewIfNeeded();
            const controlBox = await control.boundingBox();
@@ -561,7 +561,7 @@ test('register, create conversation, and deliver a message', async ({ browser },
           const mobileStopShareBox = await alice.getByRole('button', {name: 'Stop sharing'}).boundingBox();
           if (!mobileStopShareBox) throw new Error('Mobile stop-sharing bounds were not available');
           expect(mobileStopShareBox.y + mobileStopShareBox.height).toBeLessThanOrEqual(mobileContentBox.y + mobileContentBox.height + 1);
-          await expect(alice.getByText('Share system audio', {exact: true})).toBeVisible();
+          await expect(alice.getByText('Share audio', {exact: true})).toBeVisible();
           const mobileAudioCheckboxBox = await screenAudioCheckbox.boundingBox();
           if (!mobileAudioCheckboxBox) throw new Error('Mobile system-audio checkbox bounds were not available');
           expect(mobileAudioCheckboxBox.x + mobileAudioCheckboxBox.width).toBeLessThanOrEqual(mobilePanelBox.x + mobilePanelBox.width + 1);
