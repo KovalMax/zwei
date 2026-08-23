@@ -1,4 +1,4 @@
-import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild} from '@angular/core';
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit, Optional, ViewChild} from '@angular/core';
 import {BehaviorSubject, Subscription} from 'rxjs';
 import {Conversation} from './conversation.model';
 import {ConversationService} from './conversation.service';
@@ -10,6 +10,7 @@ import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
 import {toMessage} from './wire.mapper';
 import {CallFacade, CallState} from './call-facade.service';
+import {HomeNotificationService} from './home-notification.service';
 
 @Component({
     standalone: false,
@@ -17,7 +18,7 @@ import {CallFacade, CallState} from './call-facade.service';
     selector: 'app-home',
     templateUrl: './home.component.html',
     styleUrls: ['./home.component.css'],
-    providers: [DataProviderService, CallFacade],
+    providers: [DataProviderService, CallFacade, HomeNotificationService],
 })
 export class HomeComponent implements OnInit, OnDestroy {
     private readonly selectedConversationKey = 'zwei_selected_conversation';
@@ -55,12 +56,13 @@ export class HomeComponent implements OnInit, OnDestroy {
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
     @ViewChild('screenStage') private screenStage?: ElementRef<HTMLElement>;
 
-    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade) {
+    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, @Optional() private readonly notifications?: HomeNotificationService) {
     }
 
     public ngOnInit(): void {
         this.authService.profile().subscribe({next: profile => {
             this.profile = profile;
+            this.notifications?.setUserID(profile.id);
             this.changeDetector.markForCheck();
         }});
         this.conversationService.list().subscribe({
@@ -79,7 +81,10 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.dataProvider.readyChanges.subscribe(ready => {
             this.socketReady = ready;
             if (!ready) this.presenceReady = false;
-            if (ready && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
+            if (ready) {
+                this.refreshConversations();
+                if (this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
+            }
             this.changeDetector.markForCheck();
         });
         this.callStateSubscription = this.call.state$.subscribe(state => this.handleCallState(state));
@@ -331,6 +336,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!preserveCallSurface && this.isOngoingCall()) this.minimizeCall();
         const selectedConversation = {...conversation};
         this.selectedConversation = selectedConversation;
+        this.notifications?.setSelectedConversationID(conversation.id);
         window.localStorage.setItem(this.selectedConversationKey, conversation.id);
         this.conversations.next(this.conversations.getValue().map(item => item.id === conversation.id ? selectedConversation : item));
         this.messages = [];
@@ -341,6 +347,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public closeConversation(): void {
         this.historyLoadID++;
         this.selectedConversation = undefined;
+        this.notifications?.setSelectedConversationID(undefined);
         this.messages = [];
         this.historyCursor = undefined;
         this.isHistoryLoading = false;

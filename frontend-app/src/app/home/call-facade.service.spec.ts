@@ -6,6 +6,7 @@ describe('CallFacade', () => {
     let events: Subject<MessageSocketEvent>;
     let send: jasmine.Spy;
     let facade: CallFacade;
+    let readyChanges: Subject<boolean>;
     let stream: MockStream;
     let connections: MockPeerConnection[];
     let originalMediaDevices: PropertyDescriptor | undefined;
@@ -13,6 +14,7 @@ describe('CallFacade', () => {
 
     beforeEach(() => {
         events = new Subject<MessageSocketEvent>();
+        readyChanges = new Subject<boolean>();
         send = jasmine.createSpy('send').and.returnValue(true);
         stream = new MockStream();
         connections = [];
@@ -28,7 +30,7 @@ describe('CallFacade', () => {
             ])),
         }});
         (window as unknown as {RTCPeerConnection: typeof RTCPeerConnection}).RTCPeerConnection = class extends MockPeerConnection { constructor(configuration: RTCConfiguration) { super(configuration); connections.push(this); } } as unknown as typeof RTCPeerConnection;
-        facade = new CallFacade({getObservable: () => events.asObservable(), send} as unknown as DataProviderService);
+        facade = new CallFacade({getObservable: () => events.asObservable(), readyChanges: readyChanges.asObservable(), send} as unknown as DataProviderService);
     });
 
     afterEach(() => {
@@ -128,11 +130,33 @@ describe('CallFacade', () => {
         expect(facade.state.statusLabel).toBe('Ringing...');
     });
 
+    it('cleans up a pending outgoing call when realtime is lost before ringing', async () => {
+        await facade.start('conversation-1', 'peer-1');
+
+        readyChanges.next(false);
+
+        expect(facade.state.phase).toBe('error');
+        expect(stream.track.stop).toHaveBeenCalled();
+        events.next(ringing());
+
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.cancel' && event.payload.call_id === 'call-1')).toBeTrue();
+    });
+
+    it('declines an incoming call when realtime is lost before accept', () => {
+        events.next(incoming());
+
+        readyChanges.next(false);
+
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.decline' && event.payload.call_id === 'call-1')).toBeTrue();
+        expect(facade.state.phase).toBe('error');
+    });
+
     it('dismisses an offline-call rejection after showing one error notice', async () => {
         jasmine.clock().install();
         await facade.start('conversation-1', 'peer-1');
+        const requestID = send.calls.mostRecent().args[0].request_id as string;
 
-        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.rejected', request_id: 'call-1', payload: {error: 'recipient is offline'}});
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.rejected', request_id: requestID, payload: {error: 'recipient is offline'}});
 
         expect(facade.state.statusLabel).toBe('Call unavailable: recipient is offline');
         jasmine.clock().tick(5_000);
@@ -249,6 +273,64 @@ describe('CallFacade', () => {
         expect(send.calls.allArgs().some(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'offer')).toBeTrue();
     });
 
+    it('requests, forwards, and removes optional display audio with the screen share', async () => {
+        const screen = new MockScreenStream(true);
+        (navigator.mediaDevices.getDisplayMedia as jasmine.Spy).and.returnValue(Promise.resolve(screen));
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+        facade.setScreenShareAudioEnabled(true);
+
+        await facade.toggleScreenShare();
+
+        expect(navigator.mediaDevices.getDisplayMedia).toHaveBeenCalledWith(jasmine.objectContaining({audio: true}));
+        expect(facade.state.screenShareAudioEnabled).toBeTrue();
+        expect(facade.state.screenShareAudioActive).toBeTrue();
+        const audioTrack = screen.audioTrack! as unknown as MediaStreamTrack;
+        const audioSender = connections[0].getSenders().find(sender => sender.track === audioTrack) as unknown as {replaceTrack: jasmine.Spy};
+        expect(audioSender).toBeTruthy();
+
+        await facade.toggleScreenShare();
+
+        expect(audioSender.replaceTrack).toHaveBeenCalledWith(null);
+        expect(facade.state.screenShareAudioActive).toBeFalse();
+    });
+
+    it('continues a selected share without audio when the browser returns no display-audio track', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+        facade.setScreenShareAudioEnabled(true);
+
+        await facade.toggleScreenShare();
+
+        expect(facade.state.screenShareAudioActive).toBeFalse();
+        expect(facade.state.statusLabel).toBe('You are sharing your screen. System audio was not available.');
+    });
+
+    it('mixes a display-audio track into existing remote call audio', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const microphone = new MockRemoteAudioStream();
+        const displayAudio = new MockRemoteAudioStream();
+        const audio = {play: jasmine.createSpy('play').and.returnValue(Promise.resolve()), pause: jasmine.createSpy('pause'), srcObject: undefined} as unknown as HTMLAudioElement;
+        facade.playRemoteAudio({currentTarget: audio} as unknown as Event);
+
+        connections[0].ontrack?.({streams: [microphone], track: microphone.track} as unknown as RTCTrackEvent);
+        connections[0].ontrack?.({streams: [displayAudio], track: displayAudio.track} as unknown as RTCTrackEvent);
+        await flush();
+
+        expect(facade.state.remoteStream).toBe(microphone as unknown as MediaStream);
+        expect(microphone.addTrack).toHaveBeenCalledWith(displayAudio.track as unknown as MediaStreamTrack);
+        expect(audio.srcObject).toBe(microphone as unknown as MediaStream);
+    });
+
     it('stops screen sharing when the browser ends the display track', async () => {
         events.next(incoming());
         facade.accept();
@@ -304,6 +386,110 @@ describe('CallFacade', () => {
         expect(facade.state.phase).toBe('outgoing');
         expect(connections).toHaveSize(0);
     });
+
+    it('queues candidates until the remote description is installed', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        events.next(signal('call-1', {type: 'candidate', candidate: {candidate: 'candidate'}}));
+        await flush();
+        expect(connections[0].addIceCandidate).not.toHaveBeenCalled();
+        events.next(signal('call-1', {type: 'offer', sdp: 'offer-sdp'}));
+        await flush();
+
+        expect(connections[0].remoteDescription).toEqual({type: 'offer', sdp: 'offer-sdp'});
+        expect(connections[0].addIceCandidate).toHaveBeenCalledWith({candidate: 'candidate'});
+    });
+
+    it('releases the server call when signaling fails and leaves retryable local state', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        events.next(signal('call-1', {type: 'offer', sdp: 'offer-sdp'}));
+        await flush();
+        connections[0].addIceCandidate.and.returnValue(Promise.reject(new Error('candidate failed')));
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+
+        events.next(signal('call-1', {type: 'candidate', candidate: {candidate: 'bad'}}));
+        await flush();
+
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.end' && event.payload.call_id === 'call-1')).toBeTrue();
+        expect(facade.state.phase).toBe('error');
+        await facade.start('conversation-1', 'peer-1');
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.start')).toBeTrue();
+    });
+
+    it('ignores a late readiness loss and rejection from a retired call when a new call is starting', async () => {
+        await facade.start('conversation-1', 'peer-1');
+        const firstRequestID = send.calls.mostRecent().args[0].request_id as string;
+        events.next(ringing());
+        facade.end();
+        await facade.start('conversation-1', 'peer-1');
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.rejected', request_id: firstRequestID, payload: {error: 'busy'}});
+
+        expect(facade.state.phase).toBe('outgoing');
+    });
+
+    it('stops a display stream that resolves after the call has been closed', async () => {
+        let resolveDisplay: (stream: MediaStream) => void = () => undefined;
+        const pendingDisplay = new Promise<MediaStream>(resolve => { resolveDisplay = resolve; });
+        (navigator.mediaDevices.getDisplayMedia as jasmine.Spy).and.returnValue(pendingDisplay);
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+
+        const toggle = facade.toggleScreenShare();
+        await flush();
+        facade.close();
+        const screen = new MockScreenStream();
+        resolveDisplay(screen as unknown as MediaStream);
+        await toggle;
+
+        expect(screen.track.stop).toHaveBeenCalled();
+        expect(facade.state.phase).toBe('idle');
+    });
+
+    it('ignores a display-picker rejection from a retired call', async () => {
+        let rejectDisplay: (error: unknown) => void = () => undefined;
+        const pendingDisplay = new Promise<MediaStream>((_, reject) => { rejectDisplay = reject; });
+        (navigator.mediaDevices.getDisplayMedia as jasmine.Spy).and.returnValue(pendingDisplay);
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+
+        const toggle = facade.toggleScreenShare();
+        await flush();
+        facade.close();
+        rejectDisplay(new DOMException('picker closed', 'NotReadableError'));
+        await toggle;
+
+        expect(facade.state.phase).toBe('idle');
+        expect(facade.state.errorLabel).toBeUndefined();
+    });
+
+    it('reoffers a polite peer media change after an offer collision', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        connections[0].ontrack?.({streams: [stream]} as unknown as RTCTrackEvent);
+        connections[0].signalingState = 'have-local-offer';
+
+        await facade.toggleScreenShare();
+        expect(send.calls.allArgs().filter(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'offer')).toHaveSize(0);
+
+        events.next(signal('call-1', {type: 'offer', sdp: 'remote-offer'}));
+        await flush();
+
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'answer')).toBeTrue();
+        expect(send.calls.allArgs().filter(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'offer')).toHaveSize(1);
+    });
 });
 
 class MockStream {
@@ -322,8 +508,26 @@ class MockScreenTrack {
 
 class MockScreenStream {
     public readonly track = new MockScreenTrack();
-    public getTracks(): MediaStreamTrack[] { return [this.track as unknown as MediaStreamTrack]; }
+    public readonly audioTrack?: MockRemoteAudioTrack;
+    public constructor(withAudio = false) { this.audioTrack = withAudio ? new MockRemoteAudioTrack() : undefined; }
+    public getTracks(): MediaStreamTrack[] { return [this.track as unknown as MediaStreamTrack, ...(this.audioTrack ? [this.audioTrack as unknown as MediaStreamTrack] : [])]; }
     public getVideoTracks(): MediaStreamTrack[] { return [this.track as unknown as MediaStreamTrack]; }
+    public getAudioTracks(): MediaStreamTrack[] { return this.audioTrack ? [this.audioTrack as unknown as MediaStreamTrack] : []; }
+}
+
+class MockRemoteAudioTrack {
+    public readonly kind = 'audio';
+    public onended: ((event?: Event) => void) | null = null;
+    public readonly stop = jasmine.createSpy('stop').and.callFake(() => this.onended?.());
+}
+
+class MockRemoteAudioStream {
+    public readonly track = new MockRemoteAudioTrack();
+    private readonly tracks = [this.track];
+    public readonly addTrack = jasmine.createSpy('addTrack').and.callFake((track: MockRemoteAudioTrack) => this.tracks.push(track));
+    public readonly removeTrack = jasmine.createSpy('removeTrack').and.callFake((track: MockRemoteAudioTrack) => this.tracks.splice(this.tracks.indexOf(track), 1));
+    public getTracks(): MediaStreamTrack[] { return this.tracks as unknown as MediaStreamTrack[]; }
+    public getAudioTracks(): MediaStreamTrack[] { return this.tracks as unknown as MediaStreamTrack[]; }
 }
 
 class MockPeerConnection {
@@ -338,16 +542,24 @@ class MockPeerConnection {
     public readonly sender = {track: null as MediaStreamTrack | null, replaceTrack: jasmine.createSpy('replaceTrack').and.returnValue(Promise.resolve())};
     private readonly senders = [this.sender];
     public addTrack(track: MediaStreamTrack): RTCRtpSender {
-        if (track.kind === 'audio') this.sender.track = track;
+        if (track.kind === 'audio' && this.sender.track === null) this.sender.track = track;
         else this.senders.push({track, replaceTrack: jasmine.createSpy('replaceTrack').and.returnValue(Promise.resolve())});
         return this.senders[this.senders.length - 1] as unknown as RTCRtpSender;
     }
     public getSenders(): RTCRtpSender[] { return this.senders as unknown as RTCRtpSender[]; }
     public async createOffer(): Promise<RTCSessionDescriptionInit> { return {type: 'offer', sdp: 'offer-sdp'}; }
     public async createAnswer(): Promise<RTCSessionDescriptionInit> { return {type: 'answer', sdp: 'answer-sdp'}; }
-    public async setLocalDescription(): Promise<void> {}
-    public async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> { this.remoteDescription = description; }
-    public async addIceCandidate(): Promise<void> {}
+    public async setLocalDescription(description?: RTCSessionDescriptionInit): Promise<void> {
+        if (description?.type === 'rollback') this.signalingState = 'stable';
+        else if (description?.type === 'offer') this.signalingState = 'have-local-offer';
+        else if (description?.type === 'answer') this.signalingState = 'stable';
+    }
+    public async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+        this.remoteDescription = description;
+        if (description.type === 'offer') this.signalingState = 'have-remote-offer';
+        else if (description.type === 'answer') this.signalingState = 'stable';
+    }
+    public readonly addIceCandidate = jasmine.createSpy('addIceCandidate').and.returnValue(Promise.resolve());
 }
 
 function incoming(): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.incoming', payload: callPayload('ringing')}; }
@@ -355,4 +567,4 @@ function ringing(): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VER
 function accepted(): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.accepted', payload: {...callPayload('active'), ice_servers: [{urls: ['turn:turn.example.test:3478'], username: 'user', credential: 'credential'}]}}; }
 function signal(callID: string, value: CallSignal): MessageSocketEvent { return {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.signal', payload: {call_id: callID, signal: value}}; }
 function callPayload(status: 'ringing' | 'active') { return {call_id: 'call-1', conversation_id: 'conversation-1', caller_id: 'caller-1', recipient_id: 'peer-1', caller_device_id: 'device-1', status, expires_at: '2026-08-05T12:00:00Z'}; }
-async function flush(): Promise<void> { await Promise.resolve(); await Promise.resolve(); }
+async function flush(): Promise<void> { for (let index = 0; index < 8; index += 1) await Promise.resolve(); }

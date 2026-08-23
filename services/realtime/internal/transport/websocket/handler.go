@@ -100,6 +100,7 @@ type client struct {
 }
 
 func (c *client) Identity() sharedauth.Identity { return c.identity }
+func (c *client) ConnectionID() string          { return c.connectionID }
 func (c *client) Close() {
 	c.sendMu.Lock()
 	c.closed = true

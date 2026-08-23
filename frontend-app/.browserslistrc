@@ -5,8 +5,12 @@
 # You can see what browsers were selected by your queries by running:
 #   npx browserslist
 
-> 0.5%
-last 2 versions
+# Keep output aligned with the supported desktop and iOS browser baseline.
+Chrome >= 120
+Firefox >= 120
+Edge >= 120
+Safari >= 17
+iOS >= 17
 Firefox ESR
 not dead
 not IE 9-11 # For IE 9-11 support, remove 'not'.

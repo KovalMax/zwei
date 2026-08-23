@@ -23,6 +23,10 @@ type Client interface {
 	Close()
 }
 
+type connectionIdentified interface {
+	ConnectionID() string
+}
+
 type CallLogger interface {
 	InfoContext(context.Context, string, ...any)
 	WarnContext(context.Context, string, ...any)
@@ -125,12 +129,13 @@ func NewHubWithLogger(sender *messaging.Sender, presence PresenceRepository, coo
 }
 
 func (h *Hub) Add(ctx context.Context, client Client) {
+	clientKey := clientConnectionID(client)
 	h.mu.Lock()
 	wasOnline := h.userOnlineLocked(client.Identity().UserID)
-	h.clients[key(client.Identity())] = client
+	h.clients[clientKey] = client
 	h.mu.Unlock()
 	if h.coord != nil {
-		becameOnline, err := h.coord.Connect(ctx, client.Identity().UserID, key(client.Identity()))
+		becameOnline, err := h.coord.Connect(ctx, client.Identity().UserID, presenceConnectionID(client))
 		if err == nil {
 			wasOnline = !becameOnline
 		}
@@ -170,16 +175,23 @@ func (h *Hub) sendPresenceSnapshotForPeers(client Client, peers []uuid.UUID, onl
 	}{UserIDs: visible}})
 }
 func (h *Hub) Remove(ctx context.Context, client Client) {
+	clientKey := clientConnectionID(client)
 	h.mu.Lock()
-	if h.clients[key(client.Identity())] != client {
+	if h.clients[clientKey] != client {
 		h.mu.Unlock()
 		return
 	}
-	delete(h.clients, key(client.Identity()))
+	delete(h.clients, clientKey)
 	isOnline := h.userOnlineLocked(client.Identity().UserID)
 	h.mu.Unlock()
+	becameOffline := !isOnline
+	if h.coord != nil {
+		if transition, err := h.coord.Disconnect(ctx, client.Identity().UserID, presenceConnectionID(client)); err == nil {
+			becameOffline = transition
+		}
+	}
 	if h.calls != nil {
-		calls, err := h.calls.EndByDevice(ctx, client.Identity().UserID, client.Identity().DeviceID)
+		calls, err := h.calls.EndByDevice(ctx, client.Identity().UserID, client.Identity().DeviceID, clientConnectionID(client))
 		if err == nil {
 			for _, call := range calls {
 				h.logCallLifecycle(ctx, "call ended after websocket disconnect", call, "user_id", client.Identity().UserID, "device_id", client.Identity().DeviceID)
@@ -189,13 +201,7 @@ func (h *Hub) Remove(ctx context.Context, client Client) {
 			h.logCallWarning(ctx, "could not end calls after websocket disconnect", err, "user_id", client.Identity().UserID, "device_id", client.Identity().DeviceID)
 		}
 	}
-	if !isOnline {
-		if h.coord != nil {
-			becameOffline, err := h.coord.Disconnect(ctx, client.Identity().UserID, key(client.Identity()))
-			if err == nil && !becameOffline {
-				return
-			}
-		}
+	if becameOffline {
 		h.publishPresenceChange(ctx, client.Identity().UserID, false)
 	}
 }
@@ -429,27 +435,37 @@ func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventTyp
 		if onlineErr != nil || !online[recipientID] {
 			return &RequestError{RequestID: requestID, Err: errors.New("recipient is offline")}
 		}
-		call, err = h.calls.Start(ctx, Call{ID: uuid.New(), ConversationID: conversationID, CallerID: identity.UserID, RecipientID: recipientID, CallerDeviceID: identity.DeviceID})
+		call, err = h.calls.Start(ctx, Call{ID: uuid.New(), ConversationID: conversationID, CallerID: identity.UserID, RecipientID: recipientID, CallerDeviceID: identity.DeviceID, CallerConnectionID: clientConnectionID(client)})
 		if err == nil {
 			h.publishCall(ctx, CallChange{Type: "started", Call: call})
 		}
 	case "call.accept":
-		call, err = h.calls.Accept(ctx, callID, identity.UserID, identity.DeviceID)
+		call, err = h.calls.Accept(ctx, callID, identity.UserID, identity.DeviceID, clientConnectionID(client))
 		if err == nil {
-			h.publishCall(ctx, CallChange{Type: "accepted", Call: call})
+			if credentialErr := h.validateCallCredentials(call); credentialErr != nil {
+				ended, endErr := h.calls.End(ctx, call.ID, identity.UserID, identity.DeviceID, clientConnectionID(client))
+				if endErr == nil {
+					h.publishCall(ctx, CallChange{Type: "ended", Call: ended})
+				} else {
+					h.logCallWarning(ctx, "could not release call after credential failure", endErr, "call_id", call.ID)
+				}
+				err = credentialErr
+			} else {
+				h.publishCall(ctx, CallChange{Type: "accepted", Call: call})
+			}
 		}
 	case "call.decline":
-		call, err = h.calls.Decline(ctx, callID, identity.UserID, identity.DeviceID)
+		call, err = h.calls.Decline(ctx, callID, identity.UserID, identity.DeviceID, clientConnectionID(client))
 		if err == nil {
 			h.publishCall(ctx, CallChange{Type: "declined", Call: call})
 		}
 	case "call.cancel":
-		call, err = h.calls.Cancel(ctx, callID, identity.UserID, identity.DeviceID)
+		call, err = h.calls.Cancel(ctx, callID, identity.UserID, identity.DeviceID, clientConnectionID(client))
 		if err == nil {
 			h.publishCall(ctx, CallChange{Type: "ended", Call: call})
 		}
 	case "call.end":
-		call, err = h.calls.End(ctx, callID, identity.UserID, identity.DeviceID)
+		call, err = h.calls.End(ctx, callID, identity.UserID, identity.DeviceID, clientConnectionID(client))
 		if err == nil {
 			h.publishCall(ctx, CallChange{Type: "ended", Call: call})
 		}
@@ -463,16 +479,19 @@ func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventTyp
 		}
 		if err == nil {
 			var toDeviceID string
+			var toConnectionID string
 			switch {
-			case identity.UserID == call.CallerID && identity.DeviceID == call.CallerDeviceID && call.AcceptedDeviceID != "":
+			case identity.UserID == call.CallerID && identity.DeviceID == call.CallerDeviceID && (call.CallerConnectionID == "" || clientConnectionID(client) == call.CallerConnectionID) && call.AcceptedDeviceID != "":
 				toDeviceID = call.AcceptedDeviceID
-			case identity.UserID == call.RecipientID && identity.DeviceID == call.AcceptedDeviceID:
+				toConnectionID = call.AcceptedConnectionID
+			case identity.UserID == call.RecipientID && identity.DeviceID == call.AcceptedDeviceID && (call.AcceptedConnectionID == "" || clientConnectionID(client) == call.AcceptedConnectionID):
 				toDeviceID = call.CallerDeviceID
+				toConnectionID = call.CallerConnectionID
 			default:
 				err = ErrCallNotAllowed
 			}
 			if err == nil {
-				h.publishCall(ctx, CallChange{Type: "signal", Call: call, FromDeviceID: identity.DeviceID, ToDeviceID: toDeviceID, Signal: signal})
+				h.publishCall(ctx, CallChange{Type: "signal", Call: call, FromDeviceID: identity.DeviceID, ToDeviceID: toDeviceID, FromConnectionID: clientConnectionID(client), ToConnectionID: toConnectionID, Signal: signal})
 			}
 		}
 	default:
@@ -491,6 +510,8 @@ func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventTyp
 }
 
 func (h *Hub) publishCall(ctx context.Context, change CallChange) {
+	change.CallerConnectionID = change.Call.CallerConnectionID
+	change.AcceptedConnectionID = change.Call.AcceptedConnectionID
 	if change.Type != "signal" {
 		h.logCallLifecycle(ctx, "call event emitted", change.Call, "event", change.Type, "source", change.Source)
 	}
@@ -537,32 +558,43 @@ func callErrorReason(err error) string {
 
 // DeliverCall fans an already-authorized call event only to participating devices.
 func (h *Hub) DeliverCall(change CallChange) {
-	send := func(userID uuid.UUID, deviceID, eventType string, payload any) {
+	call := change.Call
+	if call.CallerConnectionID == "" {
+		call.CallerConnectionID = change.CallerConnectionID
+	}
+	if call.AcceptedConnectionID == "" {
+		call.AcceptedConnectionID = change.AcceptedConnectionID
+	}
+	send := func(userID uuid.UUID, deviceID, connectionID, eventType string, payload any) {
 		for _, recipient := range h.recipients(userID) {
-			if recipient.Identity().DeviceID == deviceID {
+			if recipient.Identity().DeviceID == deviceID && (connectionID == "" || clientConnectionID(recipient) == connectionID) {
 				recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: eventType, Payload: payload})
 			}
 		}
 	}
-	call := change.Call
 	switch change.Type {
 	case "started":
 		for _, recipient := range h.recipients(call.RecipientID) {
 			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "call.incoming", Payload: call})
 		}
-		send(call.CallerID, call.CallerDeviceID, "call.ringing", call)
+		send(call.CallerID, call.CallerDeviceID, call.CallerConnectionID, "call.ringing", call)
 	case "accepted":
-		send(call.CallerID, call.CallerDeviceID, "call.accepted", h.callAcceptedPayload(call, call.CallerID))
-		send(call.RecipientID, call.AcceptedDeviceID, "call.accepted", h.callAcceptedPayload(call, call.RecipientID))
+		callerPayload := h.callAcceptedPayload(call, call.CallerID)
+		recipientPayload := h.callAcceptedPayload(call, call.RecipientID)
+		if callerPayload == nil || recipientPayload == nil {
+			return
+		}
+		send(call.CallerID, call.CallerDeviceID, call.CallerConnectionID, "call.accepted", callerPayload)
+		send(call.RecipientID, call.AcceptedDeviceID, call.AcceptedConnectionID, "call.accepted", recipientPayload)
 	case "declined":
-		send(call.CallerID, call.CallerDeviceID, "call.declined", call)
+		send(call.CallerID, call.CallerDeviceID, call.CallerConnectionID, "call.declined", call)
 		for _, recipient := range h.recipients(call.RecipientID) {
 			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "call.declined", Payload: call})
 		}
 	case "ended":
-		send(call.CallerID, call.CallerDeviceID, "call.ended", call)
+		send(call.CallerID, call.CallerDeviceID, call.CallerConnectionID, "call.ended", call)
 		if call.AcceptedDeviceID != "" {
-			send(call.RecipientID, call.AcceptedDeviceID, "call.ended", call)
+			send(call.RecipientID, call.AcceptedDeviceID, call.AcceptedConnectionID, "call.ended", call)
 			return
 		}
 		for _, recipient := range h.recipients(call.RecipientID) {
@@ -573,7 +605,7 @@ func (h *Hub) DeliverCall(change CallChange) {
 		if change.ToDeviceID == call.AcceptedDeviceID {
 			userID = call.RecipientID
 		}
-		send(userID, change.ToDeviceID, "call.signal", struct {
+		send(userID, change.ToDeviceID, change.ToConnectionID, "call.signal", struct {
 			CallID uuid.UUID       `json:"call_id"`
 			Signal json.RawMessage `json:"signal"`
 		}{CallID: call.ID, Signal: change.Signal})
@@ -582,16 +614,29 @@ func (h *Hub) DeliverCall(change CallChange) {
 
 func (h *Hub) callAcceptedPayload(call Call, userID uuid.UUID) any {
 	if h.turn == nil {
-		return call
+		return nil
 	}
 	server, err := h.turn.Issue(call, userID)
 	if err != nil {
-		return call
+		return nil
 	}
 	return struct {
 		Call
 		ICEServers []ICEServer `json:"ice_servers"`
 	}{Call: call, ICEServers: []ICEServer{server}}
+}
+
+func (h *Hub) validateCallCredentials(call Call) error {
+	if h.turn == nil {
+		return ErrCallUnavailable
+	}
+	if _, err := h.turn.Issue(call, call.CallerID); err != nil {
+		return ErrCallUnavailable
+	}
+	if _, err := h.turn.Issue(call, call.RecipientID); err != nil {
+		return ErrCallUnavailable
+	}
+	return nil
 }
 
 func (h *Hub) replayPending(ctx context.Context, client Client) {
@@ -709,6 +754,22 @@ func (h *Hub) recipients(userID uuid.UUID) []Client {
 	}
 	return recipients
 }
+
+func clientConnectionID(client Client) string {
+	if identified, ok := client.(connectionIdentified); ok && identified.ConnectionID() != "" {
+		return identified.ConnectionID()
+	}
+	return key(client.Identity())
+}
+
+func presenceConnectionID(client Client) string {
+	connectionID := clientConnectionID(client)
+	if connectionID == key(client.Identity()) {
+		return connectionID
+	}
+	return client.Identity().DeviceID + ":" + connectionID
+}
+
 func key(identity sharedauth.Identity) string {
 	return identity.UserID.String() + ":" + identity.DeviceID
 }

@@ -109,6 +109,13 @@
                                 <mat-option value="2k">2K · ultra</mat-option>
                             </mat-select>
                         </label>
+                        <label class="screen-share-audio-option">
+                            <input #screenAudio type="checkbox" [checked]="call.state.screenShareAudioEnabled" [disabled]="call.state.screenShareTransition || !!call.state.screenShareStream || !call.screenShareSupported()" (change)="call.setScreenShareAudioEnabled(screenAudio.checked)">
+                            <span class="screen-share-audio-copy">
+                                <span>Share system audio</span>
+                                <small>{{ call.state.screenShareAudioActive ? 'System audio is shared.' : 'Optional when your browser supports it.' }}</small>
+                            </span>
+                        </label>
                         <button mat-stroked-button type="button" class="screen-share-button" [disabled]="!call.screenShareSupported() || call.state.screenShareTransition" (click)="call.toggleScreenShare()">
                             <zwei-icon *ngIf="!call.state.screenShareStream" name="screen_share"></zwei-icon>
                             <zwei-icon *ngIf="call.state.screenShareStream" name="stop_screen_share"></zwei-icon>
