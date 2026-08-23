@@ -21,7 +21,7 @@ FROM base AS dev
 
 CMD ["/usr/bin/service"]
 
-FROM alpine:3.20 AS prod
+FROM alpine:3.22 AS prod
 RUN apk --no-cache add ca-certificates wget
 
 WORKDIR /usr/bin

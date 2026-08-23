@@ -92,6 +92,7 @@ test('shows every registration and login validation state', async ({page}) => {
   });
   await page.goto('/sign-up');
   await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Account menu'})).toHaveCount(0);
   await expect(page.locator('zwei-icon').first().locator('svg')).toBeVisible();
   expect(thirdPartyAssetRequests).toEqual([]);
   await expect(page.getByRole('button', {name: 'Create account'})).toBeDisabled();
@@ -188,7 +189,7 @@ test('keeps registration keyboard-accessible on a reduced-motion mobile viewport
   await context.close();
 });
 
-test('registers, rejects duplicate and invalid login, then exposes profile and sign out', async ({page}) => {
+test('registers, rejects duplicate and invalid login, then exposes profile and sign out', async ({page}, testInfo) => {
   const email = uniqueEmail('account');
   await register(page, email, 'Account User');
 
@@ -223,10 +224,31 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await page.getByRole('button', {name: 'Account menu'}).click();
   await expect(page.getByRole('menuitem', {name: 'Profile'})).toBeVisible();
   await expect(page.getByRole('menuitem', {name: 'Sign out'})).toBeVisible();
+  await page.getByRole('menuitem', {name: 'Switch to light theme'}).click();
+  await page.getByRole('button', {name: 'Account menu'}).click();
+  await page.getByRole('menu').screenshot({path: testInfo.outputPath('account-menu-light.png')});
+  await page.setViewportSize({width: 390, height: 844});
+  const mobileMenuBox = await page.evaluate(() => {
+    const menu = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-menu-panel')).find(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    if (!menu) return undefined;
+    const rect = menu.getBoundingClientRect();
+    return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
+  });
+  expect(mobileMenuBox).toBeTruthy();
+  expect(mobileMenuBox?.left).toBeGreaterThanOrEqual(0);
+  expect(mobileMenuBox?.right).toBeLessThanOrEqual(390);
+  await page.screenshot({path: testInfo.outputPath('account-menu-mobile.png'), fullPage: false});
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({width: 1280, height: 720});
+  await page.getByRole('button', {name: 'Account menu'}).click();
   await page.getByRole('menuitem', {name: 'Profile'}).click();
   await expect(page).toHaveURL(/\/profile$/);
   await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await expect(page.locator('.profile-card').getByText(email)).toBeVisible();
+  await expect(page.getByRole('radio', {name: /Notifications and sounds/})).toBeVisible();
   await expect(page.getByRole('link', {name: 'Back to chats'})).toBeVisible();
 
   await page.getByRole('button', {name: 'Account menu'}).click();

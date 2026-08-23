@@ -25,6 +25,7 @@ class FakeSocket extends Subject<unknown> {
     }
 
     public emit(value: unknown): void {
+        if (this.isStopped) return;
         super.next(value);
     }
 
@@ -128,6 +129,25 @@ describe('DataProviderService transport', () => {
 
         expect(sockets).toHaveSize(0);
     });
+
+    it('ignores callbacks and events from a superseded socket generation', fakeAsync(() => {
+        const received: MessageSocketEvent[] = [];
+        service.getObservable().subscribe(event => received.push(event));
+        const first = requestTicket('ticket-0');
+        open(first.config);
+        first.socket.fail(new Error('socket closed'));
+        tick(1_000);
+
+        const second = requestTicket('ticket-1');
+        open(second.config);
+        (first.config.openObserver as {next?: () => void} | undefined)?.next?.();
+        (first.config.closeObserver as {next?: () => void} | undefined)?.next?.();
+        first.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: ['stale-peer']}});
+        second.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: ['current-peer']}});
+
+        expect(service.ready).toBeTrue();
+        expect(received).toEqual([{version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: ['current-peer']}}]);
+    }));
 
     function requestTicket(ticket: string): TestSocket {
         const request = http.expectOne(backends.websocketTicket);

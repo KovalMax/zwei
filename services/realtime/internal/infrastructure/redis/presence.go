@@ -39,6 +39,7 @@ const (
 )
 
 type Change struct {
+	Source string    `json:"source,omitempty"`
 	UserID uuid.UUID `json:"user_id"`
 	Online bool      `json:"online"`
 }
@@ -175,7 +176,7 @@ func (c *PresenceCoordinator) Online(ctx context.Context, userIDs []uuid.UUID) (
 }
 
 func (c *PresenceCoordinator) Publish(ctx context.Context, userID uuid.UUID, online bool) error {
-	payload, err := json.Marshal(Change{UserID: userID, Online: online})
+	payload, err := json.Marshal(Change{Source: c.instanceID, UserID: userID, Online: online})
 	if err != nil {
 		return err
 	}
@@ -224,27 +225,21 @@ func (c *PresenceCoordinator) StartHeartbeat(ctx context.Context) {
 		case <-ticker.C:
 			now := time.Now().Unix()
 			c.mu.Lock()
-			connections := make(map[string]uuid.UUID, len(c.connections))
+			// Keep the local ownership lock while renewing Redis leases. A snapshot
+			// followed by a renewal can resurrect a socket after Disconnect removed it.
 			for member, userID := range c.connections {
-				connections[member] = userID
-			}
-			budgetConnections := make(map[string]uuid.UUID, len(c.budgetConnections))
-			for connection, userID := range c.budgetConnections {
-				budgetConnections[connection] = userID
-			}
-			c.mu.Unlock()
-			for member, userID := range connections {
 				pipe := c.client.Pipeline()
 				pipe.SAdd(ctx, presenceSetKey(userID), member)
 				pipe.Set(ctx, presenceConnectionKey(userID, member), "1", presenceTTL)
 				_, _ = pipe.Exec(ctx)
 			}
-			for connection, userID := range budgetConnections {
+			for connection, userID := range c.budgetConnections {
 				pipe := c.client.Pipeline()
 				pipe.ZRemRangeByScore(ctx, connectionBudgetKey(userID), "-inf", strconv.FormatInt(now, 10))
 				pipe.ZAdd(ctx, connectionBudgetKey(userID), redis.Z{Score: float64(now + int64(connectionBudgetTTL.Seconds())), Member: connection})
 				_, _ = pipe.Exec(ctx)
 			}
+			c.mu.Unlock()
 		}
 	}
 }
@@ -261,7 +256,7 @@ func (c *PresenceCoordinator) Consume(ctx context.Context, handler func(Change))
 			return err
 		}
 		var change Change
-		if json.Unmarshal([]byte(message.Payload), &change) == nil {
+		if json.Unmarshal([]byte(message.Payload), &change) == nil && change.Source != c.instanceID {
 			handler(change)
 		}
 	}

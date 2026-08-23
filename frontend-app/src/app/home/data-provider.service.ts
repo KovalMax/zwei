@@ -256,6 +256,7 @@ export class DataProviderService {
     private closed = false;
     private reconnectAttempt = 0;
     private reconnectTimer?: number;
+    private connectionGeneration = 0;
     private readonly readySubject = new BehaviorSubject<boolean>(false);
     private readonly events = new Subject<MessageSocketEvent>();
 
@@ -270,11 +271,17 @@ export class DataProviderService {
     }
 
     public send(event: ClientSocketEvent): boolean {
-        if (!this.socket || !this.socketReady) {
+        const socket = this.socket;
+        if (!socket || !this.socketReady) {
             return false;
         }
-        this.socket.next({...event, version: WEBSOCKET_PROTOCOL_VERSION});
-        return true;
+        try {
+            socket.next({...event, version: WEBSOCKET_PROTOCOL_VERSION});
+            return true;
+        } catch {
+            this.scheduleReconnect();
+            return false;
+        }
     }
 
     public get ready(): boolean { return this.socketReady; }
@@ -283,7 +290,9 @@ export class DataProviderService {
     public close(): void {
         if (this.closed) return;
         this.closed = true;
+        this.connectionGeneration += 1;
         window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = undefined;
         this.readySubject.next(false);
         this.socket?.complete();
         this.socket?.unsubscribe();
@@ -292,38 +301,50 @@ export class DataProviderService {
 
     private connect(): void {
         if (this.closed) return;
+        const generation = ++this.connectionGeneration;
         this.http.post<WebSocketTicketResponse>(backends.websocketTicket, {}).subscribe({
             next: ({ticket}) => {
-                if (this.closed) return;
+                if (this.closed || generation !== this.connectionGeneration) return;
                 const url = `${backends.websocket}?ticket=${encodeURIComponent(ticket)}`;
-                this.socket = this.socketFactory<MessageSocketEvent | (ClientSocketEvent & {version: typeof WEBSOCKET_PROTOCOL_VERSION})>({
+                let socket: WebSocketSubject<MessageSocketEvent | (ClientSocketEvent & {version: typeof WEBSOCKET_PROTOCOL_VERSION})> | undefined;
+                const createdSocket = this.socketFactory<MessageSocketEvent | (ClientSocketEvent & {version: typeof WEBSOCKET_PROTOCOL_VERSION})>({
                     url,
                     openObserver: {next: () => {
+                        if (this.closed || generation !== this.connectionGeneration || this.socket !== socket) return;
                         this.reconnectAttempt = 0;
                         this.socketReady = true;
                         this.readySubject.next(true);
                     }},
                     closeObserver: {next: () => {
+                        if (this.closed || generation !== this.connectionGeneration || this.socket !== socket) return;
                         this.socketReady = false;
                         this.readySubject.next(false);
                     }},
                 });
-                this.socket.subscribe({
+                socket = createdSocket;
+                this.socket = createdSocket;
+                createdSocket.subscribe({
                     next: event => {
+                        if (this.closed || generation !== this.connectionGeneration || this.socket !== socket) return;
                         if (isValidSocketEvent(event)) this.events.next(event);
                     },
-                    error: () => this.scheduleReconnect(),
-                    complete: () => this.scheduleReconnect(),
+                    error: () => { if (!this.closed && generation === this.connectionGeneration && this.socket === socket) this.scheduleReconnect(); },
+                    complete: () => { if (!this.closed && generation === this.connectionGeneration && this.socket === socket) this.scheduleReconnect(); },
                 });
             },
-            error: () => this.scheduleReconnect(),
+            error: () => { if (!this.closed && generation === this.connectionGeneration) this.scheduleReconnect(); },
         });
     }
 
     private scheduleReconnect(): void {
         if (this.closed || this.reconnectTimer !== undefined) return;
+        this.connectionGeneration += 1;
+        const failedSocket = this.socket;
+        this.socket = undefined;
         this.socketReady = false;
         this.readySubject.next(false);
+        failedSocket?.complete();
+        failedSocket?.unsubscribe();
         const delay = Math.min(1_000 * 2 ** Math.min(this.reconnectAttempt++, 5), 30_000);
         this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = undefined;

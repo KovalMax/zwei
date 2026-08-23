@@ -17,9 +17,12 @@ http:
           X-Permitted-Cross-Domain-Policies: none
     auth-rate-limit:
       rateLimit:
-        average: 30
+        # The local/E2E browser suite creates isolated accounts and administrator
+        # sessions from one Docker source address; production keeps its 30/minute
+        # limit in infrastructure/production/traefik/dynamic.yml.
+        average: 120
         period: 1m
-        burst: 100
+        burst: 120
     search-rate-limit:
       rateLimit:
         average: 30

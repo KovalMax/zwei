@@ -1,6 +1,6 @@
 import {fakeAsync, tick, waitForAsync, ComponentFixture, TestBed} from '@angular/core/testing';
 import {ChangeDetectorRef} from '@angular/core';
-import {of, Subject} from 'rxjs';
+import {BehaviorSubject, EMPTY, of, Subject} from 'rxjs';
 
 import {HomeComponent} from './home.component';
 import {AppModule} from '../app.module';
@@ -157,6 +157,25 @@ describe('HomeComponent', () => {
 
         expect(send).toHaveBeenCalledWith({type: 'presence.refresh'});
         expect(historyComponent.peerPresenceLabel()).toBe('Online');
+    });
+
+    it('refreshes conversations when the realtime connection becomes ready', () => {
+        const readyChanges = new BehaviorSubject(false);
+        const list = jasmine.createSpy('list').and.returnValue(of([conversation('recovered')]));
+        const historyComponent = new HomeComponent(
+            {list} as unknown as ConversationService,
+            {profile: () => of({id: 'user-1'} as Profile)} as unknown as AuthService,
+            {markForCheck: jasmine.createSpy('markForCheck')} as unknown as ChangeDetectorRef,
+            {getObservable: () => EMPTY, readyChanges, close: () => undefined} as unknown as DataProviderService,
+            {state$: of({phase: 'idle'}), close: () => undefined} as unknown as CallFacade,
+        );
+
+        historyComponent.ngOnInit();
+        readyChanges.next(true);
+
+        expect(list).toHaveBeenCalledTimes(2);
+        expect(historyComponent.conversations.getValue().map(item => item.id)).toEqual(['recovered']);
+        historyComponent.ngOnDestroy();
     });
 
     it('uses the incoming call conversation when no chat is selected', () => {

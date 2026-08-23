@@ -11,5 +11,14 @@
             <div><dt>Email address</dt><dd>{{ profile.email }}</dd></div>
             <div><dt>Message retention</dt><dd>{{ profile.retention_period }}</dd></div>
         </dl>
+        <section *ngIf="profile" class="alert-settings" aria-labelledby="alert-settings-title">
+            <h2 id="alert-settings-title">Alerts</h2>
+            <p>Choose how Zwei alerts you in this browser.</p>
+            <div class="alert-options" role="radiogroup" aria-label="Alert preference">
+                <button type="button" role="radio" [attr.aria-checked]="notifications.mode === 'off'" [class.selected]="notifications.mode === 'off'" (click)="setAlertMode('off')"><span class="radio-dot"></span><span><strong>Off</strong><small>No notification or sound alerts.</small></span></button>
+                <button type="button" role="radio" [attr.aria-checked]="notifications.mode === 'sounds'" [class.selected]="notifications.mode === 'sounds'" (click)="setAlertMode('sounds')"><span class="radio-dot"></span><span><strong>Sounds only</strong><small>Play call and message sounds.</small></span></button>
+                <button type="button" role="radio" [attr.aria-checked]="notifications.mode === 'notifications'" [class.selected]="notifications.mode === 'notifications'" (click)="setAlertMode('notifications')"><span class="radio-dot"></span><span><strong>Notifications and sounds</strong><small>{{ notifications.notificationPermission === 'denied' ? 'Browser notifications are blocked.' : 'Show alerts when the browser supports them.' }}</small></span></button>
+            </div>
+        </section>
     </section>
 </main>

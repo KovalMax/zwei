@@ -25,23 +25,29 @@ var (
 
 // Call is ephemeral shared signaling state. It is deliberately not a persisted domain aggregate.
 type Call struct {
-	ID               uuid.UUID `json:"call_id"`
-	ConversationID   uuid.UUID `json:"conversation_id"`
-	CallerID         uuid.UUID `json:"caller_id"`
-	RecipientID      uuid.UUID `json:"recipient_id"`
-	CallerDeviceID   string    `json:"caller_device_id"`
-	AcceptedDeviceID string    `json:"accepted_device_id,omitempty"`
-	Status           string    `json:"status"`
-	ExpiresAt        time.Time `json:"expires_at"`
+	ID                   uuid.UUID `json:"call_id"`
+	ConversationID       uuid.UUID `json:"conversation_id"`
+	CallerID             uuid.UUID `json:"caller_id"`
+	RecipientID          uuid.UUID `json:"recipient_id"`
+	CallerDeviceID       string    `json:"caller_device_id"`
+	AcceptedDeviceID     string    `json:"accepted_device_id,omitempty"`
+	CallerConnectionID   string    `json:"-"`
+	AcceptedConnectionID string    `json:"-"`
+	Status               string    `json:"status"`
+	ExpiresAt            time.Time `json:"expires_at"`
 }
 
 type CallChange struct {
-	Source       string          `json:"source,omitempty"`
-	Type         string          `json:"type"`
-	Call         Call            `json:"call"`
-	FromDeviceID string          `json:"from_device_id,omitempty"`
-	ToDeviceID   string          `json:"to_device_id,omitempty"`
-	Signal       json.RawMessage `json:"signal,omitempty"`
+	Source               string          `json:"source,omitempty"`
+	Type                 string          `json:"type"`
+	Call                 Call            `json:"call"`
+	FromDeviceID         string          `json:"from_device_id,omitempty"`
+	ToDeviceID           string          `json:"to_device_id,omitempty"`
+	FromConnectionID     string          `json:"from_connection_id,omitempty"`
+	ToConnectionID       string          `json:"to_connection_id,omitempty"`
+	CallerConnectionID   string          `json:"caller_connection_id,omitempty"`
+	AcceptedConnectionID string          `json:"accepted_connection_id,omitempty"`
+	Signal               json.RawMessage `json:"signal,omitempty"`
 }
 
 // ICEServer is the browser-safe TURN configuration for one call participant.
@@ -59,11 +65,11 @@ type TURNCredentialIssuer interface {
 // CallCoordinator is the application port for atomic, cross-replica call state and fan-out.
 type CallCoordinator interface {
 	Start(context.Context, Call) (Call, error)
-	Accept(context.Context, uuid.UUID, uuid.UUID, string) (Call, error)
-	Decline(context.Context, uuid.UUID, uuid.UUID, string) (Call, error)
-	Cancel(context.Context, uuid.UUID, uuid.UUID, string) (Call, error)
-	End(context.Context, uuid.UUID, uuid.UUID, string) (Call, error)
-	EndByDevice(context.Context, uuid.UUID, string) ([]Call, error)
+	Accept(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
+	Decline(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
+	Cancel(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
+	End(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
+	EndByDevice(context.Context, uuid.UUID, string, string) ([]Call, error)
 	Get(context.Context, uuid.UUID) (Call, error)
 	PublishCall(context.Context, CallChange) error
 }

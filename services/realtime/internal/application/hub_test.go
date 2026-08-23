@@ -263,17 +263,23 @@ func TestHubStartsCallForOnlineConversationPeer(t *testing.T) {
 func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
 	callerID := uuid.New()
 	recipientID := uuid.New()
-	call := Call{ID: uuid.New(), ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: "caller-device", AcceptedDeviceID: "accepted-device", Status: CallActive}
+	call := Call{ID: uuid.New(), ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: "caller-device", AcceptedDeviceID: "accepted-device", CallerConnectionID: "caller-connection", AcceptedConnectionID: "accepted-connection", Status: CallActive}
 	calls := &fakeCalls{call: call}
 	hub := NewHub(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, calls, nil)
-	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: call.CallerDeviceID}}
-	accepted := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: call.AcceptedDeviceID}}
+	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: call.CallerDeviceID}, connectionID: call.CallerConnectionID}
+	callerOtherTab := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: call.CallerDeviceID}, connectionID: "other-caller-connection"}
+	accepted := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: call.AcceptedDeviceID}, connectionID: call.AcceptedConnectionID}
+	acceptedOtherTab := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: call.AcceptedDeviceID}, connectionID: "other-connection"}
 	otherDevice := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: "other-device"}}
 	hub.Add(context.Background(), caller)
+	hub.Add(context.Background(), callerOtherTab)
 	hub.Add(context.Background(), accepted)
+	hub.Add(context.Background(), acceptedOtherTab)
 	hub.Add(context.Background(), otherDevice)
 	caller.events = nil
+	callerOtherTab.events = nil
 	accepted.events = nil
+	acceptedOtherTab.events = nil
 	otherDevice.events = nil
 
 	err := hub.Handle(context.Background(), caller, []byte(`{"version":1,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"private"}}}`))
@@ -283,8 +289,14 @@ func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
 	if len(accepted.events) != 1 || accepted.events[0].(serverEvent).Type != "call.signal" {
 		t.Fatalf("accepted events = %#v", accepted.events)
 	}
+	if len(acceptedOtherTab.events) != 0 {
+		t.Fatalf("accepted other-tab events = %#v", acceptedOtherTab.events)
+	}
 	if len(otherDevice.events) != 0 {
 		t.Fatalf("other device events = %#v", otherDevice.events)
+	}
+	if err := hub.Handle(context.Background(), callerOtherTab, []byte(`{"version":1,"type":"call.signal","request_id":"signal-2","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"forbidden"}}}`)); !errors.Is(err, ErrCallNotAllowed) {
+		t.Fatalf("other caller tab signal error = %v, want not allowed", err)
 	}
 }
 
@@ -351,13 +363,15 @@ func (rateLimitedCoordinator) AllowSignal(context.Context, uuid.UUID) (bool, err
 }
 
 type recordingClient struct {
-	identity    sharedauth.Identity
-	events      []any
-	sendFailure bool
-	sendLimit   int
+	identity     sharedauth.Identity
+	connectionID string
+	events       []any
+	sendFailure  bool
+	sendLimit    int
 }
 
 func (c *recordingClient) Identity() sharedauth.Identity { return c.identity }
+func (c *recordingClient) ConnectionID() string          { return c.connectionID }
 func (c *recordingClient) SendJSON(event any) bool {
 	if c.sendFailure || (c.sendLimit > 0 && len(c.events) >= c.sendLimit) {
 		return false
@@ -430,22 +444,24 @@ func (f *fakeCalls) Start(_ context.Context, call Call) (Call, error) {
 	f.call = call
 	return call, nil
 }
-func (f *fakeCalls) Accept(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+func (f *fakeCalls) Accept(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error) {
 	return f.call, nil
 }
-func (f *fakeCalls) Decline(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+func (f *fakeCalls) Decline(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error) {
 	f.call.Status = CallEnded
 	return f.call, nil
 }
-func (f *fakeCalls) Cancel(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+func (f *fakeCalls) Cancel(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error) {
 	return f.call, nil
 }
-func (f *fakeCalls) End(context.Context, uuid.UUID, uuid.UUID, string) (Call, error) {
+func (f *fakeCalls) End(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error) {
 	return f.call, nil
 }
-func (f *fakeCalls) EndByDevice(context.Context, uuid.UUID, string) ([]Call, error) { return nil, nil }
-func (f *fakeCalls) Get(context.Context, uuid.UUID) (Call, error)                   { return f.call, nil }
-func (*fakeCalls) PublishCall(context.Context, CallChange) error                    { return nil }
+func (f *fakeCalls) EndByDevice(context.Context, uuid.UUID, string, string) ([]Call, error) {
+	return nil, nil
+}
+func (f *fakeCalls) Get(context.Context, uuid.UUID) (Call, error) { return f.call, nil }
+func (*fakeCalls) PublishCall(context.Context, CallChange) error  { return nil }
 
 func (*recordingPresenceCoordinator) Connect(context.Context, uuid.UUID, string) (bool, error) {
 	return false, nil

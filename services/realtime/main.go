@@ -58,36 +58,50 @@ func main() {
 	hub := application.NewHubWithLogger(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db), coordination, turnIssuer, runtime.NewLogger())
 	go coordination.StartHeartbeat(ctx)
 	go func() {
-		_ = coordination.Consume(ctx, func(change redisinfra.Change) { hub.NotifyPresenceChanged(ctx, change.UserID, change.Online) })
-	}()
-	go func() {
-		_ = coordination.ConsumeConversations(ctx, func(change redisinfra.ConversationChange) {
-			hub.DeliverConversationCreated(change.ConversationID, change.UserIDs)
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.Consume(subscriptionContext, func(change redisinfra.Change) {
+				hub.NotifyPresenceChanged(subscriptionContext, change.UserID, change.Online)
+			})
 		})
 	}()
 	go func() {
-		_ = coordination.ConsumeTyping(ctx, func(change redisinfra.TypingChange) {
-			recipientID, err := presence.RecipientID(ctx, change.UserID, change.ConversationID)
-			if err != nil {
-				return
-			}
-			eventType := "typing.stopped"
-			if change.Started {
-				eventType = "typing.started"
-			}
-			hub.DeliverTyping(eventType, change.ConversationID, change.UserID, recipientID)
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.ConsumeConversations(subscriptionContext, func(change redisinfra.ConversationChange) {
+				hub.DeliverConversationCreated(change.ConversationID, change.UserIDs)
+			})
 		})
 	}()
 	go func() {
-		_ = coordination.ConsumeMessages(ctx, func(change redisinfra.MessageChange) { hub.DeliverMessageCreated(change.Message) })
-	}()
-	go func() {
-		_ = coordination.ConsumeReads(ctx, func(change redisinfra.ReadChange) {
-			hub.DeliverReadCursor(change.ReaderID, change.RecipientID, change.ConversationID, change.Sequence)
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.ConsumeTyping(subscriptionContext, func(change redisinfra.TypingChange) {
+				recipientID, err := presence.RecipientID(subscriptionContext, change.UserID, change.ConversationID)
+				if err != nil {
+					return
+				}
+				eventType := "typing.stopped"
+				if change.Started {
+					eventType = "typing.started"
+				}
+				hub.DeliverTyping(eventType, change.ConversationID, change.UserID, recipientID)
+			})
 		})
 	}()
 	go func() {
-		_ = coordination.ConsumeCalls(ctx, hub.DeliverCall)
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.ConsumeMessages(subscriptionContext, func(change redisinfra.MessageChange) { hub.DeliverMessageCreated(change.Message) })
+		})
+	}()
+	go func() {
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.ConsumeReads(subscriptionContext, func(change redisinfra.ReadChange) {
+				hub.DeliverReadCursor(change.ReaderID, change.RecipientID, change.ConversationID, change.Sequence)
+			})
+		})
+	}()
+	go func() {
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.ConsumeCalls(subscriptionContext, hub.DeliverCall)
+		})
 	}()
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -137,6 +151,31 @@ func consumeConversationEvents(ctx context.Context, outbox *postgresinfra.Outbox
 			}
 			for _, event := range events {
 				hub.NotifyConversationCreated(event.ConversationID, event.UserIDs)
+			}
+		}
+	}
+}
+
+func superviseRedisSubscription(ctx context.Context, consume func(context.Context) error) {
+	backoff := time.Second
+	for {
+		if err := consume(ctx); ctx.Err() != nil {
+			return
+		} else if err == nil {
+			backoff = time.Second
+		} else {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case <-timer.C:
+			}
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
 			}
 		}
 	}
