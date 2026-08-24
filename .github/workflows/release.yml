@@ -40,7 +40,9 @@ jobs:
 
       - name: Build Angular production bundle
         working-directory: frontend-app
-        run: npm run build -- --configuration production
+        run: |
+          npm run build -- --configuration production
+          test -s dist/messenger/browser/index.html
 
   publish:
     name: Publish ${{ matrix.image }} image
@@ -172,7 +174,8 @@ jobs:
 
       - name: Verify public HTTPS endpoints
         run: |
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://chat.false.tel/
+           chat_page="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://chat.false.tel/)"
+           printf '%s' "$chat_page" | grep -Fq '<app-root>'
            kyc_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --output /dev/null --write-out '%{http_code}' https://kyc.chat.false.tel/)"
            test "$kyc_status" = 401
            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
