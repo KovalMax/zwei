@@ -266,8 +266,8 @@ describe('CallFacade', () => {
         await facade.selectScreenShareQuality('2k');
         await facade.toggleScreenShare();
 
-        const displayOptions = (navigator.mediaDevices.getDisplayMedia as jasmine.Spy).calls.mostRecent().args[0] as DisplayMediaStreamOptions & {selfBrowserSurface?: string; surfaceSwitching?: string; monitorTypeSurfaces?: string; systemAudio?: string};
-        expect(displayOptions).toEqual({video: {width: {ideal: 2560}, height: {ideal: 1440}, frameRate: {ideal: 30, max: 30}}, audio: false, selfBrowserSurface: 'include', surfaceSwitching: 'include', monitorTypeSurfaces: 'include', systemAudio: 'include'});
+        const displayOptions = (navigator.mediaDevices.getDisplayMedia as jasmine.Spy).calls.mostRecent().args[0] as DisplayMediaStreamOptions & {selfBrowserSurface?: string; surfaceSwitching?: string; monitorTypeSurfaces?: string; systemAudio?: string; windowAudio?: string};
+        expect(displayOptions).toEqual({video: {width: {ideal: 2560}, height: {ideal: 1440}, frameRate: {ideal: 30, max: 30}}, audio: false, selfBrowserSurface: 'include', surfaceSwitching: 'include', monitorTypeSurfaces: 'include', systemAudio: 'include', windowAudio: 'system'});
         expect(facade.state.screenShareStream).toBeTruthy();
         expect(facade.state.screenShareQuality).toBe('2k');
         expect(send.calls.allArgs().some(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'offer')).toBeTrue();
@@ -285,7 +285,7 @@ describe('CallFacade', () => {
 
         await facade.toggleScreenShare();
 
-        expect(navigator.mediaDevices.getDisplayMedia).toHaveBeenCalledWith(jasmine.objectContaining({audio: true, systemAudio: 'include'}));
+        expect(navigator.mediaDevices.getDisplayMedia).toHaveBeenCalledWith(jasmine.objectContaining({audio: true, systemAudio: 'include', windowAudio: 'system'}));
         expect(facade.state.screenShareAudioEnabled).toBeTrue();
         expect(facade.state.screenShareAudioActive).toBeTrue();
         const audioTrack = screen.audioTrack! as unknown as MediaStreamTrack;
