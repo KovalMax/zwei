@@ -35,6 +35,7 @@ type DisplayMediaOptions = DisplayMediaStreamOptions & {
     readonly selfBrowserSurface?: 'include' | 'exclude';
     readonly surfaceSwitching?: 'include' | 'exclude';
     readonly monitorTypeSurfaces?: 'include' | 'exclude';
+    readonly systemAudio?: 'include' | 'exclude';
 };
 const idleState: CallState = Object.freeze({phase: 'idle', muted: false, screenShareQuality: '720p', screenShareAudioEnabled: false, screenShareAudioActive: false, screenShareTransition: false, statusLabel: 'No active call.'});
 const callNoticeDuration = 5_000;
@@ -166,6 +167,7 @@ export class CallFacade implements OnDestroy {
                 selfBrowserSurface: 'include',
                 surfaceSwitching: 'include',
                 monitorTypeSurfaces: 'include',
+                systemAudio: 'include',
             };
             stream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
         } catch (error: unknown) {

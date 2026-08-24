@@ -233,8 +233,11 @@ test('register, create conversation, and deliver a message', async ({ browser },
            const mediaDevices = navigator.mediaDevices;
            Object.defineProperty(mediaDevices, 'getDisplayMedia', {
             configurable: true,
-            value: async () => {
-              const canvas = document.createElement('canvas');
+             value: async (options: {audio?: boolean; systemAudio?: string}) => {
+               if (options.audio !== true || options.systemAudio !== 'include') {
+                 throw new Error('Screen-share request did not ask the browser to offer system audio');
+               }
+               const canvas = document.createElement('canvas');
                canvas.width = 3440;
                canvas.height = 1440;
               const context = canvas.getContext('2d');
