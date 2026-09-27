@@ -37,12 +37,45 @@ func TestClearRefreshCookieExpiresRestrictedCookie(t *testing.T) {
 
 func TestRefreshWithoutCookieReturnsUnauthorized(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	request.Header.Set("Origin", "https://chat.localhost")
 	response := httptest.NewRecorder()
 
-	(&Handler{}).refresh(response, request)
+	(&Handler{allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}}).refresh(response, request)
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestRefreshRequiresAllowlistedOrigin(t *testing.T) {
+	tests := []struct {
+		name       string
+		origin     string
+		fetchSite  string
+		wantStatus int
+	}{
+		{name: "allowlisted same origin", origin: "https://chat.localhost", fetchSite: "same-origin", wantStatus: http.StatusUnauthorized},
+		{name: "hostile origin", origin: "https://attacker.example", fetchSite: "cross-site", wantStatus: http.StatusForbidden},
+		{name: "null origin", origin: "null", fetchSite: "cross-site", wantStatus: http.StatusForbidden},
+		{name: "missing origin and fetch metadata", wantStatus: http.StatusForbidden},
+		{name: "missing origin with same-origin metadata", fetchSite: "same-origin", wantStatus: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.fetchSite != "" {
+				request.Header.Set("Sec-Fetch-Site", test.fetchSite)
+			}
+			response := httptest.NewRecorder()
+			handler := &Handler{allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}}
+			handler.refresh(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("refresh status = %d, want %d", response.Code, test.wantStatus)
+			}
+		})
 	}
 }
 

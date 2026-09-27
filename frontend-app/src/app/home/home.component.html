@@ -1,7 +1,8 @@
-<section class="workspace" [class.conversation-open]="selectedConversation" aria-label="Chat workspace">
+<section class="workspace" [class.conversation-open]="selectedConversation || isCreatingGroup" aria-label="Chat workspace">
     <aside class="conversation-rail">
         <div class="rail-heading">
             <h1>Chats</h1>
+            <button type="button" class="new-group-button" (click)="openGroupCreation()" aria-label="Create group">New group</button>
         </div>
         <div class="call-minimized-banner call-minimized-banner-rail" [class.call-minimized-sharing-active]="call.state.screenShareStream || call.state.remoteScreenStream" *ngIf="isCallMinimized()" role="status">
             <button type="button" class="call-minimized-summary" [attr.aria-label]="'Return to call with ' + callDisplayName()" (click)="restoreCall()">
@@ -16,16 +17,16 @@
             <input matInput placeholder="Name or email" [(ngModel)]="searchQuery" name="userSearch" (input)="searchUsers()">
         </mat-form-field>
         <div class="search-results" *ngIf="searchResults.length">
-            <button class="search-result" *ngFor="let user of searchResults" type="button" [attr.aria-label]="'Start a conversation with ' + user.display_name" (click)="startConversation(user)">
+            <button class="search-result" *ngFor="let user of searchResults; trackBy: trackUserResult" type="button" [attr.aria-label]="'Start a conversation with ' + user.display_name" (click)="startConversation(user)">
                 <span class="person-avatar">{{ user.display_name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><zwei-icon name="arrow_forward"></zwei-icon>
             </button>
         </div>
 
         <div class="rail-label"><span>All chats</span><span class="count">{{ (conversations | async)?.length || 0 }}</span></div>
         <div class="people-list" *ngIf="conversations | async as items; else loadingPeople">
-            <button class="person-option" *ngFor="let conversation of items" type="button" [class.selected]="selectedConversation?.id === conversation.id" (click)="selectConversation(conversation)">
+            <button class="person-option" *ngFor="let conversation of items; trackBy: trackConversation" type="button" [class.selected]="selectedConversation?.id === conversation.id" (click)="selectConversation(conversation)">
                 <span class="person-avatar">{{ initials(conversation) }}</span>
-                <span class="conversation-copy"><strong>{{ conversation.otherDisplayName }}</strong><small>{{ conversation.otherEmail }}</small></span><span class="conversation-time">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
+                <span class="conversation-copy"><strong>{{ conversationName(conversation) }}</strong><small>{{ conversationSubtitle(conversation) }}</small></span><span class="conversation-time">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
             </button>
         </div>
         <ng-template #loadingPeople>
@@ -40,118 +41,91 @@
             </button>
             <button type="button" class="call-minimized-end" aria-label="End ongoing call" (click)="call.end()">End</button>
         </div>
-        <header class="chat-header">
+        <header class="chat-header" *ngIf="!isCreatingGroup">
             <div class="chat-identity">
                 <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><zwei-icon name="arrow_back"></zwei-icon></button>
                 <div class="hero-avatar">{{ headerInitials() }}</div>
-                <div><h2>{{ headerDisplayName() }}</h2><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedUserOffline()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
+                <div><span class="group-title-row"><h2>{{ headerDisplayName() }}</h2><button class="group-manage-trigger" *ngIf="selectedConversation?.kind === 'group' && canManageGroup()" type="button" [attr.aria-label]="showGroupManager ? 'Close group settings' : 'Manage group'" [attr.aria-expanded]="showGroupManager" aria-controls="group-settings-panel" (click)="toggleGroupManager()"><zwei-icon name="edit"></zwei-icon></button></span><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedPresenceNeutral()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
             </div>
-            <button class="call-button" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
+            <button class="call-button" *ngIf="selectedConversation?.kind === 'direct'" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
+            <button class="call-button" *ngIf="selectedConversation?.kind === 'group'" mat-icon-button type="button" aria-label="Start group audio call" (click)="startGroupCall()" [disabled]="!socketReady || groupCall?.isOngoing"><zwei-icon name="group"></zwei-icon></button>
         </header>
-        <section class="call-panel" [class.call-panel-full]="isCallSurfaceVisible()" [class.call-panel-minimized]="isCallMinimized()" [class.call-screen-active]="call.state.screenShareStream || call.state.remoteScreenStream" *ngIf="(call.state$ | async)?.phase !== 'idle'" aria-live="polite" aria-label="Audio call">
-            <audio autoplay playsinline [srcObject]="call.state.remoteStream" (loadedmetadata)="call.playRemoteAudio($event)" (canplay)="call.playRemoteAudio($event)"></audio>
-            <div class="call-card">
-                <button class="call-collapse-button" mat-icon-button type="button" aria-label="Minimize call" (click)="minimizeCall()">
-                    <zwei-icon name="expand_more"></zwei-icon>
-                </button>
-                <div class="call-profile">
-                    <div class="call-avatar">{{ callInitials() }}</div>
-                    <div class="call-profile-copy">
-                        <strong>{{ callDisplayName() }}</strong>
-                        <span [attr.role]="call.state.errorLabel ? 'alert' : 'status'">{{ call.state.statusLabel }}</span>
-                        <small class="call-duration" *ngIf="call.state.phase === 'active'" aria-label="Call duration">{{ callDurationLabel() }}</small>
-                    </div>
-                </div>
-                <div class="call-card-content">
-                    <div class="call-sharing-indicator" *ngIf="call.state.screenShareStream || call.state.remoteScreenStream" role="status" aria-live="polite">
-                        <span class="call-sharing-dot" aria-hidden="true"></span>
-                        <span class="call-sharing-copy">
-                            <strong *ngIf="call.state.screenShareStream && call.state.remoteScreenStream">You and {{ callDisplayName() }} are sharing screens</strong>
-                            <strong *ngIf="call.state.screenShareStream && !call.state.remoteScreenStream">Your screen is being shared with {{ callDisplayName() }}</strong>
-                            <strong *ngIf="!call.state.screenShareStream && call.state.remoteScreenStream">{{ callDisplayName() }} is sharing their screen with you</strong>
-                            <small>Live now</small>
-                        </span>
-                        <span class="call-sharing-live">LIVE</span>
-                    </div>
-                    <section #screenStage class="call-screen-stage" *ngIf="call.state.screenShareStream || call.state.remoteScreenStream" aria-label="Shared screen">
-                        <div class="call-screen-toolbar">
-                            <span>Shared screen</span>
-                            <button mat-icon-button type="button" [attr.aria-label]="screenShareFullscreen ? 'Exit fullscreen' : 'Expand shared screen'" [title]="screenShareFullscreen ? 'Exit fullscreen' : 'Expand shared screen'" (click)="toggleScreenShareFullscreen()">
-                                <zwei-icon [name]="screenShareFullscreen ? 'fullscreen_exit' : 'fullscreen'"></zwei-icon>
-                            </button>
-                        </div>
-                        <video class="call-screen-main call-screen-remote" *ngIf="call.state.remoteScreenStream; else localScreen" autoplay [muted]="true" playsinline [attr.aria-label]="'Screen shared by ' + callDisplayName()" [srcObject]="call.state.remoteScreenStream" (loadedmetadata)="call.playRemoteScreen($event)" (canplay)="call.playRemoteScreen($event)"></video>
-                        <ng-template #localScreen>
-                            <video class="call-screen-main" autoplay [muted]="true" playsinline aria-label="Your shared screen" [srcObject]="call.state.screenShareStream"></video>
-                        </ng-template>
-                        <video class="call-screen-preview" *ngIf="call.state.screenShareStream && call.state.remoteScreenStream" autoplay muted playsinline aria-label="Your shared screen preview" [srcObject]="call.state.screenShareStream"></video>
-                    </section>
-                    <div class="call-devices" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'">
-                        <label>Microphone
-                            <mat-select class="call-select" aria-label="Microphone input" [panelClass]="callSelectPanelClass()" [value]="call.selectedInputDeviceID" (selectionChange)="onCallInputDeviceChange($event.value)">
-                                <mat-option *ngFor="let device of call.inputDevices" [value]="device.deviceID">{{ device.label }}</mat-option>
-                            </mat-select>
-                        </label>
-                        <label>Speaker
-                            <mat-select class="call-select" aria-label="Speaker output" [panelClass]="callSelectPanelClass()" [value]="call.selectedOutputDeviceID" [disabled]="!call.outputSelectionSupported || !call.outputDevices.length" (selectionChange)="onCallOutputDeviceChange($event.value)">
-                                <mat-option value="" disabled>System default</mat-option>
-                                <mat-option *ngFor="let device of call.outputDevices" [value]="device.deviceID">{{ device.label }}</mat-option>
-                            </mat-select>
-                        </label>
-                    </div>
-                    <p class="call-device-note" *ngIf="(call.state.phase === 'connecting' || call.state.phase === 'active') && !call.outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
-                    <div class="call-screen-tools" *ngIf="call.state.phase === 'active'">
-                        <label>Screen quality
-                            <mat-select class="call-select" aria-label="Screen share quality" [panelClass]="callSelectPanelClass()" [value]="call.screenShareQuality" (selectionChange)="onScreenQualityChange($event.value)">
-                                <mat-option value="360p">360p · economy</mat-option>
-                                <mat-option value="720p">720p · balanced</mat-option>
-                                <mat-option value="1080p">1080p · detail</mat-option>
-                                <mat-option value="2k">2K · ultra</mat-option>
-                            </mat-select>
-                        </label>
-                        <label class="screen-share-audio-option" title="Optional when your browser supports it.">
-                            <input #screenAudio type="checkbox" [checked]="call.state.screenShareAudioEnabled" [disabled]="call.state.screenShareTransition || !!call.state.screenShareStream || !call.screenShareSupported()" (change)="call.setScreenShareAudioEnabled(screenAudio.checked)">
-                            <span class="screen-share-audio-copy">
-                                <span>Share audio</span>
-                            </span>
-                        </label>
-                        <button mat-stroked-button type="button" class="screen-share-button" [disabled]="!call.screenShareSupported() || call.state.screenShareTransition" (click)="call.toggleScreenShare()">
-                            <zwei-icon *ngIf="!call.state.screenShareStream" name="screen_share"></zwei-icon>
-                            <zwei-icon *ngIf="call.state.screenShareStream" name="stop_screen_share"></zwei-icon>
-                            {{ call.state.screenShareStream ? 'Stop sharing' : 'Share screen' }}
-                        </button>
-                    </div>
-                </div>
-                <div class="call-actions">
-                    <button mat-flat-button color="primary" type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.accept()">Accept</button>
-                    <button mat-stroked-button type="button" *ngIf="call.state.phase === 'incoming'" (click)="call.decline()">Decline</button>
-                    <button mat-stroked-button type="button" *ngIf="call.state.phase === 'outgoing' || call.state.phase === 'requesting'" (click)="call.cancel()">Cancel</button>
-                    <button mat-stroked-button type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.toggleMute()">{{ call.state.muted ? 'Unmute' : 'Mute' }}</button>
-                    <button mat-stroked-button type="button" *ngIf="call.state.audioPlaybackBlocked" (click)="call.enableRemoteAudio()">Enable sound</button>
-                    <button mat-flat-button color="warn" type="button" *ngIf="call.state.phase === 'connecting' || call.state.phase === 'active'" (click)="call.end()">End call</button>
-                </div>
+        <p class="group-settings-error" *ngIf="groupMembershipRefreshError && groupMembershipRefreshErrorConversationID === selectedConversation?.id && selectedConversation?.kind === 'group'" role="alert">{{ groupMembershipRefreshError }} <button mat-button type="button" (click)="refreshChats()">Refresh chats</button></p>
+        <section class="group-manager" *ngIf="showGroupManager && groupSelected as group" aria-label="Group settings" (scroll)="dismissGroupMemberTooltips()">
+            <div class="group-manager-heading"><div><span class="eyebrow">Group settings</span><strong>{{ group.name }}</strong></div><button type="button" aria-label="Close group settings" (click)="toggleGroupManager()">Close</button></div>
+            <div class="group-settings-panel" *ngIf="showGroupManager" id="group-settings-panel" [attr.aria-busy]="groupLoading" (scroll)="dismissGroupMemberTooltips()">
+                <section class="group-settings-section" *ngIf="canManageGroup()" aria-labelledby="group-name-settings"><div><h3 id="group-name-settings">Group name</h3><p>Choose a name people will recognize.</p></div><form (ngSubmit)="renameGroup()"><label for="group-name-settings-input">Name</label><div class="group-field-action"><input id="group-name-settings-input" [(ngModel)]="groupName" name="renameGroup" maxlength="80" [disabled]="groupLoading"><button type="submit" [disabled]="groupLoading">Save name</button></div></form></section>
+                <section class="group-settings-section" *ngIf="canManageGroup()" aria-labelledby="group-members-settings"><div><h3 id="group-members-settings">Members</h3><p>Search for a person, then select them before adding.</p></div><label for="group-member-search">Find a person</label><input id="group-member-search" [(ngModel)]="groupMemberQuery" name="groupMember" placeholder="Name or email" autocomplete="off" [disabled]="groupLoading" (input)="searchGroupMembers()"><div class="group-member-results" *ngIf="groupMemberResults.length" role="listbox" aria-label="Matching people"><button type="button" *ngFor="let user of groupMemberResults; trackBy: trackUserResult" role="option" [attr.aria-selected]="selectedGroupMember?.id === user.id" (click)="selectGroupMember(user)"><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><span>{{ selectedGroupMember?.id === user.id ? 'Selected' : 'Select' }}</span></button></div><p class="group-search-status" *ngIf="groupMemberQuery.trim().length >= 2 && !groupMemberResults.length && !groupLoading">No people found. Try another name or email.</p><div class="group-field-action"><span class="group-selected-member" *ngIf="selectedGroupMember">Selected: {{ selectedGroupMember.display_name }}</span><button type="button" (click)="addGroupMember()" [disabled]="groupLoading || !selectedGroupMember">Add member</button></div>
+                    <app-group-member-list [members]="group.members" [actionsForMember]="groupMemberActionsFor" [loading]="groupLoading" (action)="handleGroupMemberAction($event)"></app-group-member-list></section>
+                <p class="group-settings-error" *ngIf="groupError" role="alert">{{ groupError }}</p><span class="group-settings-loading" *ngIf="groupLoading" role="status">Saving group settings…</span><section class="group-settings-section group-danger-zone"><div><h3>Group access</h3><p>Leaving removes this group from your chat list. Deleting removes it for everyone.</p></div><div class="group-danger-actions"><button type="button" (click)="leaveGroup()" [disabled]="groupLoading">Leave group</button><button type="button" *ngIf="canDeleteGroup()" (click)="deleteGroup()" [disabled]="groupLoading">Delete group</button></div></section>
             </div>
         </section>
-        <div class="socket-warning" *ngIf="socketError"><zwei-icon name="cloud_off"></zwei-icon> Live connection lost. Refresh to reconnect.</div>
-        <div class="socket-connecting" *ngIf="!socketError && !socketReady && selectedConversation"><zwei-icon name="sync"></zwei-icon> Connecting securely…</div>
+        <div class="group-call-minimized call-minimized-banner" *ngIf="groupCall?.isOngoing && groupCallMinimized" role="status">
+            <button type="button" class="call-minimized-summary" aria-label="Return to group call" (click)="restoreGroupCall()"><span><strong>Group call in progress</strong><small>{{ groupCall.state.statusLabel }}</small></span></button>
+            <button type="button" class="call-minimized-end" (click)="groupCall.end()">End</button>
+        </div>
+        <ng-container *ngIf="groupCall">
+        <ng-container *ngIf="groupCall.state$ | async as groupCallState">
+        <app-call-terminal-notice *ngIf="groupCallState.phase === 'ended' || groupCallState.phase === 'error'" [message]="groupCallState.statusLabel" [error]="!!groupCallState.errorLabel" [group]="true"></app-call-terminal-notice>
+        <app-group-call-surface [state]="groupCallState" [minimized]="groupCallMinimized" [ongoing]="groupCall.isOngoing" [profile]="groupCallProfile()" [participants]="groupCallParticipants()" [controls]="groupCallControls()" [actions]="groupCallActions()" [panelClass]="callSelectPanelClass()" (intent)="onGroupCallSurfaceIntent($event)"></app-group-call-surface>
+        </ng-container>
+        </ng-container>
+        <ng-container *ngIf="call.state$ | async as directCallState">
+            <app-direct-call-surface
+                *ngIf="directCallState.phase !== 'idle'"
+                class="call-panel"
+                [class.call-panel-full]="isCallSurfaceVisible()"
+                [class.call-panel-minimized]="isCallMinimized()"
+                [class.call-screen-active]="directCallState.screenShareStream || directCallState.remoteScreenStream"
+                [state]="directCallState"
+                [profile]="directCallProfile()"
+                [controls]="directCallControls()"
+                [actions]="directCallActions()"
+                [panelClass]="callSelectPanelClass()"
+                [displayName]="callDisplayName()"
+                [outputSelectionSupported]="call.outputSelectionSupported"
+                [screenShareSupported]="call.screenShareSupported()"
+                aria-live="polite"
+                aria-label="Audio call"
+                (intent)="onDirectCallSurfaceIntent($event)">
+            </app-direct-call-surface>
+        </ng-container>
+        <div class="connection-banner connection-banner-failed" *ngIf="connectionState === 'failed'" role="alert"><zwei-icon name="cloud_off"></zwei-icon><span><strong>Live connection lost</strong><small>Messages will resume when the secure connection returns.</small></span><button type="button" (click)="retryConnection()">Retry now</button></div>
+        <div class="connection-banner connection-banner-progress" *ngIf="connectionState === 'connecting' || connectionState === 'recovering'" role="status"><zwei-icon name="sync"></zwei-icon><span>{{ connectionState === 'recovering' ? 'Recovering conversations…' : 'Connecting securely…' }}</span></div>
         <div class="send-status" *ngIf="sendStatus">{{ sendStatus }}</div>
-        <div class="chat-empty" [class.call-surface-hidden]="isCallSurfaceVisible()" *ngIf="!selectedConversation">
+        <section class="group-create-panel" *ngIf="isCreatingGroup" aria-labelledby="group-create-heading">
+            <div class="group-create-card">
+                <span class="eyebrow">New group</span>
+                <h2 id="group-create-heading">Create a group</h2>
+                <p>Choose a name now. You can invite people after the group is created.</p>
+                <form (ngSubmit)="createGroup()">
+                    <label for="group-name">Group name</label>
+                    <input id="group-name" [(ngModel)]="groupName" name="groupName" maxlength="80" placeholder="Project team" [disabled]="groupLoading" required>
+                    <p *ngIf="groupError" role="alert">{{ groupError }}</p>
+                    <div class="group-create-actions">
+                        <button type="button" (click)="cancelGroupCreation()" [disabled]="groupLoading">Cancel</button>
+                        <button type="submit" [disabled]="groupLoading">{{ groupLoading ? 'Creating…' : 'Create group' }}</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+        <div class="chat-empty" [class.call-surface-hidden]="isCallSurfaceVisible()" *ngIf="!selectedConversation && !isCreatingGroup">
             <div class="empty-orbit"><zwei-icon name="forum"></zwei-icon></div>
             <span class="eyebrow">Private by design</span><h3>Your messages, your space</h3><p>Search for someone to start a secure one-to-one conversation.</p>
         </div>
-        <section #messageHistory class="message-history" *ngIf="selectedConversation" [class.call-surface-hidden]="isCallSurfaceVisible()" aria-label="Message history">
+        <section #messageHistory class="message-history" *ngIf="selectedConversation && !isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" aria-label="Message history">
             <button class="load-older" *ngIf="historyCursor" mat-stroked-button (click)="loadOlderMessages()" [disabled]="isHistoryLoading">
                 <zwei-icon *ngIf="isHistoryLoading" name="hourglass_top"></zwei-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
             <div class="message-list" *ngIf="messages.length; else emptyMessages">
-                <article class="message-bubble" *ngFor="let message of messages" [class.message-own]="isOwnMessage(message)" [class.message-pending]="message.pending">
-                    <span class="message-sender">{{ senderName(message) }}</span>
-                    <p>{{ message.body }}</p><div class="message-meta"><time [attr.datetime]="message.createdAt" [attr.title]="messageDateTimeLabel(message)">{{ messageDateLabel(message) }} · {{ message.createdAt | date:'shortTime' }}</time><span class="message-read" *ngIf="isLatestReadMessage(message)" role="img" aria-label="Read by peer"><zwei-icon name="done_all"></zwei-icon></span></div><span class="message-pending-label" *ngIf="message.pending">Sending…</span>
+                <article class="message-bubble" *ngFor="let message of messages; trackBy: trackMessage" [class.message-own]="isOwnMessage(message)" [class.message-pending]="message.pending">
+                    <span class="message-sender" *ngIf="message.kind !== 'system'">{{ senderName(message) }}</span>
+                    <p>{{ message.body }}</p><div class="message-meta"><time [attr.datetime]="message.createdAt" [attr.title]="messageDateTimeLabel(message)">{{ messageDateLabel(message) }} · {{ message.createdAt | date:'shortTime' }}</time><span class="message-read" *ngIf="isLatestReadMessage(message)" role="img" [attr.aria-label]="readReceiptLabel(message)"><zwei-icon name="done_all"></zwei-icon></span></div><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-pending-label" *ngIf="!message.pending && message.uncertain">Delivery uncertain</span>
                 </article>
             </div>
             <ng-template #emptyMessages><div class="empty-messages"><zwei-icon name="mark_chat_unread"></zwei-icon><p>No messages yet.</p></div></ng-template>
         </section>
-        <form class="composer" [class.call-surface-hidden]="isCallSurfaceVisible()" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
+        <form class="composer" *ngIf="!isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
             <mat-form-field appearance="outline">
                 <textarea matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown.enter)="sendMessage($event)"></textarea>
             </mat-form-field>

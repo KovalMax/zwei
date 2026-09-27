@@ -55,6 +55,14 @@ async function adminLogin(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/admin$/);
 }
 
+async function reloadAdmin(page: Page): Promise<void> {
+  const refresh = page.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
+  await page.reload();
+  const response = await refresh;
+  expect(response.status(), `refresh failed: ${await response.text()}`).toBe(200);
+  await expect(page).toHaveURL(/\/admin$/);
+}
+
 async function activationLink(request: APIRequestContext, email: string): Promise<string> {
   const links = await activationLinks(request, email);
   return links[0];
@@ -171,7 +179,7 @@ test('pending registration, admin approval, activation email, and blocked login'
   await expect(admin.getByText('Account activated.')).toBeVisible();
 
   const firstLink = await activationLink(request, pendingEmail);
-  await admin.reload();
+  await reloadAdmin(admin);
   const activePendingRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
   await expect(activePendingRow).toContainText('Active');
   await expect(activePendingRow.getByRole('button', {name: 'Resend activation link'})).toBeEnabled();
@@ -227,7 +235,7 @@ test('pending registration, admin approval, activation email, and blocked login'
   await searcher.getByPlaceholder('Name or email').fill(pendingEmail);
   await expect(searchResult).toBeVisible();
 
-  await admin.reload();
+  await reloadAdmin(admin);
   const activeRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
   await expect(activeRow.getByRole('button', {name: 'Activate account'})).toBeDisabled();
   await expect(activeRow.getByRole('button', {name: 'Resend activation link'})).toHaveCount(0);
@@ -246,7 +254,7 @@ test('pending registration, admin approval, activation email, and blocked login'
   await login(blocked, pendingEmail);
   await expect(blocked).toHaveURL(/\/login$/);
   await expect(blocked.getByText('account is not active')).toBeVisible();
-  await admin.reload();
+  await reloadAdmin(admin);
   const blockedRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
   await expect(blockedRow).toContainText('Blocked');
   await expect(blockedRow.getByRole('button', {name: 'Activate account'})).toBeEnabled();
@@ -340,7 +348,7 @@ test('invitation code activates and logs in an account, then cannot be reused', 
   for (const fieldName of ['email', 'firstName', 'lastName', 'nickName', 'password', 'confirmPassword']) {
     await expect(user.locator(`[formControlName="${fieldName}"]`)).toHaveValue('');
   }
-  await admin.reload();
+  await reloadAdmin(admin);
   await admin.getByRole('button', {name: 'Invitations'}).click();
   const redeemedInvitation = admin.locator('tbody tr').filter({hasText: invitedEmail});
   await expect(redeemedInvitation).toContainText('Redeemed');

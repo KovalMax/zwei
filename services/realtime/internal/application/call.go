@@ -64,7 +64,7 @@ type TURNCredentialIssuer interface {
 
 // CallCoordinator is the application port for atomic, cross-replica call state and fan-out.
 type CallCoordinator interface {
-	Start(context.Context, Call) (Call, error)
+	Start(context.Context, Call, string) (Call, error)
 	Accept(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
 	Decline(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
 	Cancel(context.Context, uuid.UUID, uuid.UUID, string, string) (Call, error)
@@ -72,6 +72,13 @@ type CallCoordinator interface {
 	EndByDevice(context.Context, uuid.UUID, string, string) ([]Call, error)
 	Get(context.Context, uuid.UUID) (Call, error)
 	PublishCall(context.Context, CallChange) error
+}
+
+// CallAdmissionCoordinator serializes direct and group reservation admission
+// across their separate Redis state machines.
+type CallAdmissionCoordinator interface {
+	AcquireCallAdmission(context.Context, []uuid.UUID) (string, error)
+	ReleaseCallAdmission(context.Context, []uuid.UUID, string)
 }
 
 type CallConsumer interface {

@@ -22,11 +22,12 @@ type Handler struct {
 	sessions      *sharedauth.SessionValidator
 	conversations *postgres.Repository
 	history       *postgres.HistoryRepository
+	groups        *application.Groups
 	limiter       application.RequestLimiter
 }
 
-func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history *postgres.HistoryRepository, limiter application.RequestLimiter) *Handler {
-	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history, limiter: limiter}
+func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history *postgres.HistoryRepository, groups *application.Groups, limiter application.RequestLimiter) *Handler {
+	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history, groups: groups, limiter: limiter}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -36,6 +37,236 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/chat/conversations/{id}", h.getConversation)
 	mux.HandleFunc("POST /api/chat/conversations/{id}/messages", h.sendMessage)
 	mux.HandleFunc("GET /api/chat/conversations/{id}/messages", h.historyMessages)
+	mux.HandleFunc("POST /api/chat/groups", h.createGroup)
+	mux.HandleFunc("GET /api/chat/groups", h.listGroups)
+	mux.HandleFunc("GET /api/chat/groups/{id}", h.getGroup)
+	mux.HandleFunc("PATCH /api/chat/groups/{id}", h.renameGroup)
+	mux.HandleFunc("POST /api/chat/groups/{id}/members", h.addGroupMember)
+	mux.HandleFunc("DELETE /api/chat/groups/{id}/members/{userID}", h.removeGroupMember)
+	mux.HandleFunc("PATCH /api/chat/groups/{id}/members/{userID}", h.changeGroupRole)
+	mux.HandleFunc("POST /api/chat/groups/{id}/ownership", h.transferGroupOwnership)
+	mux.HandleFunc("POST /api/chat/groups/{id}/leave", h.leaveGroup)
+	mux.HandleFunc("DELETE /api/chat/groups/{id}", h.deleteGroup)
+}
+
+func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groups, err := h.groups.List(r.Context(), userID)
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not list groups")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, groups)
+}
+
+func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketConversationCreate) {
+		return
+	}
+	var request struct {
+		Name      string      `json:"name"`
+		MemberIDs []uuid.UUID `json:"member_ids"`
+	}
+	if !decodeJSON(w, r, &request) {
+		errorJSON(w, http.StatusBadRequest, "invalid group")
+		return
+	}
+	group, err := h.groups.Create(r.Context(), userID, request.Name, request.MemberIDs)
+	if !h.groupResult(w, err) {
+		return
+	}
+	runtime.WriteJSON(w, http.StatusCreated, group)
+}
+
+func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	group, err := h.groups.Get(r.Context(), userID, groupID)
+	if !h.groupResult(w, err) {
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, group)
+}
+
+func (h *Handler) renameGroup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &request) {
+		errorJSON(w, http.StatusBadRequest, "invalid group name")
+		return
+	}
+	group, err := h.groups.Rename(r.Context(), userID, groupID, request.Name)
+	if !h.groupResult(w, err) {
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, group)
+}
+
+func (h *Handler) addGroupMember(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		UserID uuid.UUID `json:"user_id"`
+	}
+	if !decodeJSON(w, r, &request) {
+		errorJSON(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+	group, err := h.groups.AddMember(r.Context(), userID, groupID, request.UserID)
+	if !h.groupResult(w, err) {
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, group)
+}
+
+func (h *Handler) removeGroupMember(w http.ResponseWriter, r *http.Request) {
+	h.memberAction(w, r, false)
+}
+
+func (h *Handler) memberAction(w http.ResponseWriter, r *http.Request, role bool) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	memberID, err := uuid.Parse(r.PathValue("userID"))
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	if role {
+		var request struct {
+			Role conversation.Role `json:"role"`
+		}
+		if !decodeJSON(w, r, &request) {
+			errorJSON(w, http.StatusBadRequest, "invalid role")
+			return
+		}
+		group, err := h.groups.ChangeRole(r.Context(), userID, groupID, memberID, request.Role)
+		if !h.groupResult(w, err) {
+			return
+		}
+		runtime.WriteJSON(w, http.StatusOK, group)
+		return
+	}
+	group, err := h.groups.RemoveMember(r.Context(), userID, groupID, memberID)
+	if !h.groupResult(w, err) {
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, group)
+}
+
+func (h *Handler) changeGroupRole(w http.ResponseWriter, r *http.Request) { h.memberAction(w, r, true) }
+
+func (h *Handler) transferGroupOwnership(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		UserID uuid.UUID `json:"user_id"`
+	}
+	if !decodeJSON(w, r, &request) {
+		errorJSON(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+	group, err := h.groups.TransferOwnership(r.Context(), userID, groupID, request.UserID)
+	if !h.groupResult(w, err) {
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, group)
+}
+
+func (h *Handler) leaveGroup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	if !h.groupResult(w, h.groups.Leave(r.Context(), userID, groupID)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	groupID, ok := h.groupID(w, r)
+	if !ok {
+		return
+	}
+	if !h.groupResult(w, h.groups.Delete(r.Context(), userID, groupID)) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) groupID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid group id")
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func (h *Handler) groupResult(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return true
+	}
+	switch {
+	case errors.Is(err, application.ErrNotFound):
+		errorJSON(w, http.StatusNotFound, "group or user not found")
+	case errors.Is(err, application.ErrForbidden):
+		errorJSON(w, http.StatusForbidden, "group action is not allowed")
+	case errors.Is(err, application.ErrSelfOwnershipTransfer):
+		errorJSON(w, http.StatusBadRequest, "cannot transfer group ownership to yourself")
+	case errors.Is(err, application.ErrMemberExists), errors.Is(err, application.ErrGroupFull), errors.Is(err, conversation.ErrInvalidGroupName), errors.Is(err, conversation.ErrInvalidMembers), errors.Is(err, conversation.ErrInvalidRole):
+		errorJSON(w, http.StatusBadRequest, err.Error())
+	default:
+		errorJSON(w, http.StatusInternalServerError, "could not change group")
+	}
+	return false
 }
 
 func (h *Handler) searchUsers(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +386,14 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, messaging.ErrInvalidMessage) {
 		errorJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, messaging.ErrClientMessageIDConflict) {
+		errorJSON(w, http.StatusConflict, "client message id conflict")
+		return
+	}
+	if errors.Is(err, messaging.ErrMessageExpired) {
+		errorJSON(w, http.StatusGone, "message expired")
 		return
 	}
 	if err != nil {

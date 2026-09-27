@@ -19,7 +19,7 @@ trap restore_development_services EXIT
 "${COMPOSE[@]}" stop auth chat realtime >/dev/null || true
 bash "$SCRIPT_DIR/migrate-test.sh" "$NAME_PREFIX"
 "${TEST_COMPOSE[@]}" exec -T redis redis-cli -n 1 FLUSHDB >/dev/null
-"${TEST_COMPOSE[@]}" up -d --force-recreate auth chat realtime >/dev/null
+"${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 --force-recreate auth chat realtime >/dev/null
 
 printf '%s\n' 'Password123!' | "${TEST_COMPOSE[@]}" run -T --rm --no-deps auth /usr/bin/service admin create --email e2e-admin@example.test --display-name "E2E Admin"
 mkdir -p "$ROOT_DIR/e2e/test-results"

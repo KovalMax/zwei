@@ -1,0 +1,7 @@
+:host { display: grid; gap: 16px; min-width: 0; }
+.call-presentation-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.call-presentation-devices label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--chat-call-text); font-size: 10px; font-weight: 700; }
+.call-presentation-devices .call-select { box-sizing: border-box; height: 48px; min-height: 48px; border: 1px solid var(--chat-call-control-border); border-radius: 12px; background: var(--chat-surface-control); color: var(--chat-call-control-text); }
+.call-presentation-devices .call-select .mat-mdc-select-trigger { box-sizing: border-box; height: 46px; min-height: 46px; padding: 0 10px; }
+:host-context(.light-theme) .call-presentation-devices .call-select { border-color: #6d89a7; background: #fff; color: #172033; }
+@media (max-width: 760px) { .call-presentation-devices { grid-template-columns: 1fr; } }

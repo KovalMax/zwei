@@ -1,0 +1,14 @@
+<div class="call-presentation-profile call-profile">
+    <button *ngIf="collapsible" class="call-presentation-collapse call-collapse-button group-call-collapse-button" mat-icon-button type="button" [attr.aria-label]="collapseLabel" (click)="collapse.emit()">
+        <zwei-icon name="expand_more"></zwei-icon>
+    </button>
+    <div class="call-presentation-avatar" [class.call-presentation-avatar-group]="profile.isGroup">
+        <zwei-icon *ngIf="profile.isGroup" name="group"></zwei-icon>
+        <span *ngIf="!profile.isGroup">{{ profile.initials }}</span>
+    </div>
+    <div class="call-presentation-copy">
+        <strong>{{ profile.name }}</strong>
+        <span [attr.role]="profile.error ? 'alert' : 'status'">{{ profile.status }}</span>
+        <small class="call-duration" *ngIf="profile.duration" aria-label="Call duration">{{ profile.duration }}</small>
+    </div>
+</div>

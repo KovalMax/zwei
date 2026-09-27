@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,11 +27,13 @@ const (
 )
 
 type Handler struct {
-	hub      *application.Hub
-	sessions *sharedauth.SessionValidator
-	tickets  TicketConsumer
-	origins  map[string]struct{}
-	context  context.Context
+	hub                  *application.Hub
+	sessions             *sharedauth.SessionValidator
+	tickets              TicketConsumer
+	origins              map[string]struct{}
+	context              context.Context
+	protocol             int
+	sessionCheckInterval time.Duration
 }
 
 type TicketConsumer interface {
@@ -38,7 +41,11 @@ type TicketConsumer interface {
 }
 
 func NewHandler(ctx context.Context, hub *application.Hub, sessions *sharedauth.SessionValidator, tickets TicketConsumer, origins map[string]struct{}) *Handler {
-	return &Handler{context: ctx, hub: hub, sessions: sessions, tickets: tickets, origins: origins}
+	return NewVersionedHandler(ctx, hub, sessions, tickets, origins, application.ProtocolVersion)
+}
+
+func NewVersionedHandler(ctx context.Context, hub *application.Hub, sessions *sharedauth.SessionValidator, tickets TicketConsumer, origins map[string]struct{}, protocol int) *Handler {
+	return &Handler{context: ctx, hub: hub, sessions: sessions, tickets: tickets, origins: origins, protocol: protocol, sessionCheckInterval: pingInterval}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +76,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16), budget: budget, connectionID: connectionID}
+	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16), closeRequest: make(chan struct{}, 1), budget: budget, connectionID: connectionID, protocol: h.protocol, sessions: h.sessions, sessionCheckInterval: h.sessionCheckInterval}
 	h.hub.Add(r.Context(), client)
 	go client.writePump(h.context)
 	client.readPump(h.context)
@@ -92,15 +99,22 @@ type client struct {
 	identity     sharedauth.Identity
 	hub          *application.Hub
 	send         chan []byte
+	closeRequest chan struct{}
 	once         sync.Once
-	sendMu       sync.RWMutex
+	sendMu       sync.Mutex
 	closed       bool
 	budget       application.ConnectionBudget
 	connectionID string
+	protocol     int
+	sessions     interface {
+		Validate(context.Context, sharedauth.Identity, bool) error
+	}
+	sessionCheckInterval time.Duration
 }
 
 func (c *client) Identity() sharedauth.Identity { return c.identity }
 func (c *client) ConnectionID() string          { return c.connectionID }
+func (c *client) ProtocolVersion() int          { return c.protocol }
 func (c *client) Close() {
 	c.sendMu.Lock()
 	c.closed = true
@@ -118,18 +132,38 @@ func (c *client) SendJSON(value any) bool {
 	if err != nil {
 		return false
 	}
-	c.sendMu.RLock()
+	if c.protocol != application.ProtocolVersion {
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal(payload, &envelope) == nil && envelope["version"] != nil {
+			version, marshalErr := json.Marshal(c.protocol)
+			if marshalErr != nil {
+				return false
+			}
+			envelope["version"] = version
+			payload, err = json.Marshal(envelope)
+			if err != nil {
+				return false
+			}
+		}
+	}
+	c.sendMu.Lock()
 	if c.closed {
-		c.sendMu.RUnlock()
+		c.sendMu.Unlock()
 		return false
 	}
 	select {
 	case c.send <- payload:
-		c.sendMu.RUnlock()
+		c.sendMu.Unlock()
 		return true
 	default:
-		c.sendMu.RUnlock()
-		c.Close()
+		// Queue admission can be called while the application owns a group
+		// conversation stripe. Defer lifecycle cleanup to the owned write pump
+		// rather than calling Hub.Remove on this stack.
+		select {
+		case c.closeRequest <- struct{}{}:
+		default:
+		}
+		c.sendMu.Unlock()
 		return false
 	}
 }
@@ -151,8 +185,15 @@ func (c *client) readPump(ctx context.Context) {
 			_ = c.socket.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, "invalid JSON"), time.Now().Add(writeTimeout))
 			return
 		}
+		var envelope struct {
+			Version int `json:"version"`
+		}
+		if json.Unmarshal(payload, &envelope) != nil || envelope.Version != c.protocol {
+			_ = c.socket.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, "unsupported protocol version"), time.Now().Add(writeTimeout))
+			return
+		}
 		slog.Info("websocket message received", "user_id", c.identity.UserID, "bytes", len(payload))
-		if err := c.hub.Handle(ctx, c, payload); err != nil {
+		if err := c.hub.HandleVersion(ctx, c, c.protocol, payload); err != nil {
 			requestID := ""
 			var requestError *application.RequestError
 			if errors.As(err, &requestError) {
@@ -163,7 +204,7 @@ func (c *client) readPump(ctx context.Context) {
 				var command struct {
 					Type string `json:"type"`
 				}
-				if json.Unmarshal(payload, &command) == nil && len(command.Type) >= 5 && command.Type[:5] == "call." {
+				if json.Unmarshal(payload, &command) == nil && (strings.HasPrefix(command.Type, "call.") || strings.HasPrefix(command.Type, "group.call.")) {
 					rejectionType = "call.rejected"
 				}
 			}
@@ -177,7 +218,11 @@ func (c *client) readPump(ctx context.Context) {
 	}
 }
 func (c *client) writePump(ctx context.Context) {
-	ticker := time.NewTicker(pingInterval)
+	interval := c.sessionCheckInterval
+	if interval <= 0 {
+		interval = pingInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	defer c.Close()
 	for {
@@ -187,7 +232,24 @@ func (c *client) writePump(ctx context.Context) {
 			if c.socket.WriteMessage(websocket.TextMessage, payload) != nil {
 				return
 			}
+		case <-c.closeRequest:
+			return
 		case <-ticker.C:
+			// Tickets are single-use and validate the session only during upgrade.
+			// Recheck the shared persisted session version at a bounded cadence and
+			// fail closed on database errors so blocked/revoked sessions cannot keep
+			// an already-open socket indefinitely.
+			validationContext, cancel := context.WithTimeout(ctx, writeTimeout)
+			validationErr := error(nil)
+			if c.sessions == nil {
+				validationErr = sharedauth.ErrSessionInvalid
+			} else {
+				validationErr = c.sessions.Validate(validationContext, c.identity, true)
+			}
+			cancel()
+			if validationErr != nil {
+				return
+			}
 			if c.socket.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeTimeout)) != nil {
 				return
 			}

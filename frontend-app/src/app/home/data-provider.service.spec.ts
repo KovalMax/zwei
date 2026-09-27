@@ -1,4 +1,4 @@
-import {WEBSOCKET_PROTOCOL_VERSION, isValidCallSocketEvent, isValidConversationReadEvent} from './data-provider.service';
+import {WEBSOCKET_PROTOCOL_VERSION, isValidCallSocketEvent, isValidConversationReadEvent, isValidConversationReconciledEvent} from './data-provider.service';
 
 describe('call socket event validation', () => {
     it('accepts a complete incoming call event', () => {
@@ -41,5 +41,26 @@ describe('conversation read event validation', () => {
     it('requires the global reader identity', () => {
         expect(isValidConversationReadEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: 'conversation-1', sequence: 4}})).toBeFalse();
         expect(isValidConversationReadEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: 'conversation-1', user_id: 'user-1', sequence: 4}})).toBeTrue();
+        expect(isValidConversationReadEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: 'conversation-1', user_id: 'user-1', sequence: 4, visible_from_sequence: 2}})).toBeTrue();
+        expect(isValidConversationReadEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: ' ', user_id: 'user-1', sequence: 4}})).toBeFalse();
+        expect(isValidConversationReadEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: 'conversation-1', user_id: 'user-1', sequence: -1}})).toBeFalse();
+        expect(isValidConversationReadEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: {conversation_id: 'conversation-1', user_id: 'user-1', sequence: 4, visible_from_sequence: 0}})).toBeFalse();
+    });
+});
+
+describe('conversation reconciliation event validation', () => {
+    it('requires typed cursors and messages', () => {
+        const event = {
+            version: WEBSOCKET_PROTOCOL_VERSION,
+            type: 'conversation.reconciled',
+            request_id: 'request-1',
+            payload: {conversation_id: 'conversation-1', messages: [], next_after_sequence: 2, high_watermark: 2, has_more: false, own_read_sequence: 2, peer_read_sequence: 1},
+        };
+        expect(isValidConversationReconciledEvent(event)).toBeTrue();
+        expect(isValidConversationReconciledEvent({...event, payload: {...event.payload, high_watermark: -1}})).toBeFalse();
+        expect(isValidConversationReconciledEvent({...event, payload: {...event.payload, peer_read_cursors: [{user_id: 'member-1', sequence: 3, visible_from_sequence: 2}]}})).toBeTrue();
+        expect(isValidConversationReconciledEvent({...event, payload: {...event.payload, peer_read_cursors: [{user_id: '', sequence: 3, visible_from_sequence: 2}]}})).toBeFalse();
+        expect(isValidConversationReconciledEvent({...event, payload: {...event.payload, peer_read_cursors: [{user_id: 'member-1', sequence: 1.5, visible_from_sequence: 2}]}})).toBeFalse();
+        expect(isValidConversationReconciledEvent({...event, payload: {...event.payload, peer_read_cursors: 'invalid'}})).toBeFalse();
     });
 });

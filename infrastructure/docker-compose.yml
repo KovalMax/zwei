@@ -8,6 +8,7 @@ services:
         SERVICE: auth
     environment:
       AUTH_PORT: 8081
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME}

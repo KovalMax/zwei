@@ -1,0 +1,8 @@
+:host { display: block; min-width: 0; }
+.call-presentation-icon-actions { display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; }
+.call-presentation-icon-actions button { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid var(--chat-call-control-border); border-radius: 12px; background: var(--chat-surface-control); color: var(--chat-call-control-text); }
+.call-presentation-icon-actions button:hover:not(:disabled) { background: color-mix(in srgb, var(--chat-accent) 14%, var(--chat-surface-control)); }
+.call-presentation-icon-actions zwei-icon, .call-presentation-icon-actions svg { width: 21px; height: 21px; fill: currentColor; }
+.call-presentation-icon-actions button:disabled { opacity: .6; }
+.call-presentation-icon-actions button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+:host-context(.light-theme) .call-presentation-icon-actions button { background: #fff; color: #172033; border-color: #6d89a7; }

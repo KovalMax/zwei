@@ -1,0 +1,20 @@
+<ng-container *ngIf="state as callState">
+    <section class="group-call-panel group-call-panel-full" *ngIf="callState.phase !== 'idle' && callState.phase !== 'ended' && callState.phase !== 'error' && !minimized" aria-label="Group audio call" aria-live="polite">
+        <div class="group-call-card">
+            <app-call-profile *ngIf="profile as groupProfile" [profile]="groupProfile" [collapsible]="ongoing" collapseLabel="Minimize group call" (collapse)="emit({type: 'collapse'})"></app-call-profile>
+            <audio *ngFor="let peer of callState.peers; trackBy: trackPeer" groupRemoteAudio autoplay playsinline [srcObject]="peer.stream"></audio>
+            <div class="group-call-content">
+                <app-call-participants [participants]="participants"></app-call-participants>
+                <video class="group-presentation" *ngIf="callState.presentation || callState.remotePresentation" autoplay playsinline muted [srcObject]="callState.presentation || callState.remotePresentation" (loadedmetadata)="emit({type: 'presentation-ready', event: $event})" (canplay)="emit({type: 'presentation-ready', event: $event})"></video>
+                <app-call-device-controls class="group-call-devices" *ngIf="callState.localStream" [controls]="controls" [panelClass]="panelClass" (controlChange)="emit({type: 'control-change', change: $event})"></app-call-device-controls>
+            </div>
+            <div class="group-call-actions">
+                <button mat-flat-button color="primary" type="button" *ngIf="callState.phase === 'ringing' && !callState.localStream" (click)="emit({type: 'join'})">Join call</button>
+                <button mat-stroked-button type="button" *ngIf="callState.audioPlaybackBlocked" (click)="emit({type: 'enable-sound'})">Enable sound</button>
+                <app-call-icon-actions *ngIf="callState.localStream" [actions]="actions" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+                <button mat-stroked-button type="button" *ngIf="callState.localStream" (click)="emit({type: 'leave'})">Leave call</button>
+                <button mat-flat-button color="warn" type="button" *ngIf="callState.room" (click)="emit({type: 'end'})">End call</button>
+            </div>
+        </div>
+    </section>
+</ng-container>

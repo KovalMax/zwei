@@ -15,14 +15,15 @@ import (
 )
 
 type Handler struct {
-	auth     *application.Service
-	admins   *application.AdminService
-	sessions *sharedauth.SessionValidator
-	adminIPs *IPAllowlist
+	auth           *application.Service
+	admins         *application.AdminService
+	sessions       *sharedauth.SessionValidator
+	adminIPs       *IPAllowlist
+	allowedOrigins map[string]struct{}
 }
 
-func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist) *Handler {
-	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs}
+func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}) *Handler {
+	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins}
 }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/register", h.register)
@@ -114,6 +115,9 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	h.writeTokens(w, http.StatusOK, tokens)
 }
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
+	if !h.refreshOriginAllowed(w, r) {
+		return
+	}
 	if !h.authHostAllowed(w, r) {
 		return
 	}
@@ -136,6 +140,19 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeTokens(w, http.StatusOK, tokens)
+}
+
+func (h *Handler) refreshOriginAllowed(w http.ResponseWriter, r *http.Request) bool {
+	origins := r.Header.Values("Origin")
+	if len(origins) != 1 || origins[0] == "" || origins[0] == "null" || strings.TrimSpace(origins[0]) != origins[0] {
+		errorJSON(w, http.StatusForbidden, "refresh origin not allowed")
+		return false
+	}
+	if _, ok := h.allowedOrigins[origins[0]]; !ok {
+		errorJSON(w, http.StatusForbidden, "refresh origin not allowed")
+		return false
+	}
+	return true
 }
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	if !h.authHostAllowed(w, r) {

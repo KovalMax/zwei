@@ -1,0 +1,6 @@
+<div class="call-presentation-icon-actions" *ngIf="actions.length" role="group" aria-label="Call controls">
+    <button *ngFor="let item of actions; trackBy: trackAction" mat-icon-button type="button" [disabled]="item.disabled" [attr.aria-label]="item.label" [attr.title]="item.label" (click)="action.emit(item.id)">
+        <zwei-icon *ngIf="item.id === 'screen-share'" [name]="screenShareIcon(item)"></zwei-icon>
+        <svg *ngIf="item.id === 'mute'" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path [attr.d]="mutePath(item)"></path></svg>
+    </button>
+</div>

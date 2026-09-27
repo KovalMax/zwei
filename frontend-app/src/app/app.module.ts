@@ -6,34 +6,29 @@ import {BrowserAnimationsModule} from '@angular/platform-browser/animations';
 import {AppMaterialModule} from './app-material.module';
 import {FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {HeaderComponent} from './navigation/header/header.component';
-import {HomeComponent} from './home/home.component';
 import {LoginComponent} from './login/login.component';
 import {RegistrationComponent} from './registration/registration.component';
 import {HTTP_INTERCEPTORS, HttpClientModule} from '@angular/common/http';
 import {AuthService} from './auth/auth.service';
 import {AuthInterceptorService} from './auth/auth-interceptor.service';
-import {LoadingSpinnerComponent} from './shared/loading-spinner/loading-spinner.component';
 import {RegistrationService} from './registration/registration.service';
 import {ProfileComponent} from './profile/profile.component';
-import {ZweiIconComponent} from './shared/zwei-icon/zwei-icon.component';
 import {PendingComponent} from './pending/pending.component';
 import {ActivationComponent} from './activation/activation.component';
-import {AdminComponent} from './admin/admin.component';
 import {RootRedirectComponent} from './shared/root-redirect/root-redirect.component';
+import {ServiceWorkerModule} from '@angular/service-worker';
+import {environment} from '../environments/environment';
+import {SharedModule} from './shared/shared.module';
 
 @NgModule({
     declarations: [
         AppComponent,
         HeaderComponent,
-        HomeComponent,
         LoginComponent,
         RegistrationComponent,
         ProfileComponent,
-        LoadingSpinnerComponent,
-        ZweiIconComponent,
         PendingComponent,
         ActivationComponent,
-        AdminComponent,
         RootRedirectComponent,
     ],
     imports: [
@@ -44,6 +39,11 @@ import {RootRedirectComponent} from './shared/root-redirect/root-redirect.compon
         FormsModule,
         ReactiveFormsModule,
         HttpClientModule,
+        SharedModule,
+        ServiceWorkerModule.register('ngsw-worker.js', {
+            enabled: environment.production,
+            registrationStrategy: 'registerWhenStable:30000',
+        }),
     ],
     providers: [
         RegistrationService,

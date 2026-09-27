@@ -27,7 +27,8 @@
                         "aot": true,
                         "assets": [
                             "src/favicon.ico",
-                            "src/assets"
+                            "src/assets",
+                            "src/manifest.webmanifest"
                         ],
                         "styles": [
                             "./node_modules/@angular/material/prebuilt-themes/indigo-pink.css",
@@ -48,6 +49,7 @@
                             "sourceMap": false,
                             "namedChunks": false,
                             "extractLicenses": true,
+                            "serviceWorker": "ngsw-config.json",
                             "budgets": [
                                 {
                                     "type": "initial",

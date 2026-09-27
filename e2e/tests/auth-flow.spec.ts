@@ -54,6 +54,85 @@ async function login(page: Page, email: string, value = password): Promise<void>
   await page.getByRole('button', {name: 'Sign in'}).click();
 }
 
+async function assertAccountMenuContrast(page: Page, theme: 'dark' | 'light'): Promise<void> {
+  const metrics = await page.getByRole('menu').evaluate(async menu => {
+    const panel = menu.closest<HTMLElement>('.mat-mdc-menu-panel') ?? menu;
+    await Promise.all(panel.getAnimations({subtree: true}).map(animation => animation.finished.catch(() => undefined)));
+    const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    await frame();
+    await frame();
+    const surface = panel;
+    const parse = (value: string): [number, number, number, number] => {
+      const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      if (!channels || channels.length !== 3) throw new Error(`Unexpected computed color: ${value}`);
+      const alpha = value.startsWith('rgba(') ? Number(value.match(/[\d.]+/g)?.[3] ?? 1) : 1;
+      return [Number(channels[0]), Number(channels[1]), Number(channels[2]), alpha];
+    };
+    const luminance = (color: [number, number, number, number]) => color.slice(0, 3).map(value => {
+      const channel = value / 255;
+      return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+    }).reduce((sum, channel, index) => sum + channel * [.2126, .7152, .0722][index], 0);
+    const background = parse(getComputedStyle(surface).backgroundColor);
+    const items = Array.from(menu.querySelectorAll<HTMLElement>('.mat-mdc-menu-item')).filter(item => item.getBoundingClientRect().height > 0);
+    const identityRows = Array.from(menu.querySelectorAll<HTMLElement>('.account-menu-name, .account-menu-email')).filter(item => item.getBoundingClientRect().height > 0);
+    const composite = (foreground: [number, number, number, number], backdrop: [number, number, number, number]): [number, number, number, number] => {
+      const alpha = foreground[3] + backdrop[3] * (1 - foreground[3]);
+      return [0, 1, 2].map(index => alpha === 0 ? 0 : (foreground[index] * foreground[3] + backdrop[index] * backdrop[3] * (1 - foreground[3])) / alpha).concat(alpha) as [number, number, number, number];
+    };
+    const contrast = (foreground: [number, number, number, number], backdrop: [number, number, number, number]) => {
+      const rendered = composite(foreground, backdrop);
+      const foregroundLuminance = luminance(rendered);
+      const backgroundLuminance = luminance(backdrop);
+      return {renderedForeground: rendered, renderedBackground: backdrop, contrast: (Math.max(foregroundLuminance, backgroundLuminance) + .05) / (Math.min(foregroundLuminance, backgroundLuminance) + .05)};
+    };
+    return {
+      surface: getComputedStyle(surface).backgroundColor,
+      panelClasses: Array.from(surface.classList),
+      items: items.map(item => {
+        const text = item.querySelector<HTMLElement>('.mat-mdc-menu-item-text') ?? item;
+        const foreground = parse(getComputedStyle(text).color);
+        let effectiveOpacity = 1;
+        for (let ancestor: HTMLElement | null = text; ancestor && ancestor !== surface; ancestor = ancestor.parentElement) {
+          effectiveOpacity *= Number(getComputedStyle(ancestor).opacity);
+        }
+        effectiveOpacity *= foreground[3];
+        const effectiveForeground = foreground.slice(0, 3).map((channel, index) => channel * effectiveOpacity + background[index] * (1 - effectiveOpacity)) as [number, number, number];
+        const bgLuminance = luminance(background);
+        const fgLuminance = luminance(effectiveForeground);
+        return {label: item.innerText.trim(), disabled: item.hasAttribute('disabled') || item.getAttribute('aria-disabled') === 'true', color: getComputedStyle(text).color, opacity: effectiveOpacity, effectiveForeground, contrast: (Math.max(bgLuminance, fgLuminance) + .05) / (Math.min(bgLuminance, fgLuminance) + .05)};
+      }),
+      identities: identityRows.map(item => {
+        const text = item.querySelector<HTMLElement>('.mat-mdc-menu-item-text') ?? item;
+        const color = parse(getComputedStyle(text).color);
+        let opacity = 1;
+        for (let ancestor: HTMLElement | null = text; ancestor && ancestor !== surface; ancestor = ancestor.parentElement) opacity *= Number(getComputedStyle(ancestor).opacity);
+        color[3] *= opacity;
+        const itemBackground = parse(getComputedStyle(item).backgroundColor);
+        const renderedBackground = composite(itemBackground, background);
+        const metrics = contrast(color, renderedBackground);
+        return {label: item.innerText.trim(), disabled: item.hasAttribute('disabled') || item.getAttribute('aria-disabled') === 'true', color: getComputedStyle(text).color, opacity, ...metrics};
+      }),
+    };
+  });
+  expect(await page.locator('html').evaluate(element => element.classList.contains('dark-theme'))).toBe(theme === 'dark');
+  expect(metrics.panelClasses).toContain(theme === 'dark' ? 'account-menu-panel-dark' : 'account-menu-panel-light');
+  expect(metrics.surface, `${theme} account-menu surface ${JSON.stringify(metrics.panelClasses)}`).toBe(theme === 'dark' ? 'rgb(38, 53, 70)' : 'rgb(255, 255, 255)');
+  expect(metrics.surface).not.toBe('rgba(0, 0, 0, 0)');
+  expect(metrics.items.length).toBeGreaterThan(0);
+  expect(metrics.identities).toHaveLength(2);
+  for (const identity of metrics.identities) {
+    expect(identity.disabled, `${theme} account identity must be disabled: ${JSON.stringify(identity)}`).toBeTruthy();
+    expect(identity.opacity, `${theme} account identity rendered opacity ${JSON.stringify(identity)}`).toBe(1);
+    expect(identity.contrast, `${theme} composited account identity contrast ${JSON.stringify(identity)}`).toBeGreaterThanOrEqual(4.5);
+  }
+  const disabledItems = metrics.items.filter(item => item.disabled);
+  const normalItems = metrics.items.filter(item => !item.disabled);
+  expect(disabledItems.length, `${theme} account menu should expose disabled identity rows`).toBeGreaterThanOrEqual(2);
+  expect(normalItems.length, `${theme} account menu should expose normal actions`).toBeGreaterThan(0);
+  for (const item of metrics.items) expect(item.contrast, `${theme} effective contrast ${JSON.stringify(item)} on ${metrics.surface}`).toBeGreaterThanOrEqual(4.5);
+  for (const item of disabledItems) expect(item.opacity, `${theme} disabled account text must remain fully opaque: ${JSON.stringify(item)}`).toBe(1);
+}
+
 test('serves the browser security headers', async ({request}) => {
   const response = await request.get('/');
 
@@ -68,8 +147,26 @@ test('serves the browser security headers', async ({request}) => {
   expect(response.headers()['permissions-policy']).toContain('microphone=(self)');
 });
 
+test('publishes raster PWA icons for browser installation', async ({request}) => {
+  const manifestResponse = await request.get('/manifest.webmanifest');
+  expect(manifestResponse.ok()).toBeTruthy();
+  const manifest = await manifestResponse.json() as {icons: Array<{src: string; sizes: string; type: string}>};
+
+  expect(manifest.icons.some(icon => icon.src === 'assets/zwei-app-icon-192.png' && icon.sizes === '192x192' && icon.type === 'image/png')).toBeTruthy();
+  expect(manifest.icons.some(icon => icon.src === 'assets/zwei-app-icon-512.png' && icon.sizes === '512x512' && icon.type === 'image/png')).toBeTruthy();
+  for (const icon of manifest.icons) {
+    const response = await request.get(`/${icon.src}`);
+    expect(response.ok()).toBeTruthy();
+    expect(response.headers()['content-type']).toContain('image/png');
+  }
+});
+
 test('enforces authenticated chat limits through HTTPS', async ({page, request}) => {
+  const initialConversationsResponse = page.waitForResponse(response =>
+    response.url().includes('/api/chat/conversations') && response.request().method() === 'GET',
+  );
   const accessToken = await register(page, uniqueEmail('chat-limit'), 'Chat Limit User');
+  await initialConversationsResponse;
   const responses: Array<{status: number; retryAfter: string}> = [];
 
   for (let attempt = 0; attempt < 21; attempt += 1) {
@@ -220,13 +317,37 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await expect(page.getByRole('heading', {name: 'Choose a conversation'})).toBeVisible();
   await expect(page.getByPlaceholder('Name or email')).toBeVisible();
   await expect(page.getByLabel('Message composer disabled until a conversation is selected')).toBeVisible();
+  await page.evaluate(() => {
+    const event = new Event('beforeinstallprompt') as Event & {prompt: () => Promise<void>; userChoice: Promise<{outcome: 'dismissed'}>};
+    Object.assign(event, {prompt: () => Promise.resolve(), userChoice: Promise.resolve({outcome: 'dismissed'})});
+    window.dispatchEvent(event);
+  });
 
   await page.getByRole('button', {name: 'Account menu'}).click();
   await expect(page.getByRole('menuitem', {name: 'Profile'})).toBeVisible();
+  await expect(page.getByRole('menuitem', {name: 'Install Zwei'})).toBeVisible();
   await expect(page.getByRole('menuitem', {name: 'Sign out'})).toBeVisible();
+  await assertAccountMenuContrast(page, 'dark');
+  await page.screenshot({path: testInfo.outputPath('account-menu-dark.png'), fullPage: false});
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+  const offlineStatus = page.getByText('You’re offline. Zwei will reconnect when your connection returns.');
+  await expect(offlineStatus).toBeVisible();
+  const offlineGeometry = await offlineStatus.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return {left: rect.left, right: rect.right, viewport: document.documentElement.clientWidth};
+  });
+  expect(offlineGeometry.left).toBeGreaterThanOrEqual(0);
+  expect(offlineGeometry.right).toBeLessThanOrEqual(offlineGeometry.viewport + 1);
+  await page.screenshot({path: testInfo.outputPath('offline-banner-desktop.png'), fullPage: false});
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(offlineStatus).toHaveCount(0);
+  await page.getByRole('button', {name: 'Account menu'}).click();
   await page.getByRole('menuitem', {name: 'Switch to light theme'}).click();
   await page.getByRole('button', {name: 'Account menu'}).click();
-  await page.getByRole('menu').screenshot({path: testInfo.outputPath('account-menu-light.png')});
+  await expect(page.getByRole('menuitem', {name: 'Switch to dark theme'})).toBeVisible();
+  await assertAccountMenuContrast(page, 'light');
+  await page.screenshot({path: testInfo.outputPath('account-menu-light.png'), fullPage: false});
   await page.setViewportSize({width: 390, height: 844});
   const mobileMenuBox = await page.evaluate(() => {
     const menu = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-menu-panel')).find(element => {

@@ -83,7 +83,8 @@ test('records the public README journey including admin activation and the Home 
   const invitationCode = await createInvitation(request, peerEmail);
   const peerContext = await browser.newContext();
   const peer = await peerContext.newPage();
-  await register(peer, peerEmail, 'Zwei', 'Zwei Guide', invitationCode);
+  try {
+    await register(peer, peerEmail, 'Zwei', 'Zwei Guide', invitationCode);
 
   await page.goto('/sign-up');
   await capture(page, testInfo, '01-registration');
@@ -129,8 +130,10 @@ test('records the public README journey including admin activation and the Home 
   await expect(page.getByText(peerEmail)).toBeVisible();
   await page.getByText(peerEmail).click();
   await expect(page.getByRole('heading', {name: 'Zwei Guide'})).toBeVisible();
-  await expect(page.getByText('No messages yet.')).toBeVisible();
+  await expect(page.getByText('No messages yet.', {exact: true})).toBeVisible();
   await capture(page, testInfo, '10-home-conversation', 1_500);
 
-  await peerContext.close();
+  } finally {
+    await peerContext.close();
+  }
 });

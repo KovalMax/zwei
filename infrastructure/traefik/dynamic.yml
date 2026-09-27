@@ -20,9 +20,9 @@ http:
         # The local/E2E browser suite creates isolated accounts and administrator
         # sessions from one Docker source address; production keeps its 30/minute
         # limit in infrastructure/production/traefik/dynamic.yml.
-        average: 120
+        average: 1000
         period: 1m
-        burst: 120
+        burst: 1000
     search-rate-limit:
       rateLimit:
         average: 30
@@ -30,14 +30,20 @@ http:
         burst: 40
     chat-rate-limit:
       rateLimit:
-        average: 120
+        # The serial browser suite shares one Docker source address. Per-user
+        # chat limits still exercise request enforcement; production remains
+        # narrower in infrastructure/production/traefik/dynamic.yml.
+        average: 1000
         period: 1m
-        burst: 40
+        burst: 1000
     realtime-rate-limit:
       rateLimit:
-        average: 30
+        # The serial browser suite opens more than 30 isolated sockets per
+        # minute through one Docker gateway. Production keeps its 30/minute
+        # upgrade guard; realtime retains its shared per-user socket budget.
+        average: 1000
         period: 1m
-        burst: 20
+        burst: 1000
     kyc-basic-auth:
       basicAuth:
         realm: Zwei KYC (local)

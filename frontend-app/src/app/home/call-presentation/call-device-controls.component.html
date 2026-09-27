@@ -1,0 +1,8 @@
+<div class="call-presentation-devices">
+    <label *ngFor="let control of controls; trackBy: trackControl">
+        <span>{{ control.label }}</span>
+        <mat-select class="call-select" [aria-label]="control.label" [panelClass]="panelClass" [value]="control.value" [disabled]="control.disabled" (selectionChange)="select(control.id, $event.value)">
+            <mat-option *ngFor="let option of control.options; trackBy: trackDevice" [value]="option.id">{{ option.label }}</mat-option>
+        </mat-select>
+    </label>
+</div>

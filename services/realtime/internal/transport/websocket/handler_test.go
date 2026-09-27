@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,7 +247,148 @@ func (c *ticketConsumer) ConsumeWebSocketTicket(context.Context, string) (bool, 
 	return true, nil
 }
 
+func TestOpenWebSocketClosesAfterSessionVersionRevocation(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	version := &atomic.Int64{}
+	version.Store(3)
+	consumer := &networkTicketConsumer{allow: true}
+	handler := NewHandler(context.Background(), application.NewHub(nil, nil, nil, nil, nil, nil, nil), sharedauth.NewSessionValidator(atomicSessionVersionReader{version: version}, secret), consumer, map[string]struct{}{"https://chat.localhost": {}})
+	handler.sessionCheckInterval = 10 * time.Millisecond
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	conn, response, err := (&websocket.Dialer{HandshakeTimeout: time.Second}).Dial(websocketURL(server.URL, signedTicket(t, secret, "websocket", time.Now().Add(time.Minute))), http.Header{"Origin": []string{"https://chat.localhost"}})
+	if err != nil {
+		if response != nil {
+			t.Fatalf("websocket upgrade: %v (%s)", err, response.Status)
+		}
+		t.Fatalf("websocket upgrade: %v", err)
+	}
+	defer conn.Close()
+	version.Store(4)
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				t.Fatal("socket remained authorized until the test deadline")
+			}
+			return
+		}
+	}
+}
+
+func TestSendJSONQueueOverflowDefersCleanupUntilGroupStripeIsReleased(t *testing.T) {
+	identity := sharedauth.Identity{UserID: uuid.New(), DeviceID: "device"}
+	budget := &countingConnectionBudget{}
+	hub := application.NewHubWithGroupCallAuthorizer(nil, nil, testGroupAuthorizer{}, nil, nil, nil, nil, nil, nil, nil)
+	clientReady := make(chan *client, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		socket, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn := &client{
+			socket: socket, identity: identity, hub: hub, send: make(chan []byte, 16),
+			closeRequest: make(chan struct{}, 1), budget: budget, connectionID: "connection",
+			protocol: 2,
+		}
+		hub.Add(r.Context(), conn)
+		clientReady <- conn
+	}))
+	defer server.Close()
+
+	peer, _, err := (&websocket.Dialer{}).Dial(websocketURL(server.URL, "unused"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	conn := <-clientReady
+	// Hub.Add enqueues the initial presence snapshot; fill the remaining slots.
+	for len(conn.send) < cap(conn.send) {
+		if !conn.SendJSON(struct{}{}) {
+			t.Fatal("could not fill socket queue")
+		}
+	}
+	for i := 0; i < cap(conn.send); i++ {
+		<-conn.send
+	}
+	for i := 0; i < cap(conn.send); i++ {
+		conn.send <- []byte(`{}`)
+	}
+
+	delivered := make(chan struct{})
+	go func() {
+		hub.DeliverGroupRoom(context.Background(), application.GroupRoomChange{
+			Type: "ended",
+			Room: application.GroupRoom{
+				ID: uuid.New(), ConversationID: uuid.New(), MembershipRevision: 1, Status: application.GroupRoomEnded,
+				Participants: []application.GroupParticipant{{UserID: identity.UserID, DeviceID: identity.DeviceID, ConnectionID: conn.connectionID}},
+			},
+			RecipientUserIDs:             []uuid.UUID{identity.UserID},
+			MembershipProjectionRevision: 2,
+			MembershipProjectionDeleted:  true,
+		})
+		close(delivered)
+	}()
+	select {
+	case <-delivered:
+		// DeliverGroupRoom returning proves SendJSON did not synchronously call
+		// Hub.Remove (which can re-enter this same conversation stripe).
+	case <-time.After(time.Second):
+		t.Fatal("queue-overflow send blocked while group conversation stripe was held")
+	}
+
+	go conn.writePump(context.Background())
+	deadline := time.Now().Add(time.Second)
+	for budget.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := budget.calls.Load(); got != 1 {
+		t.Fatalf("connection budget releases = %d, want exactly 1", got)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	for {
+		if _, _, err := peer.ReadMessage(); err != nil {
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				t.Fatal("overflowed socket remained open after deferred cleanup")
+			}
+			break
+		}
+	}
+	conn.Close()
+	conn.Close()
+	if got := budget.calls.Load(); got != 1 {
+		t.Fatalf("connection budget releases after repeated close = %d, want 1", got)
+	}
+}
+
+type countingConnectionBudget struct {
+	calls atomic.Int64
+}
+
+type testGroupAuthorizer struct{}
+
+func (testGroupAuthorizer) BeginGroupCall(context.Context, uuid.UUID, uuid.UUID) (application.GroupCallLease, error) {
+	return nil, errors.New("unexpected group call authorization")
+}
+
+func (*countingConnectionBudget) AllowConnection(context.Context, uuid.UUID, string) (bool, error) {
+	return true, nil
+}
+
+func (b *countingConnectionBudget) ReleaseConnection(context.Context, uuid.UUID, string) error {
+	b.calls.Add(1)
+	return nil
+}
+
 type sessionVersionReader struct{ version int64 }
+
+type atomicSessionVersionReader struct{ version *atomic.Int64 }
+
+func (r atomicSessionVersionReader) QueryRow(context.Context, string, ...any) pgx.Row {
+	return sessionVersionRow{version: r.version.Load()}
+}
 
 func (r sessionVersionReader) QueryRow(context.Context, string, ...any) pgx.Row {
 	return sessionVersionRow{version: r.version}

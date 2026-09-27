@@ -45,6 +45,10 @@ migrate: check_dist_files ## - Run PostgreSQL migrations inside the database con
 e2e: check_dist_files ## - Run Playwright tests against an isolated PostgreSQL schema
 	@bash scripts/e2e.sh $(APP_NAME)
 
+.PHONY: frontend-test
+frontend-test: start ## - Run Angular headless tests with the frontend container dependencies
+	docker compose -p $(APP_NAME) exec -T frontend npm test -- --watch=false --browsers=ChromeHeadless
+
 .PHONY: demo
 demo: check_dist_files ## - Record the README Playwright journey against an isolated schema
 	@bash scripts/e2e.sh $(APP_NAME) demo

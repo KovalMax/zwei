@@ -6,7 +6,7 @@ export const backends = {
     auth: 'https://auth.chat.false.tel',
     admin: 'https://kyc.chat.false.tel',
     chat: 'https://api.chat.false.tel',
-    websocket: 'wss://ws.chat.false.tel/ws',
+    websocket: 'wss://ws.chat.false.tel/ws/v2',
     login: 'https://auth.chat.false.tel/api/auth/login',
     registration: 'https://auth.chat.false.tel/api/auth/register',
     websocketTicket: 'https://auth.chat.false.tel/api/auth/ws-ticket',

@@ -48,6 +48,28 @@ describe('CallFacade', () => {
         expect(facade.state.errorLabel).toBe('Microphone permission was denied. Allow microphone access for this site and try again.');
     });
 
+    it('cleans up microphone state when call.start cannot be queued', async () => {
+        send.and.returnValue(false);
+
+        await facade.start('conversation-1', 'peer-1');
+
+        expect(facade.state.phase).toBe('error');
+        expect(facade.state.errorLabel).toBe('The secure connection is unavailable.');
+        expect(facade.state.localStream).toBeUndefined();
+        expect(stream.track.stop).toHaveBeenCalled();
+    });
+
+    it('does not leave an incoming call stuck in connecting when accept cannot be queued', () => {
+        events.next(incoming());
+        send.and.returnValue(false);
+
+        facade.accept();
+
+        expect(facade.state.phase).toBe('error');
+        expect(facade.state.errorLabel).toBe('The secure connection is unavailable.');
+        expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    });
+
     it('explains when the browser cannot provide a microphone instead of reporting a permission denial', async () => {
         Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: {getUserMedia: () => Promise.reject(new DOMException('unavailable', 'NotReadableError'))}});
 
@@ -128,6 +150,63 @@ describe('CallFacade', () => {
 
         expect(facade.state.callID).toBe('call-1');
         expect(facade.state.statusLabel).toBe('Ringing...');
+    });
+
+    it('adopts a matching accepted event that arrives before the caller publishes ringing', async () => {
+        send.and.callFake(event => {
+            if (event.type === 'call.start') events.next(accepted());
+            return true;
+        });
+
+        await facade.start('conversation-1', 'peer-1');
+        await flush();
+
+        expect(facade.state.callID).toBe('call-1');
+        expect(facade.state.phase).toBe('connecting');
+        expect(connections).toHaveSize(1);
+        expect(send.calls.allArgs().some(([event]) => event.type === 'call.signal' && event.payload.signal.type === 'offer')).toBeTrue();
+    });
+
+    it('rejects an early accepted event for a different outgoing conversation', async () => {
+        send.and.callFake(event => {
+            if (event.type === 'call.start') {
+                events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.accepted', payload: {...callPayload('active'), conversation_id: 'stale-conversation', ice_servers: [{urls: ['turn:turn.example.test:3478'], username: 'user', credential: 'credential'}]}});
+            }
+            return true;
+        });
+
+        await facade.start('conversation-1', 'peer-1');
+        await flush();
+
+        expect(facade.state.callID).toBeUndefined();
+        expect(facade.state.phase).toBe('outgoing');
+        expect(connections).toHaveSize(0);
+    });
+
+    it('handles a synchronous ringing event after starting a call', async () => {
+        send.and.callFake(event => {
+            if (event.type === 'call.start') events.next(ringing());
+            return true;
+        });
+
+        await facade.start('conversation-1', 'peer-1');
+
+        expect(facade.state.callID).toBe('call-1');
+        expect(facade.state.statusLabel).toBe('Ringing...');
+    });
+
+    it('handles a synchronous accepted event after accepting a call', async () => {
+        events.next(incoming());
+        send.and.callFake(event => {
+            if (event.type === 'call.accept') events.next(accepted());
+            return true;
+        });
+
+        facade.accept();
+        await flush();
+
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({audio: true});
+        expect(connections).toHaveSize(1);
     });
 
     it('cleans up a pending outgoing call when realtime is lost before ringing', async () => {
@@ -254,6 +333,11 @@ describe('CallFacade', () => {
 
         expect(setSinkId).toHaveBeenCalledWith('speaker-1');
         expect(facade.selectedOutputDeviceID).toBe('speaker-1');
+
+        await facade.selectOutputDevice('');
+
+        expect(setSinkId).toHaveBeenCalledWith('');
+        expect(facade.selectedOutputDeviceID).toBe('');
     });
 
     it('shares the screen with the selected quality and renegotiates media', async () => {
@@ -536,6 +620,7 @@ class MockPeerConnection {
     public onconnectionstatechange: (() => void) | null = null;
     public connectionState: RTCPeerConnectionState = 'new';
     public signalingState: RTCSignalingState = 'stable';
+    public localDescription?: RTCSessionDescriptionInit;
     public remoteDescription?: RTCSessionDescriptionInit;
     public close = jasmine.createSpy('close');
     public constructor(public readonly configuration: RTCConfiguration) {}
@@ -551,8 +636,8 @@ class MockPeerConnection {
     public async createAnswer(): Promise<RTCSessionDescriptionInit> { return {type: 'answer', sdp: 'answer-sdp'}; }
     public async setLocalDescription(description?: RTCSessionDescriptionInit): Promise<void> {
         if (description?.type === 'rollback') this.signalingState = 'stable';
-        else if (description?.type === 'offer') this.signalingState = 'have-local-offer';
-        else if (description?.type === 'answer') this.signalingState = 'stable';
+        else if (description?.type === 'answer') { this.localDescription = description; this.signalingState = 'stable'; }
+        else { this.localDescription = description || {type: 'offer', sdp: 'offer-sdp'}; this.signalingState = 'have-local-offer'; }
     }
     public async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
         this.remoteDescription = description;

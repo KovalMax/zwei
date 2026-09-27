@@ -53,6 +53,17 @@ make e2e
 
 The E2E environment is isolated from the normal development database. Mailpit is available locally when inspecting test activation messages.
 
+## Browser PWA on macOS
+
+Zwei is a browser PWA, not a signed native macOS application. Install it from
+the supported browser at the HTTPS Zwei address: use Chrome or Edge's **Install
+Zwei** action, or Safari 17+ on macOS Sonoma (14)+ with **Add to Dock**. Use
+Chrome or Edge on earlier Safari/macOS versions. If macOS reports a previously
+installed browser app as damaged, remove that app from Applications, update the
+browser, then reinstall it from the same HTTPS origin. Do not install a copied
+or downloaded `.app` bundle. If the interface appears stale after deployment,
+use **Update available — Reload** from the account menu before reinstalling.
+
 ## Contributing
 
 Contributions are welcome. A simple workflow:

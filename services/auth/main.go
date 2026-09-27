@@ -54,13 +54,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs)
-	mux := runtime.NewHealthHandler("auth")
-	handler.Register(mux)
 	origins, err := runtime.ParseOrigins(getenv("ALLOWED_ORIGINS", "https://chat.localhost"))
 	if err != nil {
 		panic(err)
 	}
+	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs, origins)
+	mux := runtime.NewHealthHandler("auth")
+	handler.Register(mux)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: runtime.WithCORS(cacheControl(mux), origins)}
 	runtime.ConfigureHTTPServer(server)
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {

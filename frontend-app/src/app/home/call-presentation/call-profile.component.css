@@ -1,0 +1,14 @@
+:host { display: block; min-width: 0; }
+.call-presentation-profile { position: relative; display: flex; min-width: 0; align-items: center; gap: 14px; }
+.call-presentation-avatar { display: grid; width: 64px; height: 64px; flex: 0 0 64px; place-items: center; border-radius: 50%; background: linear-gradient(135deg, #92dfaf, #71a9e9); color: #fff; font: 800 18px 'DM Sans', sans-serif; }
+.call-presentation-avatar zwei-icon { width: 28px; height: 28px; flex-basis: 28px; }
+.call-presentation-copy { min-width: 0; }
+.call-presentation-copy strong, .call-presentation-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-presentation-copy strong { color: var(--chat-text-strong); font: 700 18px/1.2 'DM Sans', sans-serif; }
+.call-presentation-copy span { margin-top: 3px; color: var(--chat-muted); font-size: 12px; }
+.call-presentation-copy small { display: block; margin-top: 4px; color: var(--chat-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.call-presentation-collapse { position: absolute; z-index: 2; top: -14px; left: -14px; color: var(--chat-call-icon); }
+.call-presentation-collapse zwei-icon { width: 28px; height: 28px; }
+:host-context(.light-theme) .call-presentation-copy strong { color: #172033; }
+:host-context(.light-theme) .call-presentation-copy span, :host-context(.light-theme) .call-presentation-copy small { color: #4c6077; }
+@media (max-width: 760px) { .call-presentation-collapse { top: -46px; left: -14px; } }

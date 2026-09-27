@@ -1,4 +1,5 @@
 import {Component} from '@angular/core';
+import {PwaService} from './pwa/pwa.service';
 
 @Component({
     standalone: false,
@@ -7,4 +8,5 @@ import {Component} from '@angular/core';
     styleUrls: ['./app.component.css']
 })
 export class AppComponent {
+    public constructor(public readonly pwa: PwaService) {}
 }

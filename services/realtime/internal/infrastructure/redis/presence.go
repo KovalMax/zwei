@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -28,6 +29,8 @@ const (
 	typingStartTTL        = time.Second
 	presenceRefreshWindow = time.Minute
 	presenceRefreshLimit  = 30
+	reconciliationWindow  = time.Minute
+	reconciliationLimit   = 30
 	readWindow            = time.Minute
 	readLimit             = 300
 	callWindow            = time.Minute
@@ -45,8 +48,10 @@ type Change struct {
 }
 
 type ConversationChange struct {
-	ConversationID uuid.UUID   `json:"conversation_id"`
-	UserIDs        []uuid.UUID `json:"user_ids"`
+	ConversationID     uuid.UUID   `json:"conversation_id"`
+	MembershipRevision int64       `json:"membership_revision,omitempty"`
+	Deleted            bool        `json:"deleted,omitempty"`
+	UserIDs            []uuid.UUID `json:"user_ids"`
 }
 
 type TypingChange struct {
@@ -56,15 +61,18 @@ type TypingChange struct {
 }
 
 type MessageChange struct {
-	Message     messaging.Message `json:"message"`
-	RecipientID uuid.UUID         `json:"recipient_id"`
+	Message      messaging.Message `json:"message"`
+	RecipientID  uuid.UUID         `json:"recipient_id"`
+	RecipientIDs []uuid.UUID       `json:"recipient_ids"`
 }
 
 type ReadChange struct {
-	ConversationID uuid.UUID `json:"conversation_id"`
-	ReaderID       uuid.UUID `json:"reader_id"`
-	RecipientID    uuid.UUID `json:"recipient_id"`
-	Sequence       int64     `json:"sequence"`
+	ConversationID      uuid.UUID   `json:"conversation_id"`
+	ReaderID            uuid.UUID   `json:"reader_id"`
+	RecipientID         uuid.UUID   `json:"recipient_id,omitempty"` // legacy direct-conversation field
+	RecipientIDs        []uuid.UUID `json:"recipient_ids"`
+	Sequence            int64       `json:"sequence"`
+	VisibleFromSequence int64       `json:"visible_from_sequence"`
 }
 
 type PresenceCoordinator struct {
@@ -101,6 +109,10 @@ func (c *PresenceCoordinator) AllowTypingStart(ctx context.Context, userID, conv
 
 func (c *PresenceCoordinator) AllowPresenceRefresh(ctx context.Context, userID uuid.UUID) (bool, error) {
 	return c.allow(ctx, commandRateKey("presence-refresh", userID), presenceRefreshWindow, presenceRefreshLimit)
+}
+
+func (c *PresenceCoordinator) AllowReconciliation(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return c.allow(ctx, commandRateKey("reconcile", userID), reconciliationWindow, reconciliationLimit)
 }
 
 func (c *PresenceCoordinator) AllowRead(ctx context.Context, userID uuid.UUID) (bool, error) {
@@ -188,7 +200,29 @@ func (c *PresenceCoordinator) PublishConversation(ctx context.Context, conversat
 	if err != nil {
 		return err
 	}
-	return c.client.Publish(ctx, conversationChannel, payload).Err()
+	subscribers, err := c.client.Publish(ctx, conversationChannel, payload).Result()
+	if err != nil {
+		return err
+	}
+	if subscribers == 0 {
+		return errors.New("conversation event has no subscribers")
+	}
+	return nil
+}
+
+func (c *PresenceCoordinator) PublishGroupProjection(ctx context.Context, conversationID uuid.UUID, revision int64, deleted bool, userIDs []uuid.UUID) error {
+	payload, err := json.Marshal(ConversationChange{ConversationID: conversationID, MembershipRevision: revision, Deleted: deleted, UserIDs: userIDs})
+	if err != nil {
+		return err
+	}
+	subscribers, err := c.client.Publish(ctx, conversationChannel, payload).Result()
+	if err != nil {
+		return err
+	}
+	if subscribers == 0 {
+		return errors.New("group projection event has no subscribers")
+	}
+	return nil
 }
 
 func (c *PresenceCoordinator) PublishTyping(ctx context.Context, conversationID, userID uuid.UUID, started bool) error {
@@ -200,15 +234,19 @@ func (c *PresenceCoordinator) PublishTyping(ctx context.Context, conversationID,
 }
 
 func (c *PresenceCoordinator) PublishMessage(ctx context.Context, message messaging.Message) error {
-	payload, err := json.Marshal(MessageChange{Message: message, RecipientID: message.RecipientID})
+	payload, err := json.Marshal(MessageChange{Message: message, RecipientID: message.RecipientID, RecipientIDs: message.RecipientIDs})
 	if err != nil {
 		return err
 	}
 	return c.client.Publish(ctx, messageChannel, payload).Err()
 }
 
-func (c *PresenceCoordinator) PublishRead(ctx context.Context, readerID, recipientID, conversationID uuid.UUID, sequence int64) error {
-	payload, err := json.Marshal(ReadChange{ConversationID: conversationID, ReaderID: readerID, RecipientID: recipientID, Sequence: sequence})
+func (c *PresenceCoordinator) PublishRead(ctx context.Context, readerID uuid.UUID, recipientIDs []uuid.UUID, conversationID uuid.UUID, sequence, visibleFromSequence int64) error {
+	change := ReadChange{ConversationID: conversationID, ReaderID: readerID, RecipientIDs: recipientIDs, Sequence: sequence, VisibleFromSequence: visibleFromSequence}
+	if len(recipientIDs) == 1 {
+		change.RecipientID = recipientIDs[0]
+	}
+	payload, err := json.Marshal(change)
 	if err != nil {
 		return err
 	}
@@ -312,6 +350,7 @@ func (c *PresenceCoordinator) ConsumeMessages(ctx context.Context, handler func(
 		var change MessageChange
 		if json.Unmarshal([]byte(message.Payload), &change) == nil {
 			change.Message.RecipientID = change.RecipientID
+			change.Message.RecipientIDs = change.RecipientIDs
 			handler(change)
 		}
 	}

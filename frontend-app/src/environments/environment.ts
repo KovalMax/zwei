@@ -10,7 +10,7 @@ export const backends = {
     auth: 'https://chat.localhost',
     admin: 'https://kyc.localhost',
     chat: 'https://api.chat.localhost',
-    websocket: 'wss://ws.chat.localhost/ws',
+    websocket: 'wss://ws.chat.localhost/ws/v2',
     login: 'https://chat.localhost/api/auth/login',
     registration: 'https://chat.localhost/api/auth/register',
     websocketTicket: 'https://chat.localhost/api/auth/ws-ticket',
