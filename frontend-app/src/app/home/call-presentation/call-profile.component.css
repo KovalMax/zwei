@@ -9,6 +9,11 @@
 .call-presentation-copy small { display: block; margin-top: 4px; color: var(--chat-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .call-presentation-collapse { position: absolute; z-index: 2; top: -14px; left: -14px; color: var(--chat-call-icon); }
 .call-presentation-collapse zwei-icon { width: 28px; height: 28px; }
+.call-presentation-collapse.call-direct-collapse-button { top: 0; right: 0; left: auto; display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--chat-call-control-border); border-radius: 50%; background: var(--chat-surface-control); color: var(--chat-call-icon); }
+.call-presentation-collapse.call-direct-collapse-button zwei-icon { position: absolute; top: 50%; left: 50%; margin: 0; transform: translate(-50%, -50%); }
+.call-presentation-collapse.call-direct-collapse-button:hover { background: color-mix(in srgb, var(--chat-accent) 12%, transparent); }
+.call-presentation-collapse.call-direct-collapse-button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+:host-context(.light-theme) .call-presentation-collapse.call-direct-collapse-button { border-color: #6d89a7; background: #faf9fd; color: #2f6fae; }
 :host-context(.light-theme) .call-presentation-copy strong { color: #172033; }
 :host-context(.light-theme) .call-presentation-copy span, :host-context(.light-theme) .call-presentation-copy small { color: #4c6077; }
-@media (max-width: 760px) { .call-presentation-collapse { top: -46px; left: -14px; } }
+@media (max-width: 760px) { .call-presentation-collapse { top: -46px; left: -14px; } .call-presentation-collapse.call-direct-collapse-button { top: 0; right: 0; left: auto; } }

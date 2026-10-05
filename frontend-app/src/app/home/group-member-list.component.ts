@@ -25,7 +25,15 @@ export class GroupMemberListComponent implements OnChanges {
         @Inject(DOCUMENT) document: Document,
         destroyRef: DestroyRef,
     ) {
-        destroyRef.onDestroy(renderer.listen(document, 'scroll', () => this.hideTooltips(), {capture: true, passive: true}));
+        destroyRef.onDestroy(renderer.listen(document, 'scroll', event => {
+            const target = event.target;
+            // Captured scrolls also include unrelated containers (including CDK overlays).
+            // Only movement of the list or its settings panel can displace these targets.
+            if (target === document || target === document.documentElement || target === document.body ||
+                (target instanceof Element && (target === this.memberScroller?.nativeElement || target.closest('.group-settings-panel') === target))) {
+                this.hideTooltips();
+            }
+        }, {capture: true, passive: true}));
     }
 
     @Input({required: true}) public members: readonly GroupMember[] = [];
@@ -51,7 +59,12 @@ export class GroupMemberListComponent implements OnChanges {
             if (generation === this.queuedShowGeneration && this.focusedTooltip === tooltip && this.activeTooltip === tooltip && !this.suppressHoverAfterScroll) tooltip.show(0);
         });
     }
-    public showTooltipOnHover(tooltip: MatTooltip): void { this.activateTooltip(tooltip); }
+    public showTooltipOnHover(tooltip: MatTooltip): void {
+        // Scrolling can move a different button underneath a stationary pointer
+        // and dispatch mouseenter. Wait for real pointer movement before treating
+        // that synthetic entry as renewed hover intent.
+        if (!this.suppressHoverAfterScroll) this.activateTooltip(tooltip);
+    }
     public hideTooltipOnBlur(tooltip: MatTooltip): void {
         if (this.focusedTooltip === tooltip) {
             this.focusedTooltip = undefined;
@@ -100,7 +113,8 @@ export class GroupMemberListComponent implements OnChanges {
     }
 
     private alignFirstVisibleMember(scroller: HTMLElement): void {
-        if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1) return;
+        const paddingBottom = Number.parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
+        if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - paddingBottom - 1) return;
         const listRect = scroller.getBoundingClientRect();
         const firstClippedRow = Array.from(scroller.children).find((child): child is HTMLElement => {
             if (!(child instanceof HTMLElement)) return false;

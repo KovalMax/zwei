@@ -6,3 +6,6 @@
 .call-presentation-icon-actions button:disabled { opacity: .6; }
 .call-presentation-icon-actions button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 :host-context(.light-theme) .call-presentation-icon-actions button { background: #fff; color: #172033; border-color: #6d89a7; }
+.call-presentation-icon-actions button.call-action-round { border-radius: 50%; }
+.call-presentation-icon-actions button.call-action-active { border-color: var(--chat-accent); background: color-mix(in srgb, var(--chat-accent) 24%, var(--chat-surface-control)); color: var(--chat-text-strong); }
+:host-context(.light-theme) .call-presentation-icon-actions button.call-action-active { border-color: #315fba; background: #dbe8ff; color: #173c83; }

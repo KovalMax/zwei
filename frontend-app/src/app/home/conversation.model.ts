@@ -17,7 +17,6 @@ export type GroupRole = 'owner' | 'admin' | 'member';
 export interface GroupMember {
     userId: string;
     displayName: string;
-    email: string;
     role: GroupRole;
     visibleFromSequence: number;
     joinedAt: string;
@@ -40,6 +39,7 @@ export interface GroupConversation extends ConversationBase {
     otherUserId: string;
     otherDisplayName: string;
     otherEmail: string;
+    accessNeedsVerification?: true;
 }
 
 export type Conversation = DirectConversation | GroupConversation;

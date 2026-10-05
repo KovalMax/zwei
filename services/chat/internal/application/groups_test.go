@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -14,6 +15,9 @@ type groupStoreFake struct {
 	changeRoleCalls int
 	transferCalls   int
 	groups          []conversation.Group
+	pageCalls       int
+	pageLimit       int
+	pageCursor      *GroupPageCursor
 }
 
 func (f *groupStoreFake) CreateGroup(_ context.Context, _ uuid.UUID, _ string, members []uuid.UUID) (conversation.Group, error) {
@@ -23,8 +27,10 @@ func (f *groupStoreFake) CreateGroup(_ context.Context, _ uuid.UUID, _ string, m
 func (f *groupStoreFake) GetGroup(context.Context, uuid.UUID, uuid.UUID) (conversation.Group, error) {
 	return conversation.Group{}, nil
 }
-func (f *groupStoreFake) ListGroups(context.Context, uuid.UUID) ([]conversation.Group, error) {
-	return f.groups, nil
+func (f *groupStoreFake) ListGroupsPage(_ context.Context, _ uuid.UUID, limit int, cursor *GroupPageCursor) (GroupPage, error) {
+	f.pageCalls++
+	f.pageLimit, f.pageCursor = limit, cursor
+	return GroupPage{Items: f.groups}, nil
 }
 func (f *groupStoreFake) AddMember(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Group, error) {
 	return conversation.Group{}, nil
@@ -80,14 +86,39 @@ func TestChangeRoleRejectsOwnerAndUnknownRolesBeforePersistence(t *testing.T) {
 	}
 }
 
-func TestListReturnsAuthorizedStoreProjection(t *testing.T) {
+func TestListPageReturnsAuthorizedStoreProjection(t *testing.T) {
 	want := []conversation.Group{{ID: uuid.New()}}
-	groups, err := NewGroups(&groupStoreFake{groups: want}).List(context.Background(), uuid.New())
+	groups, err := NewGroups(&groupStoreFake{groups: want}).ListPage(context.Background(), uuid.New(), 25, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(groups) != 1 || groups[0].ID != want[0].ID {
+	if len(groups.Items) != 1 || groups.Items[0].ID != want[0].ID {
 		t.Fatalf("groups = %#v, want %#v", groups, want)
+	}
+}
+
+func TestListPageRejectsInvalidBoundsAndCursorBeforeStore(t *testing.T) {
+	store := &groupStoreFake{}
+	groups := NewGroups(store)
+	valid := GroupSortKey{SortAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), GroupID: uuid.New()}
+	for _, test := range []struct {
+		name   string
+		limit  int
+		cursor *GroupPageCursor
+	}{
+		{name: "zero limit", limit: 0},
+		{name: "over maximum", limit: 26},
+		{name: "missing upper tuple", limit: 25, cursor: &GroupPageCursor{After: valid}},
+		{name: "after is newer than upper", limit: 25, cursor: &GroupPageCursor{Upper: valid, After: GroupSortKey{SortAt: valid.SortAt.Add(time.Second), GroupID: valid.GroupID}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := groups.ListPage(context.Background(), uuid.New(), test.limit, test.cursor); err != ErrInvalidGroupPage {
+				t.Fatalf("error = %v, want %v", err, ErrInvalidGroupPage)
+			}
+		})
+	}
+	if store.pageCalls != 0 {
+		t.Fatalf("store calls = %d, want 0", store.pageCalls)
 	}
 }
 

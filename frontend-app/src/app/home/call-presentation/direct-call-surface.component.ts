@@ -40,6 +40,12 @@ export class DirectCallSurfaceComponent {
 
     public isOngoing(state: CallState): boolean { return state.phase === 'connecting' || state.phase === 'active'; }
 
+    public shareAudioTooltip(state: CallState): string {
+        if (!this.screenShareSupported) return 'Share audio unavailable: screen sharing is not supported.';
+        if (state.screenShareTransition || state.screenShareStream) return 'Choose whether to share audio before starting screen share.';
+        return 'Include system audio when you share your screen';
+    }
+
     public emit(intent: DirectCallSurfaceIntent): void { this.intent.emit(intent); }
 
     public async toggleScreenShareFullscreen(): Promise<void> {

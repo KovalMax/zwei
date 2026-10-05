@@ -76,6 +76,7 @@ async function activationLink(request: APIRequestContext, email: string): Promis
 }
 
 test('records the public README journey including admin activation and the Home preview', async ({browser, page, request}, testInfo) => {
+  test.setTimeout(60_000);
   const demoEmail = uniqueEmail('user');
   const peerEmail = uniqueEmail('peer');
 

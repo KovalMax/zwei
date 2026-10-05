@@ -31,7 +31,7 @@ func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uui
 		args = append(args, before)
 	}
 	limitArgument := len(args) + 1
-	query += ` AND (expires_at IS NULL OR expires_at > now()) ORDER BY sequence DESC LIMIT $` + strconv.Itoa(limitArgument) + `) m`
+	query += ` AND (expires_at IS NULL OR expires_at > now()) ORDER BY sequence DESC LIMIT $` + strconv.Itoa(limitArgument) + `) m ORDER BY m.sequence DESC`
 	args = append(args, limit+1)
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {

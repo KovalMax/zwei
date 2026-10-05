@@ -41,7 +41,15 @@ func (i *CredentialIssuer) Issue(call application.Call, userID uuid.UUID) (appli
 	if call.ID == uuid.Nil || userID == uuid.Nil {
 		return application.ICEServer{}, errors.New("call credential identity is invalid")
 	}
-	expiresAt := i.now().Add(i.lifetime).Unix()
+	now := i.now()
+	if !call.ExpiresAt.IsZero() && !call.ExpiresAt.After(now) {
+		return application.ICEServer{}, errors.New("call has expired")
+	}
+	expires := now.Add(i.lifetime)
+	if !call.ExpiresAt.IsZero() && call.ExpiresAt.Before(expires) {
+		expires = call.ExpiresAt
+	}
+	expiresAt := expires.Unix()
 	username := fmt.Sprintf("%d:%s:%s", expiresAt, userID, call.ID)
 	mac := hmac.New(sha1.New, i.secret)
 	_, _ = mac.Write([]byte(username))

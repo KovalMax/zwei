@@ -17,7 +17,7 @@ export class RegistrationService {
 
     public registration(model: RegistrationModel): Observable<RegistrationResponse> {
         return this.client
-            .post<RegistrationResponse>(backends.registration, model)
+            .post<RegistrationResponse>(backends.registration, model, {withCredentials: true})
             .pipe(
                 catchError((err: HttpErrorResponse) => throwError(() => ({
                     status: err.status,

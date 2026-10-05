@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,23 @@ import (
 
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
+
+func TestHubRejectsExtraFieldsOnGroupScreenShareMarkers(t *testing.T) {
+	for _, signal := range []string{
+		`{"type":"screen-share-started","sdp":"private"}`,
+		`{"type":"screen-share-stopped","candidate":{}}`,
+	} {
+		t.Run(signal, func(t *testing.T) {
+			client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New(), DeviceID: "device"}}
+			hub := NewHubWithGroupCallAuthorizer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			request := `{"version":2,"type":"group.call.signal","request_id":"group-signal-shape","payload":{"conversation_id":"` + uuid.NewString() + `","room_id":"` + uuid.NewString() + `","generation":1,"target_user_id":"` + uuid.NewString() + `","target_device_id":"target","signal":` + signal + `}}`
+			err := hub.HandleVersion(context.Background(), client, 2, []byte(request))
+			if err == nil || !strings.Contains(err.Error(), "invalid group call signal") {
+				t.Fatalf("HandleVersion() error = %v, want invalid group call signal", err)
+			}
+		})
+	}
+}
 
 func TestHubStartsGroupRoomOnlyForCurrentV2Member(t *testing.T) {
 	userID, memberID, conversationID := uuid.New(), uuid.New(), uuid.New()
@@ -80,6 +98,144 @@ func TestGroupCallStartLinearizesWithMembershipRevocation(t *testing.T) {
 	if rooms.room.Status != GroupRoomEnded {
 		t.Fatalf("projection did not clean up started room: %#v", rooms.room)
 	}
+}
+
+func TestGroupCallDiscoveryReturnsOnlyCurrentJoinableRoom(t *testing.T) {
+	ownerID, memberID, conversationID := uuid.New(), uuid.New(), uuid.New()
+	roomID := uuid.New()
+	for _, test := range []struct {
+		name       string
+		room       GroupRoom
+		roomErr    error
+		revision   int64
+		wantRoom   bool
+		wantStatus string
+		wantEnd    bool
+	}{
+		{name: "no room", roomErr: ErrCallNotFound, revision: 4},
+		{name: "ringing room", room: GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 4, Generation: 2, StateRevision: 1, Status: GroupRoomRinging}, revision: 4, wantRoom: true, wantStatus: GroupRoomRinging},
+		{name: "active room", room: GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 4, Generation: 2, StateRevision: 3, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner", ConnectionID: "owner-socket"}, {UserID: memberID, DeviceID: "member", ConnectionID: "member-socket"}}}, revision: 4, wantRoom: true, wantStatus: GroupRoomActive},
+		{name: "ended room", room: GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 4, Generation: 2, StateRevision: 4, Status: GroupRoomEnded}, revision: 4},
+		{name: "stale membership room", room: GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 3, Generation: 2, StateRevision: 3, Status: GroupRoomActive}, revision: 4, wantEnd: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rooms := &discoveryGroupRooms{groupTestRooms: groupTestRooms{room: test.room}, getErr: test.roomErr}
+			authorizer := &discoveryAuthorizer{groupTestPresence: &groupTestPresence{}, revision: test.revision, memberIDs: []uuid.UUID{ownerID, memberID}}
+			hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
+			client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "owner"}, connectionID: "owner-socket"}
+			request := []byte(`{"version":2,"type":"group.call.discover","request_id":"discover-1","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
+			if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+				t.Fatalf("discover: %v", err)
+			}
+			if len(client.events) != 1 {
+				t.Fatalf("events = %#v, want one correlated response", client.events)
+			}
+			event := client.events[0].(serverEvent)
+			if event.Type != "group.call.discovered" || event.RequestID != "discover-1" {
+				t.Fatalf("response = %#v", event)
+			}
+			payload := event.Payload.(struct {
+				ConversationID uuid.UUID  `json:"conversation_id"`
+				Room           *GroupRoom `json:"room"`
+			})
+			if payload.ConversationID != conversationID || (payload.Room != nil) != test.wantRoom || rooms.endCalls != boolCount(test.wantEnd) {
+				t.Fatalf("payload=%#v endCalls=%d", payload, rooms.endCalls)
+			}
+			if payload.Room != nil && (payload.Room.Status != test.wantStatus || payload.Room.Generation != 2) {
+				t.Fatalf("discovered room=%#v", payload.Room)
+			}
+			if payload.Room != nil {
+				encoded, marshalErr := json.Marshal(event)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				if !bytes.Contains(encoded, []byte(`"state_revision":`+fmt.Sprint(test.room.StateRevision))) || bytes.Contains(encoded, []byte("connection_id")) || bytes.Contains(encoded, []byte("ice_servers")) {
+					t.Fatalf("discovery wire DTO differs from safe room contract: %s", encoded)
+				}
+			}
+			if !authorizer.rolledBack {
+				t.Fatal("authorization lease was not released")
+			}
+		})
+	}
+}
+
+func TestGroupCallDiscoveryRejectsNonmemberWithoutRoomDisclosure(t *testing.T) {
+	userID, conversationID := uuid.New(), uuid.New()
+	authorizer := &discoveryAuthorizer{groupTestPresence: &groupTestPresence{}, err: ErrCallNotAllowed}
+	rooms := &discoveryGroupRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: uuid.New(), ConversationID: conversationID, Status: GroupRoomActive}}}
+	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"private","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) || !errors.Is(err, ErrCallNotAllowed) {
+		t.Fatalf("discover error=%v, want not allowed", err)
+	}
+	if len(client.events) != 0 || rooms.getCalls != 0 {
+		t.Fatalf("nonmember received data or reached Redis: events=%#v reads=%d", client.events, rooms.getCalls)
+	}
+}
+
+func TestGroupCallDiscoveryUsesSharedRealtimeRateLimit(t *testing.T) {
+	userID, conversationID := uuid.New(), uuid.New()
+	authorizer := &discoveryAuthorizer{groupTestPresence: &groupTestPresence{}, revision: 1}
+	rooms := &discoveryGroupRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: uuid.New(), ConversationID: conversationID, MembershipRevision: 1, Generation: 1, Status: GroupRoomActive}}, rateLimited: true}
+	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"limited","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) || !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("discover error=%v, want rate limit rejection", err)
+	}
+	if rooms.getCalls != 0 || len(client.events) != 0 {
+		t.Fatalf("rate-limited discovery touched room state or replied: reads=%d events=%#v", rooms.getCalls, client.events)
+	}
+}
+
+func TestGroupCallFailsClosedWhenCoordinatorLacksSharedRateLimit(t *testing.T) {
+	userID, conversationID := uuid.New(), uuid.New()
+	authorizer := &discoveryAuthorizer{groupTestPresence: &groupTestPresence{}, revision: 1}
+	rooms := &groupTestRooms{room: GroupRoom{ID: uuid.New(), ConversationID: conversationID, MembershipRevision: 1, Generation: 1, Status: GroupRoomActive}}
+	coordinator := groupCoordinatorWithoutRateLimit{GroupRoomCoordinator: rooms, PresenceCoordinator: rooms}
+	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, coordinator, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}}
+
+	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"missing-limiter","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) || requestErr.RequestID != "missing-limiter" || requestErr.Error() != "call rate limit exceeded" {
+		t.Fatalf("discover error = %#v, want correlated call rate limit rejection", err)
+	}
+	if len(client.events) != 0 {
+		t.Fatalf("coordinator without limiter was allowed through: events=%#v", client.events)
+	}
+}
+
+func TestGroupCallDiscoveryHonorsCancellationAndReleasesLease(t *testing.T) {
+	ownerID, conversationID := uuid.New(), uuid.New()
+	authorizer := &discoveryAuthorizer{groupTestPresence: &groupTestPresence{}, revision: 1, memberIDs: []uuid.UUID{ownerID}}
+	rooms := &discoveryGroupRooms{waitForCancellation: true, entered: make(chan struct{})}
+	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "device"}, connectionID: "socket"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- hub.HandleVersion(ctx, client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"cancel","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	}()
+	<-rooms.entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("discovery error=%v, want cancellation", err)
+	}
+	if !authorizer.rolledBack || len(client.events) != 0 {
+		t.Fatalf("lease rolled back=%v events=%#v", authorizer.rolledBack, client.events)
+	}
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func TestGroupCallSyncReturnsOwnedActiveSnapshotOrMinimalTerminalAck(t *testing.T) {
@@ -1817,6 +1973,82 @@ type groupTestRooms struct {
 	abortCalls    int
 }
 
+type groupCoordinatorWithoutRateLimit struct {
+	GroupRoomCoordinator
+	PresenceCoordinator
+}
+
+type discoveryAuthorizer struct {
+	*groupTestPresence
+	revision   int64
+	memberIDs  []uuid.UUID
+	err        error
+	rolledBack bool
+}
+
+func (a *discoveryAuthorizer) BeginGroupCall(context.Context, uuid.UUID, uuid.UUID) (GroupCallLease, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
+	return &discoveryLease{authorizer: a, revision: a.revision, memberIDs: a.memberIDs}, nil
+}
+
+type discoveryLease struct {
+	authorizer *discoveryAuthorizer
+	revision   int64
+	memberIDs  []uuid.UUID
+}
+
+func (l *discoveryLease) MembershipRevision() int64 { return l.revision }
+func (l *discoveryLease) ActiveMemberIDs() []uuid.UUID {
+	return append([]uuid.UUID(nil), l.memberIDs...)
+}
+func (*discoveryLease) Commit(context.Context) error { return nil }
+func (l *discoveryLease) Rollback(context.Context) error {
+	l.authorizer.rolledBack = true
+	return nil
+}
+
+type discoveryGroupRooms struct {
+	groupTestRooms
+	getErr              error
+	getCalls            int
+	endCalls            int
+	waitForCancellation bool
+	entered             chan struct{}
+	rateLimited         bool
+}
+
+func (*discoveryGroupRooms) AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+func (*discoveryGroupRooms) AllowRead(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (r *discoveryGroupRooms) AllowCall(context.Context, uuid.UUID) (bool, error) {
+	return !r.rateLimited, nil
+}
+func (*discoveryGroupRooms) AllowSignal(context.Context, uuid.UUID) (bool, error) { return true, nil }
+
+func (r *discoveryGroupRooms) GetGroupRoomForConversation(ctx context.Context, _ uuid.UUID) (GroupRoom, error) {
+	r.getCalls++
+	if r.waitForCancellation {
+		if r.entered != nil {
+			close(r.entered)
+		}
+		<-ctx.Done()
+		return GroupRoom{}, ctx.Err()
+	}
+	return r.room, r.getErr
+}
+
+func (r *discoveryGroupRooms) EndGroupRoomForMembershipChange(_ context.Context, _, roomID uuid.UUID, generation, stateRevision, _ int64) (GroupRoom, error) {
+	r.endCalls++
+	if r.room.ID != roomID || r.room.Generation != generation || r.room.StateRevision != stateRevision {
+		return GroupRoom{}, ErrCallNotAllowed
+	}
+	r.room.Status = GroupRoomEnded
+	return r.room, nil
+}
+
 type failingGroupTerminationCoordinator struct {
 	groupTestRooms
 	getErr      error
@@ -1850,6 +2082,12 @@ func (*groupTestRooms) Online(context.Context, []uuid.UUID) (map[uuid.UUID]bool,
 	return nil, nil
 }
 func (*groupTestRooms) Publish(context.Context, uuid.UUID, bool) error { return nil }
+func (*groupTestRooms) AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+func (*groupTestRooms) AllowRead(context.Context, uuid.UUID) (bool, error)   { return true, nil }
+func (*groupTestRooms) AllowCall(context.Context, uuid.UUID) (bool, error)   { return true, nil }
+func (*groupTestRooms) AllowSignal(context.Context, uuid.UUID) (bool, error) { return true, nil }
 func (r *groupTestRooms) StartGroupRoom(_ context.Context, room GroupRoom, _ string) (GroupRoom, error) {
 	room.Status = GroupRoomRinging
 	r.room = room

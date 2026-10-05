@@ -11,6 +11,9 @@ const (
 	RateBucketConversationList   = "conversation-list"
 	RateBucketConversationCreate = "conversation-create"
 	RateBucketConversationGet    = "conversation-get"
+	RateBucketGroupList          = "group-list"
+	RateBucketGroupGet           = "group-get"
+	RateBucketGroupMutation      = "group-mutation"
 	RateBucketHistory            = "history"
 	RateBucketMessage            = "message"
 )

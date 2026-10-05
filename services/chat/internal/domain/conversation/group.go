@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -26,7 +27,8 @@ const (
 
 func NewGroupName(name string) (string, error) {
 	name = strings.TrimSpace(name)
-	if len(name) == 0 || len(name) > 80 {
+	length := utf8.RuneCountInString(name)
+	if length == 0 || length > 80 {
 		return "", ErrInvalidGroupName
 	}
 	return name, nil
@@ -37,7 +39,6 @@ func ValidRole(role Role) bool { return role == RoleOwner || role == RoleAdmin |
 type GroupMember struct {
 	UserID              uuid.UUID `json:"user_id"`
 	DisplayName         string    `json:"display_name"`
-	Email               string    `json:"email"`
 	Role                Role      `json:"role"`
 	VisibleFromSequence int64     `json:"visible_from_sequence"`
 	JoinedAt            time.Time `json:"joined_at"`

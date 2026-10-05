@@ -28,3 +28,23 @@ func TestCredentialIssuerIssuesBoundedRESTCredential(t *testing.T) {
 		t.Fatalf("URLs = %v", credential.URLs)
 	}
 }
+
+func TestCredentialIssuerNeverOutlivesCall(t *testing.T) {
+	issuer, err := NewCredentialIssuer("01234567890123456789012345678901", []string{"turn:turn.example.test:3478?transport=udp"}, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_770_000_000, 0)
+	issuer.now = func() time.Time { return now }
+	callExpiry := now.Add(10 * time.Minute)
+	credential, err := issuer.Issue(application.Call{ID: uuid.New(), ExpiresAt: callExpiry}, uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(credential.Username, "1770000600:") {
+		t.Fatalf("credential expiry is not capped to room expiry: %q", credential.Username)
+	}
+	if _, err := issuer.Issue(application.Call{ID: uuid.New(), ExpiresAt: now}, uuid.New()); err == nil {
+		t.Fatal("expected expired call credentials to be rejected")
+	}
+}

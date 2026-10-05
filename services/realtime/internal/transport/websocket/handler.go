@@ -208,14 +208,41 @@ func (c *client) readPump(ctx context.Context) {
 					rejectionType = "call.rejected"
 				}
 			}
+			errorMessage := err.Error()
+			if rejectionType == "call.rejected" {
+				errorMessage = publicRejectionMessage(err)
+			}
 			c.SendJSON(struct {
 				Version   int               `json:"version"`
 				Type      string            `json:"type"`
 				RequestID string            `json:"request_id,omitempty"`
 				Payload   map[string]string `json:"payload"`
-			}{Version: application.ProtocolVersion, Type: rejectionType, RequestID: requestID, Payload: map[string]string{"error": err.Error()}})
+			}{Version: c.protocol, Type: rejectionType, RequestID: requestID, Payload: map[string]string{"error": errorMessage}})
 		}
 	}
+}
+
+func publicRejectionMessage(err error) string {
+	var requestError *application.RequestError
+	if errors.As(err, &requestError) {
+		switch {
+		case errors.Is(requestError, application.ErrCallBusy):
+			return "user is already in a call"
+		case errors.Is(requestError, application.ErrCallNotFound):
+			return "call not found"
+		case errors.Is(requestError, application.ErrCallNotAllowed):
+			return "call not allowed"
+		case errors.Is(requestError, application.ErrCallTaken):
+			return "call already accepted"
+		case errors.Is(requestError, application.ErrGroupRoomFull):
+			return "group call is full (maximum 4 participants)"
+		case errors.Is(requestError, application.ErrCallUnavailable):
+			return "call unavailable"
+		default:
+			return "call unavailable"
+		}
+	}
+	return "request rejected"
 }
 func (c *client) writePump(ctx context.Context) {
 	interval := c.sessionCheckInterval

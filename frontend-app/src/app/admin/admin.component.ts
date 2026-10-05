@@ -18,6 +18,7 @@ export class AdminComponent implements OnInit {
     public isLoading = true;
     public isCreatingInvitation = false;
     public resendingActivationID: string | null = null;
+    public activationFeedback: {message: string; kind: 'success' | 'error'} | null = null;
     public createdCode = '';
     private reloadGeneration = 0;
 
@@ -65,12 +66,13 @@ export class AdminComponent implements OnInit {
     public resendActivation(user: AdminUser): void {
         if (this.resendingActivationID === user.id) return;
         this.resendingActivationID = user.id;
+        this.activationFeedback = null;
         this.admins.resendActivationLink(user.id).pipe(finalize(() => {
             if (this.resendingActivationID === user.id) this.resendingActivationID = null;
             this.changeDetector.markForCheck();
         })).subscribe({
-            next: () => { this.showMessage('Activation link sent.'); this.reload(); },
-            error: () => this.showError('Could not resend the activation link.'),
+            next: () => { this.activationFeedback = {message: 'Activation link sent.', kind: 'success'}; this.reload(); },
+            error: () => { this.activationFeedback = {message: 'Could not resend the activation link.', kind: 'error'}; this.changeDetector.markForCheck(); },
         });
     }
 

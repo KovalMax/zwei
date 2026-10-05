@@ -26,22 +26,19 @@
                 </ng-template>
                 <video class="call-screen-preview" *ngIf="callState.screenShareStream && callState.remoteScreenStream" autoplay muted playsinline aria-label="Your shared screen preview" [srcObject]="callState.screenShareStream"></video>
             </section>
-            <app-call-device-controls class="call-devices" *ngIf="isOngoing(callState)" [controls]="controls" [panelClass]="panelClass" (controlChange)="emit({type: 'control-change', change: $event})"></app-call-device-controls>
+            <app-call-device-controls class="call-devices" *ngIf="isOngoing(callState)" [controls]="controls" [panelClass]="panelClass" [qualityPickerEnabled]="true" [showShareAudioOption]="callState.phase === 'active'" [shareAudioChecked]="callState.screenShareAudioEnabled" [shareAudioDisabled]="!screenShareSupported || callState.screenShareTransition || !!callState.screenShareStream" [shareAudioTooltip]="shareAudioTooltip(callState)" (controlChange)="emit({type: 'control-change', change: $event})" (shareAudioChange)="emit({type: 'screen-share-audio-change', enabled: $event})"></app-call-device-controls>
             <p class="call-device-note" *ngIf="isOngoing(callState) && !outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
-            <div class="call-screen-tools" *ngIf="callState.phase === 'active'">
-                <label class="screen-share-audio-option" title="Optional when your browser supports it.">
-                    <input #screenAudio type="checkbox" [checked]="callState.screenShareAudioEnabled" [disabled]="callState.screenShareTransition || !!callState.screenShareStream || !screenShareSupported" (change)="emit({type: 'screen-share-audio-change', enabled: screenAudio.checked})">
-                    <span class="screen-share-audio-copy"><span>Share audio</span></span>
-                </label>
-            </div>
         </div>
         <div class="call-actions">
             <button mat-flat-button color="primary" type="button" *ngIf="callState.phase === 'incoming'" (click)="emit({type: 'accept'})">Accept</button>
             <button mat-stroked-button type="button" *ngIf="callState.phase === 'incoming'" (click)="emit({type: 'decline'})">Decline</button>
             <button mat-stroked-button type="button" *ngIf="callState.phase === 'outgoing' || callState.phase === 'requesting'" (click)="emit({type: 'cancel'})">Cancel</button>
             <button mat-stroked-button type="button" *ngIf="callState.audioPlaybackBlocked" (click)="emit({type: 'enable-sound'})">Enable sound</button>
-            <app-call-icon-actions *ngIf="isOngoing(callState)" [actions]="actions" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
-            <button mat-flat-button color="warn" type="button" *ngIf="isOngoing(callState)" (click)="emit({type: 'end'})">End call</button>
+            <div class="direct-call-control-row" *ngIf="isOngoing(callState)" role="group" aria-label="Call controls">
+                <app-call-icon-actions [appearance]="'round'" [actions]="actions | slice:0:1" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+                <button class="direct-call-end-button" mat-icon-button type="button" aria-label="End call" title="End call" (click)="emit({type: 'end'})"><zwei-icon name="call_end"></zwei-icon></button>
+                <app-call-icon-actions [appearance]="'round'" [actions]="actions | slice:1" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+            </div>
         </div>
     </div>
 </ng-container>

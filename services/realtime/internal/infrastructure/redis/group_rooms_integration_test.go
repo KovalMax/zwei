@@ -94,7 +94,7 @@ func TestGroupRoomReservationIntegration(t *testing.T) {
 	for range participants[1:] {
 		if err := <-joinResults; err == nil {
 			successes++
-		} else if !errors.Is(err, application.ErrCallUnavailable) {
+		} else if !errors.Is(err, application.ErrGroupRoomFull) {
 			t.Fatalf("concurrent join: %v", err)
 		}
 	}
@@ -172,6 +172,54 @@ func TestGroupRoomReservationIntegration(t *testing.T) {
 	}
 	if _, err := startAdmittedGroupRoom(ctx, coordinator, application.GroupRoom{ID: uuid.New(), ConversationID: conversationID, MembershipRevision: 7, Generation: 2, Participants: participants[:1]}); err != nil {
 		t.Fatalf("start after terminal cleanup: %v", err)
+	}
+}
+
+func TestDiscoverableGroupRoomIndexIntegration(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	coordinator, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatalf("create coordinator: %v", err)
+	}
+	defer coordinator.Close()
+
+	roomID, conversationID, otherConversationID := uuid.New(), uuid.New(), uuid.New()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: "owner-device", ConnectionID: "owner-socket"}
+	keys := []string{groupRoomKey(roomID), groupRoomConversationKey(conversationID), groupRoomConversationKey(otherConversationID), groupRoomUserKey(owner.UserID)}
+	defer func() {
+		_ = coordinator.client.Del(ctx, keys...).Err()
+		_ = coordinator.client.ZRem(ctx, groupRoomExpiryKey, roomID.String()).Err()
+	}()
+	if _, err := coordinator.GetGroupRoomForConversation(ctx, conversationID); !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("discovery before start = %v, want no room", err)
+	}
+	started, err := startAdmittedGroupRoom(ctx, coordinator, application.GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 5, Generation: 1, Participants: []application.GroupParticipant{owner}})
+	if err != nil {
+		t.Fatalf("start room: %v", err)
+	}
+	discovered, err := coordinator.GetGroupRoomForConversation(ctx, conversationID)
+	if err != nil || discovered.ID != roomID || discovered.Generation != started.Generation || discovered.MembershipRevision != 5 || discovered.Status != application.GroupRoomRinging {
+		t.Fatalf("discovered room=%#v err=%v", discovered, err)
+	}
+	if discovered.Participants[0].ConnectionID != owner.ConnectionID {
+		t.Fatalf("internal room lost socket binding: %#v", discovered.Participants[0])
+	}
+	if err := coordinator.client.Set(ctx, groupRoomConversationKey(otherConversationID), roomID.String(), time.Minute).Err(); err != nil {
+		t.Fatalf("seed mismatched room index: %v", err)
+	}
+	if _, err := coordinator.GetGroupRoomForConversation(ctx, otherConversationID); !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("mismatched room index discovery = %v, want no room", err)
+	}
+	if _, err := coordinator.EndGroupRoom(ctx, roomID, owner); err != nil {
+		t.Fatalf("end room: %v", err)
+	}
+	if _, err := coordinator.GetGroupRoomForConversation(ctx, conversationID); !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("discovery after end = %v, want no room", err)
 	}
 }
 

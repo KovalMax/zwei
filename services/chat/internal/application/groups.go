@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -15,12 +16,35 @@ var (
 	ErrMemberExists          = errors.New("user is already an active group member")
 	ErrGroupFull             = errors.New("group has reached its 16 member limit")
 	ErrSelfOwnershipTransfer = errors.New("cannot transfer group ownership to yourself")
+	ErrInvalidGroupPage      = errors.New("invalid group page")
 )
+
+const (
+	DefaultGroupPageLimit = 25
+	MaxGroupPageLimit     = 25
+)
+
+// GroupSortKey is the stable activity-order tuple used to traverse group pages.
+type GroupSortKey struct {
+	SortAt  time.Time
+	GroupID uuid.UUID
+}
+
+// GroupPageCursor bounds traversal without granting access to any group.
+type GroupPageCursor struct {
+	Upper GroupSortKey
+	After GroupSortKey
+}
+
+type GroupPage struct {
+	Items      []conversation.Group
+	NextCursor *GroupPageCursor
+}
 
 // GroupStore is the persistence port consumed by group use cases.
 type GroupStore interface {
 	CreateGroup(context.Context, uuid.UUID, string, []uuid.UUID) (conversation.Group, error)
-	ListGroups(context.Context, uuid.UUID) ([]conversation.Group, error)
+	ListGroupsPage(context.Context, uuid.UUID, int, *GroupPageCursor) (GroupPage, error)
 	GetGroup(context.Context, uuid.UUID, uuid.UUID) (conversation.Group, error)
 	AddMember(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Group, error)
 	RemoveMember(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Group, error)
@@ -66,8 +90,43 @@ func (g *Groups) Get(ctx context.Context, callerID, groupID uuid.UUID) (conversa
 	return g.store.GetGroup(ctx, callerID, groupID)
 }
 
-func (g *Groups) List(ctx context.Context, callerID uuid.UUID) ([]conversation.Group, error) {
-	return g.store.ListGroups(ctx, callerID)
+func (g *Groups) ListPage(ctx context.Context, callerID uuid.UUID, limit int, cursor *GroupPageCursor) (GroupPage, error) {
+	if callerID == uuid.Nil || limit < 1 || limit > MaxGroupPageLimit {
+		return GroupPage{}, ErrInvalidGroupPage
+	}
+	if err := ValidateGroupPageCursor(cursor); err != nil {
+		return GroupPage{}, ErrInvalidGroupPage
+	}
+	return g.store.ListGroupsPage(ctx, callerID, limit, cursor)
+}
+
+func ValidateGroupPageCursor(cursor *GroupPageCursor) error {
+	if cursor == nil {
+		return nil
+	}
+	if !validGroupSortKey(cursor.Upper) || !validGroupSortKey(cursor.After) || compareGroupSortKeys(cursor.After, cursor.Upper) > 0 {
+		return ErrInvalidGroupPage
+	}
+	return nil
+}
+
+func validGroupSortKey(key GroupSortKey) bool { return !key.SortAt.IsZero() && key.GroupID != uuid.Nil }
+
+// Positive means left sorts before/right (newer timestamp, then larger ID).
+func compareGroupSortKeys(left, right GroupSortKey) int {
+	if left.SortAt.After(right.SortAt) {
+		return 1
+	}
+	if left.SortAt.Before(right.SortAt) {
+		return -1
+	}
+	if left.GroupID == right.GroupID {
+		return 0
+	}
+	if left.GroupID.String() > right.GroupID.String() {
+		return 1
+	}
+	return -1
 }
 
 func (g *Groups) AddMember(ctx context.Context, callerID, groupID, memberID uuid.UUID) (conversation.Group, error) {

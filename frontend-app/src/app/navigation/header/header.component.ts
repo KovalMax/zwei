@@ -1,4 +1,5 @@
-import {ChangeDetectorRef, Component, OnDestroy, OnInit} from '@angular/core';
+import {ChangeDetectorRef, Component, HostListener, OnDestroy, OnInit, ViewChild} from '@angular/core';
+import {MatMenuTrigger} from '@angular/material/menu';
 import {AuthService} from '../../auth/auth.service';
 import {Router} from '@angular/router';
 import {Subscription} from 'rxjs';
@@ -12,6 +13,7 @@ import {PwaService} from '../../pwa/pwa.service';
     styleUrls: ['./header.component.css']
 })
 export class HeaderComponent implements OnInit, OnDestroy {
+    @ViewChild(MatMenuTrigger) private accountMenuTrigger?: MatMenuTrigger;
     public isAuthenticated = false;
     public profile?: Profile;
     public isDarkTheme = true;
@@ -47,6 +49,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.subscriptions.unsubscribe();
     }
 
+    @HostListener('window:resize')
+    public onWindowResize(): void {
+        this.applyAccountMenuTheme();
+    }
+
     public onLogout(): void {
         this.authService.logout().subscribe(() => void this.router.navigate(['login']));
     }
@@ -60,6 +67,17 @@ export class HeaderComponent implements OnInit, OnDestroy {
     public applyAccountMenuTheme(): void {
         const panel = document.querySelector<HTMLElement>('.cdk-overlay-container .mat-mdc-menu-panel');
         if (!panel) return;
+        if (window.matchMedia('(max-width: 600px)').matches) {
+            panel.style.setProperty('position', 'fixed', 'important');
+            panel.style.setProperty('top', 'auto', 'important');
+            panel.style.setProperty('right', '16px', 'important');
+            panel.style.setProperty('bottom', '16px', 'important');
+            panel.style.setProperty('left', 'auto', 'important');
+            panel.style.setProperty('transform', 'none', 'important');
+        } else {
+            ['position', 'top', 'right', 'bottom', 'left', 'transform'].forEach(property => panel.style.removeProperty(property));
+            this.accountMenuTrigger?.updatePosition();
+        }
         const foreground = this.isDarkTheme ? '#edf2fa' : '#172033';
         panel.classList.toggle('account-menu-panel-dark', this.isDarkTheme);
         panel.classList.toggle('account-menu-panel-light', !this.isDarkTheme);

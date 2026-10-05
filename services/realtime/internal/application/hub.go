@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -171,8 +172,6 @@ type Hub struct {
 	logger           CallLogger
 	mu               sync.RWMutex
 	clients          map[string]Client
-	messageMu        sync.Mutex
-	messageAt        map[string]time.Time
 	groupOrder       [64]chan struct{}
 }
 
@@ -211,7 +210,7 @@ func NewHubWithGroupCallAuthorizer(sender *messaging.Sender, presence PresenceRe
 	if resolver, ok := presence.(TypingRecipientResolver); ok {
 		typingRecipients = resolver
 	}
-	hub := &Hub{sender: sender, presence: presence, typingRecipients: typingRecipients, groupCallAuth: authorizer, coord: coord, delivery: delivery, cursors: cursors, reconcile: reconcile, calls: calls, turn: turn, logger: logger, clients: make(map[string]Client), messageAt: make(map[string]time.Time)}
+	hub := &Hub{sender: sender, presence: presence, typingRecipients: typingRecipients, groupCallAuth: authorizer, coord: coord, delivery: delivery, cursors: cursors, reconcile: reconcile, calls: calls, turn: turn, logger: logger, clients: make(map[string]Client)}
 	for index := range hub.groupOrder {
 		hub.groupOrder[index] = make(chan struct{}, 1)
 	}
@@ -513,7 +512,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 		if request.RequestID == "" {
 			return &RequestError{Err: errors.New("group call request ID is required")}
 		}
-		if request.Type != "group.call.start" && request.Payload.Generation <= 0 {
+		if request.Type != "group.call.start" && request.Type != "group.call.discover" && request.Payload.Generation <= 0 {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("positive group room generation is required")}
 		}
 		if len(request.Payload.Signal) > 16*1024 || (len(request.Payload.Signal) > 0 && (!json.Valid(request.Payload.Signal) || !validCallSignal(request.Payload.Signal))) {
@@ -525,26 +524,33 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 		}
 		operationCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
-			allowed, err := allowRealtimeCallCommand(operationCtx, limiter, client.Identity().UserID, request.Type)
-			if err != nil || !allowed {
-				if ctxErr := operationCtx.Err(); ctxErr != nil {
-					return &RequestError{RequestID: request.RequestID, Err: ctxErr}
-				}
-				return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
+		limiter, ok := h.coord.(RealtimeRateCoordinator)
+		if !ok {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
+		}
+		allowed, err := allowRealtimeCallCommand(operationCtx, limiter, client.Identity().UserID, request.Type)
+		if err != nil || !allowed {
+			if ctxErr := operationCtx.Err(); ctxErr != nil {
+				return &RequestError{RequestID: request.RequestID, Err: ctxErr}
 			}
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
 		}
 		if request.Type == "group.call.sync" {
 			return h.handleGroupRoomSync(operationCtx, client, request.RequestID, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation)
 		}
+		if request.Type == "group.call.discover" {
+			return h.handleGroupRoomDiscovery(operationCtx, client, request.RequestID, request.Payload.ConversationID)
+		}
 		return h.handleGroupRoom(operationCtx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation, request.Payload.TargetUserID, request.Payload.TargetDeviceID, request.Payload.Signal)
 	}
 	if request.Type == "presence.refresh" {
-		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
-			allowed, err := limiter.AllowPresenceRefresh(ctx, client.Identity().UserID)
-			if err != nil || !allowed {
-				return &RequestError{RequestID: request.RequestID, Err: errors.New("presence refresh rate limit exceeded")}
-			}
+		limiter, ok := h.coord.(RealtimeRateCoordinator)
+		if !ok {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("presence refresh rate limit exceeded")}
+		}
+		allowed, err := limiter.AllowPresenceRefresh(ctx, client.Identity().UserID)
+		if err != nil || !allowed {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("presence refresh rate limit exceeded")}
 		}
 		h.sendPresenceSnapshot(ctx, client)
 		return nil
@@ -568,20 +574,24 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 		if request.Type == "call.signal" && (len(bytes.TrimSpace(request.Payload.Signal)) == 0 || bytes.TrimSpace(request.Payload.Signal)[0] != '{') {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("signal must be an object")}
 		}
-		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
-			allowed, err := allowRealtimeCallCommand(ctx, limiter, client.Identity().UserID, request.Type)
-			if err != nil || !allowed {
-				return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
-			}
+		limiter, ok := h.coord.(RealtimeRateCoordinator)
+		if !ok {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
+		}
+		allowed, err := allowRealtimeCallCommand(ctx, limiter, client.Identity().UserID, request.Type)
+		if err != nil || !allowed {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
 		}
 		return h.handleCall(ctx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.CallID, request.Payload.Signal)
 	}
 	if request.Type == "conversation.read" {
-		if limiter, ok := h.coord.(RealtimeRateCoordinator); ok {
-			allowed, err := limiter.AllowRead(ctx, client.Identity().UserID)
-			if err != nil || !allowed {
-				return &RequestError{RequestID: request.RequestID, Err: errors.New("read rate limit exceeded")}
-			}
+		limiter, ok := h.coord.(RealtimeRateCoordinator)
+		if !ok {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("read rate limit exceeded")}
+		}
+		allowed, err := limiter.AllowRead(ctx, client.Identity().UserID)
+		if err != nil || !allowed {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("read rate limit exceeded")}
 		}
 		if h.cursors == nil || request.Payload.Sequence < 1 {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("read cursor unavailable")}
@@ -603,6 +613,8 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 		if request.Type == "typing.start" {
 			limiter, ok := h.coord.(TypingRateCoordinator)
 			if !ok {
+				// Typing is intentionally best-effort: without its limiter this branch
+				// exits before authorization, fan-out, or publication, so no event leaks.
 				return nil
 			}
 			allowed, err := limiter.AllowTypingStart(ctx, client.Identity().UserID, request.Payload.ConversationID)
@@ -625,12 +637,12 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if request.Type != "message.send" {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported event")}
 	}
-	if limiter, ok := h.coord.(MessageRateCoordinator); ok {
-		allowed, err := limiter.AllowMessage(ctx, client.Identity().UserID)
-		if err != nil || !allowed {
-			return &RequestError{RequestID: request.RequestID, Err: errors.New("message rate limit exceeded")}
-		}
-	} else if !h.allowMessage(client.Identity()) {
+	limiter, ok := h.coord.(MessageRateCoordinator)
+	if !ok {
+		return &RequestError{RequestID: request.RequestID, Err: errors.New("message rate limit exceeded")}
+	}
+	allowed, err := limiter.AllowMessage(ctx, client.Identity().UserID)
+	if err != nil || !allowed {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("message rate limit exceeded")}
 	}
 	message, created, err := h.sender.Send(ctx, messaging.SendRequest{SenderID: client.Identity().UserID, ConversationID: request.Payload.ConversationID, ClientMessageID: request.Payload.ClientMessageID, Body: request.Payload.Body})
@@ -652,6 +664,76 @@ func allowRealtimeCallCommand(ctx context.Context, limiter RealtimeRateCoordinat
 		return limiter.AllowSignal(ctx, userID)
 	}
 	return limiter.AllowCall(ctx, userID)
+}
+
+// handleGroupRoomDiscovery returns only a room that is still joinable under the
+// current membership revision. The conversation stripe serializes this read
+// with local group-call commands and the database lease serializes it with
+// membership changes across replicas.
+func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, requestID string, conversationID uuid.UUID) error {
+	if requestID == "" || conversationID == uuid.Nil {
+		return &RequestError{RequestID: requestID, Err: errors.New("invalid group call discovery request")}
+	}
+	unlock, err := h.lockGroupConversation(ctx, conversationID)
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: err}
+	}
+	defer unlock()
+	rooms, ok := h.coord.(GroupRoomCoordinator)
+	if !ok || h.groupCallAuth == nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	identity := client.Identity()
+	lease, err := h.groupCallAuth.BeginGroupCall(ctx, conversationID, identity.UserID)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return &RequestError{RequestID: requestID, Err: ctxErr}
+		}
+		if errors.Is(err, ErrCallNotAllowed) {
+			return &RequestError{RequestID: requestID, Err: ErrCallNotAllowed}
+		}
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		if rollbackErr := lease.Rollback(rollbackCtx); rollbackErr != nil {
+			h.logCallWarning(ctx, "group call discovery lease rollback failed", rollbackErr, "request_id", requestID, "conversation_id", conversationID)
+		}
+	}()
+	room, err := rooms.GetGroupRoomForConversation(ctx, conversationID)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return &RequestError{RequestID: requestID, Err: ctxErr}
+	}
+	if errors.Is(err, ErrCallNotFound) {
+		client.SendJSON(serverEvent{Version: 2, Type: "group.call.discovered", RequestID: requestID, Payload: struct {
+			ConversationID uuid.UUID  `json:"conversation_id"`
+			Room           *GroupRoom `json:"room"`
+		}{ConversationID: conversationID}})
+		return nil
+	}
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	var discoveredRoom *GroupRoom
+	if room.ConversationID == conversationID && room.Status != GroupRoomEnded && room.MembershipRevision == lease.MembershipRevision() && (room.Status == GroupRoomRinging || room.Status == GroupRoomActive) {
+		discoveredRoom = &room
+	} else if room.ConversationID == conversationID && room.Status != GroupRoomEnded && room.MembershipRevision < lease.MembershipRevision() {
+		// Retire only this observed generation/revision; a concurrent replacement
+		// is protected by the Redis adapter's conditional cleanup contract.
+		if _, cleanupErr := rooms.EndGroupRoomForMembershipChange(ctx, conversationID, room.ID, room.Generation, room.StateRevision, lease.MembershipRevision()); cleanupErr != nil && !errors.Is(cleanupErr, ErrCallNotFound) && !errors.Is(cleanupErr, ErrCallNotAllowed) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return &RequestError{RequestID: requestID, Err: ctxErr}
+			}
+			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+		}
+	}
+	client.SendJSON(serverEvent{Version: 2, Type: "group.call.discovered", RequestID: requestID, Payload: struct {
+		ConversationID uuid.UUID  `json:"conversation_id"`
+		Room           *GroupRoom `json:"room"`
+	}{ConversationID: conversationID, Room: discoveredRoom}})
+	h.logCallLifecycle(ctx, "group call discovered", Call{ID: room.ID, ConversationID: conversationID, Status: room.Status}, "command", "group.call.discover", "request_id", requestID, "actor_user_id", identity.UserID, "actor_device_id", identity.DeviceID)
+	return nil
 }
 
 func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID string, conversationID, roomID uuid.UUID, generation int64) error {
@@ -1727,35 +1809,44 @@ func (h *Hub) markDelivered(ctx context.Context, client Client, messageIDs []uui
 	return h.delivery.MarkDelivered(ctx, deviceID, messageIDs)
 }
 
-func (h *Hub) allowMessage(identity sharedauth.Identity) bool {
-	h.messageMu.Lock()
-	defer h.messageMu.Unlock()
-	key := key(identity)
-	now := time.Now()
-	if last, ok := h.messageAt[key]; ok && now.Sub(last) < 200*time.Millisecond {
-		return false
-	}
-	h.messageAt[key] = now
-	return true
-}
-
 func validCallSignal(signal json.RawMessage) bool {
-	var value struct {
-		Type      string          `json:"type"`
-		SDP       string          `json:"sdp"`
-		Candidate json.RawMessage `json:"candidate"`
-	}
-	if err := json.Unmarshal(signal, &value); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(signal))
+	var fields map[string]json.RawMessage
+	if err := decoder.Decode(&fields); err != nil || fields == nil {
 		return false
 	}
-	switch value.Type {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return false
+	}
+	typeField, ok := fields["type"]
+	if !ok {
+		return false
+	}
+	var signalType string
+	if err := json.Unmarshal(typeField, &signalType); err != nil {
+		return false
+	}
+	validObject := func(raw json.RawMessage) bool {
+		trimmed := bytes.TrimSpace(raw)
+		return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
+	}
+	switch signalType {
 	case "offer", "answer":
-		return value.SDP != ""
+		if len(fields) != 2 {
+			return false
+		}
+		sdp, ok := fields["sdp"]
+		if !ok {
+			return false
+		}
+		var value string
+		return json.Unmarshal(sdp, &value) == nil && value != ""
 	case "candidate":
-		candidate := bytes.TrimSpace(value.Candidate)
-		return len(candidate) > 0 && candidate[0] == '{'
+		candidate, ok := fields["candidate"]
+		return len(fields) == 2 && ok && validObject(candidate)
 	case "screen-share-started", "screen-share-stopped":
-		return true
+		return len(fields) == 1
 	default:
 		return false
 	}

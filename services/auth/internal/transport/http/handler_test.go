@@ -98,7 +98,7 @@ func TestWriteTokensSetsRefreshCookieAndOmitsItFromJSON(t *testing.T) {
 }
 
 func TestKYCAuthenticationRequiresAllowlistedAddress(t *testing.T) {
-	allowlist, err := NewIPAllowlist("203.0.113.10/32")
+	allowlist, err := NewIPAllowlist("203.0.113.10/32", "172.20.0.4/32")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +106,22 @@ func TestKYCAuthenticationRequiresAllowlistedAddress(t *testing.T) {
 	request.Host = "kyc.chat.false.tel"
 	response := httptest.NewRecorder()
 	(&Handler{adminIPs: allowlist}).login(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestAdminEndpointRejectsUnallowlistedForwardedAddress(t *testing.T) {
+	allowlist, err := NewIPAllowlist("203.0.113.10/32", "172.20.0.4/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	request.RemoteAddr = "172.20.0.4:43122"
+	request.Header.Set("X-Forwarded-For", "198.51.100.25")
+	response := httptest.NewRecorder()
+	(&Handler{adminIPs: allowlist}).adminUsers(response, request)
 
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)

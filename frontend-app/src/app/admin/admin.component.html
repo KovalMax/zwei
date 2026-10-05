@@ -18,8 +18,10 @@
 
         <section *ngIf="!isLoading && activeView === 'accounts'" aria-labelledby="accounts-title">
             <h2 id="accounts-title">Accounts</h2>
-            <div class="table-wrap">
-                <table>
+            <p class="table-scroll-hint" id="accounts-scroll-hint">Scroll horizontally to review account details. Email and row actions stay visible.</p>
+            <p *ngIf="activationFeedback" class="activation-feedback" [class.feedback-error]="activationFeedback.kind === 'error'" role="status" aria-live="polite">{{ activationFeedback.message }}</p>
+            <div class="table-wrap" role="region" aria-label="Account list; scroll horizontally for details" tabindex="0">
+                <table aria-describedby="accounts-scroll-hint">
                     <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Email verification</th><th>Actions</th></tr></thead>
                     <tbody>
                         <tr *ngFor="let user of users">

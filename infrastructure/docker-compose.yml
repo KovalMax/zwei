@@ -19,6 +19,7 @@ services:
       ACTIVATION_URL: ${ACTIVATION_URL}
       INVITATION_URL: ${INVITATION_URL:-https://chat.localhost/sign-up}
       ADMIN_ALLOWED_IPS: ${ADMIN_ALLOWED_IPS}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.30.0.250/32}
     depends_on:
       database:
         condition: service_healthy
@@ -203,3 +204,6 @@ services:
 networks:
   messenger-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

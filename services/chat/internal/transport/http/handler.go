@@ -1,10 +1,12 @@
 package httptransport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -21,12 +23,16 @@ type Handler struct {
 	sender        *messaging.Sender
 	sessions      *sharedauth.SessionValidator
 	conversations *postgres.Repository
-	history       *postgres.HistoryRepository
+	history       historyStore
 	groups        *application.Groups
 	limiter       application.RequestLimiter
 }
 
-func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history *postgres.HistoryRepository, groups *application.Groups, limiter application.RequestLimiter) *Handler {
+type historyStore interface {
+	List(context.Context, uuid.UUID, uuid.UUID, int64, int) ([]conversation.Message, string, error)
+}
+
+func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history historyStore, groups *application.Groups, limiter application.RequestLimiter) *Handler {
 	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history, groups: groups, limiter: limiter}
 }
 
@@ -54,12 +60,39 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	groups, err := h.groups.List(r.Context(), userID)
+	limit, cursor, err := parseGroupPageQuery(r.URL.RawQuery)
 	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid group page")
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketGroupList) {
+		return
+	}
+	page, err := h.groups.ListPage(r.Context(), userID, limit, cursor)
+	if err != nil {
+		if errors.Is(err, application.ErrInvalidGroupPage) {
+			errorJSON(w, http.StatusBadRequest, "invalid group page")
+			return
+		}
 		errorJSON(w, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	runtime.WriteJSON(w, http.StatusOK, groups)
+	var nextCursor *string
+	if page.NextCursor != nil {
+		encoded, err := encodeGroupCursor(*page.NextCursor)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "could not list groups")
+			return
+		}
+		nextCursor = &encoded
+	}
+	if page.Items == nil {
+		page.Items = make([]conversation.Group, 0)
+	}
+	runtime.WriteJSON(w, http.StatusOK, struct {
+		Items      []conversation.Group `json:"items"`
+		NextCursor *string              `json:"next_cursor"`
+	}{Items: page.Items, NextCursor: nextCursor})
 }
 
 func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +123,9 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.allow(w, r, userID, application.RateBucketGroupGet) {
+		return
+	}
 	groupID, ok := h.groupID(w, r)
 	if !ok {
 		return
@@ -104,6 +140,9 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renameGroup(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allowGroupMutation(w, r, userID) {
 		return
 	}
 	groupID, ok := h.groupID(w, r)
@@ -127,6 +166,9 @@ func (h *Handler) renameGroup(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) addGroupMember(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allowGroupMutation(w, r, userID) {
 		return
 	}
 	groupID, ok := h.groupID(w, r)
@@ -154,6 +196,9 @@ func (h *Handler) removeGroupMember(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) memberAction(w http.ResponseWriter, r *http.Request, role bool) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allowGroupMutation(w, r, userID) {
 		return
 	}
 	groupID, ok := h.groupID(w, r)
@@ -194,6 +239,9 @@ func (h *Handler) transferGroupOwnership(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if !h.allowGroupMutation(w, r, userID) {
+		return
+	}
 	groupID, ok := h.groupID(w, r)
 	if !ok {
 		return
@@ -217,6 +265,9 @@ func (h *Handler) leaveGroup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.allowGroupMutation(w, r, userID) {
+		return
+	}
 	groupID, ok := h.groupID(w, r)
 	if !ok {
 		return
@@ -229,6 +280,9 @@ func (h *Handler) leaveGroup(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.userID(w, r)
 	if !ok {
+		return
+	}
+	if !h.allowGroupMutation(w, r, userID) {
 		return
 	}
 	groupID, ok := h.groupID(w, r)
@@ -420,18 +474,14 @@ func (h *Handler) historyMessages(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "invalid conversation id")
 		return
 	}
-	limit, before := 20, int64(0)
-	if value := r.URL.Query().Get("limit"); value != "" {
-		if _, err := fmt.Sscanf(value, "%d", &limit); err != nil || limit < 1 || limit > 100 {
-			errorJSON(w, http.StatusBadRequest, "invalid limit")
-			return
-		}
-	}
-	if value := r.URL.Query().Get("before"); value != "" {
-		if _, err := fmt.Sscanf(value, "%d", &before); err != nil || before < 1 {
+	limit, before, err := parseHistoryPageQuery(r.URL.RawQuery)
+	if err != nil {
+		if errors.Is(err, errInvalidHistoryCursor) {
 			errorJSON(w, http.StatusBadRequest, "invalid cursor")
-			return
+		} else {
+			errorJSON(w, http.StatusBadRequest, "invalid limit")
 		}
+		return
 	}
 	messages, cursor, err := h.history.List(r.Context(), userID, conversationID, before, limit)
 	if errors.Is(err, postgres.ErrNotFound) {
@@ -446,6 +496,65 @@ func (h *Handler) historyMessages(w http.ResponseWriter, r *http.Request) {
 		Messages   []conversation.Message `json:"messages"`
 		NextCursor string                 `json:"next_cursor,omitempty"`
 	}{Messages: messages, NextCursor: cursor})
+}
+
+var errInvalidHistoryCursor = errors.New("invalid history cursor")
+var errInvalidHistoryLimit = errors.New("invalid history limit")
+
+func parseHistoryPageQuery(rawQuery string) (int, int64, error) {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return 0, 0, errInvalidHistoryLimit
+	}
+	for key, entries := range values {
+		if key != "limit" && key != "before" {
+			return 0, 0, errInvalidHistoryLimit
+		}
+		if len(entries) != 1 || entries[0] == "" {
+			if key == "before" {
+				return 0, 0, errInvalidHistoryCursor
+			}
+			return 0, 0, errInvalidHistoryLimit
+		}
+	}
+
+	limit := 20
+	if entries, ok := values["limit"]; ok {
+		value := entries[0]
+		if !isDecimal(value) {
+			return 0, 0, errInvalidHistoryLimit
+		}
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || parsed < 1 || parsed > 100 {
+			return 0, 0, errInvalidHistoryLimit
+		}
+		limit = int(parsed)
+	}
+
+	var before int64
+	if entries, ok := values["before"]; ok {
+		value := entries[0]
+		if !isDecimal(value) {
+			return 0, 0, errInvalidHistoryCursor
+		}
+		before, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || before < 1 {
+			return 0, 0, errInvalidHistoryCursor
+		}
+	}
+	return limit, before, nil
+}
+
+func isDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) userID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
@@ -467,7 +576,8 @@ func (h *Handler) identity(w http.ResponseWriter, r *http.Request) (sharedauth.I
 
 func (h *Handler) allow(w http.ResponseWriter, r *http.Request, userID uuid.UUID, bucket string) bool {
 	if h.limiter == nil {
-		return true
+		errorJSON(w, http.StatusServiceUnavailable, "request limiter unavailable")
+		return false
 	}
 	allowed, err := h.limiter.Allow(r.Context(), userID, bucket)
 	if err != nil {
@@ -480,6 +590,10 @@ func (h *Handler) allow(w http.ResponseWriter, r *http.Request, userID uuid.UUID
 		return false
 	}
 	return true
+}
+
+func (h *Handler) allowGroupMutation(w http.ResponseWriter, r *http.Request, userID uuid.UUID) bool {
+	return h.allow(w, r, userID, application.RateBucketGroupMutation)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {

@@ -1,9 +1,10 @@
-<section class="workspace" [class.conversation-open]="selectedConversation || isCreatingGroup" aria-label="Chat workspace">
+<section class="workspace" [class.conversation-open]="selectedConversation || isCreatingGroup || (groupRefreshStatusVisible() && showDepartedGroupStatus)" aria-label="Chat workspace">
     <aside class="conversation-rail">
         <div class="rail-heading">
             <h1>Chats</h1>
             <button type="button" class="new-group-button" (click)="openGroupCreation()" aria-label="Create group">New group</button>
         </div>
+        <p class="group-settings-error" *ngIf="departedGroupRefreshFailed && !showDepartedGroupStatus" role="alert">{{ groupMembershipRefreshError || 'Could not refresh group membership.' }} The group is hidden until access is verified. <button mat-button type="button" (click)="refreshChats()">Refresh chats</button></p>
         <div class="call-minimized-banner call-minimized-banner-rail" [class.call-minimized-sharing-active]="call.state.screenShareStream || call.state.remoteScreenStream" *ngIf="isCallMinimized()" role="status">
             <button type="button" class="call-minimized-summary" [attr.aria-label]="'Return to call with ' + callDisplayName()" (click)="restoreCall()">
                 <span><strong>Call with {{ callDisplayName() }}</strong><small><span class="call-minimized-sharing-label" *ngIf="call.state.screenShareStream || call.state.remoteScreenStream">Sharing screen · </span>{{ callDurationLabel() }}</small></span>
@@ -16,6 +17,10 @@
             <zwei-icon matPrefix name="search"></zwei-icon>
             <input matInput placeholder="Name or email" [(ngModel)]="searchQuery" name="userSearch" (input)="searchUsers()">
         </mat-form-field>
+        <p class="group-search-status" role="status" aria-live="polite" *ngIf="searchState === 'loading'">Searching people…</p>
+        <p class="group-search-status" role="status" aria-live="polite" *ngIf="searchState === 'results'">{{ searchResults.length }} {{ searchResults.length === 1 ? 'person' : 'people' }} found.</p>
+        <p class="group-search-status" role="status" aria-live="polite" *ngIf="searchState === 'empty'">No people found. Try another name or email.</p>
+        <p class="group-search-status" role="alert" *ngIf="searchState === 'error'">Could not search for people. Try again.</p>
         <div class="search-results" *ngIf="searchResults.length">
             <button class="search-result" *ngFor="let user of searchResults; trackBy: trackUserResult" type="button" [attr.aria-label]="'Start a conversation with ' + user.display_name" (click)="startConversation(user)">
                 <span class="person-avatar">{{ user.display_name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><zwei-icon name="arrow_forward"></zwei-icon>
@@ -24,10 +29,13 @@
 
         <div class="rail-label"><span>All chats</span><span class="count">{{ (conversations | async)?.length || 0 }}</span></div>
         <div class="people-list" *ngIf="conversations | async as items; else loadingPeople">
-            <button class="person-option" *ngFor="let conversation of items; trackBy: trackConversation" type="button" [class.selected]="selectedConversation?.id === conversation.id" (click)="selectConversation(conversation)">
-                <span class="person-avatar">{{ initials(conversation) }}</span>
-                <span class="conversation-copy"><strong>{{ conversationName(conversation) }}</strong><small>{{ conversationSubtitle(conversation) }}</small></span><span class="conversation-time">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
+            <button class="person-option" *ngFor="let conversation of items; trackBy: trackConversation" type="button" [attr.data-conversation-id]="conversation.id" [class.selected]="selectedConversation?.id === conversation.id" [attr.aria-label]="conversationName(conversation)" (click)="selectConversation(conversation)">
+                <span class="person-avatar" aria-hidden="true">{{ conversation.kind === 'group' && conversation.accessNeedsVerification ? '?' : initials(conversation) }}</span>
+                <span class="conversation-copy"><strong>{{ conversationName(conversation) }}</strong><small>{{ conversationSubtitle(conversation) }}</small></span><span class="conversation-time" *ngIf="conversation.kind !== 'group' || !conversation.accessNeedsVerification">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="(conversation.kind !== 'group' || !conversation.accessNeedsVerification) && conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
             </button>
+            <div class="group-page-error" *ngIf="groupPageError" role="alert">Could not load more groups. <button type="button" [disabled]="groupSnapshotLoading" (click)="loadMoreGroups()">Retry</button></div>
+            <button class="load-more-groups" *ngIf="canLoadMoreGroups() && !groupPageError" type="button" [disabled]="groupPageLoading || groupSnapshotLoading" (click)="loadMoreGroups()" [attr.aria-busy]="groupPageLoading || groupSnapshotLoading">{{ groupSnapshotLoading ? 'Refreshing groups…' : groupPageLoading ? 'Loading groups…' : 'Load more groups' }}</button>
+            <p class="groups-exhausted" *ngIf="groupsExhausted" role="status">All groups loaded.</p>
         </div>
         <ng-template #loadingPeople>
             <div class="empty-rail"><zwei-icon [name]="isLoading ? 'hourglass_top' : 'forum'"></zwei-icon><span>{{ isLoading ? 'Loading conversations…' : 'No conversations yet.' }}</span></div>
@@ -45,28 +53,30 @@
             <div class="chat-identity">
                 <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><zwei-icon name="arrow_back"></zwei-icon></button>
                 <div class="hero-avatar">{{ headerInitials() }}</div>
-                <div><span class="group-title-row"><h2>{{ headerDisplayName() }}</h2><button class="group-manage-trigger" *ngIf="selectedConversation?.kind === 'group' && canManageGroup()" type="button" [attr.aria-label]="showGroupManager ? 'Close group settings' : 'Manage group'" [attr.aria-expanded]="showGroupManager" aria-controls="group-settings-panel" (click)="toggleGroupManager()"><zwei-icon name="edit"></zwei-icon></button></span><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedPresenceNeutral()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="isSelectedUserTyping()">{{ selectedConversation?.otherDisplayName }} is typing…</span></div>
+                <div><span class="group-title-row"><h2>{{ headerDisplayName() }}</h2><button class="group-manage-trigger" *ngIf="selectedConversation?.kind === 'group' && !selectedConversation.accessNeedsVerification && canManageGroup()" type="button" [attr.aria-label]="showGroupManager ? 'Close group settings' : 'Manage group'" [attr.aria-expanded]="showGroupManager" aria-controls="group-settings-panel" (click)="toggleGroupManager()"><zwei-icon name="edit"></zwei-icon></button></span><span class="chat-presence" [class.connecting]="!socketReady || !presenceReady" [class.offline]="isSelectedPresenceNeutral()" role="status" aria-live="polite">{{ peerPresenceLabel() }}</span><span class="typing-indicator" *ngIf="typingIndicatorText() as typingText">{{ typingText }}</span></div>
             </div>
             <button class="call-button" *ngIf="selectedConversation?.kind === 'direct'" mat-icon-button type="button" aria-label="Start audio call" (click)="startCall()" [disabled]="!selectedConversation || !socketReady || (call.state$ | async)?.phase === 'connecting' || (call.state$ | async)?.phase === 'active'"><zwei-icon name="call"></zwei-icon></button>
-            <button class="call-button" *ngIf="selectedConversation?.kind === 'group'" mat-icon-button type="button" aria-label="Start group audio call" (click)="startGroupCall()" [disabled]="!socketReady || groupCall?.isOngoing"><zwei-icon name="group"></zwei-icon></button>
+            <button class="call-button" *ngIf="selectedConversation?.kind === 'group' && !selectedConversation.accessNeedsVerification" mat-icon-button type="button" aria-label="Join or start group audio call" (click)="startGroupCall()" [disabled]="!socketReady || groupCall?.isOngoing || groupCall?.state.phase === 'requesting' || groupCall?.state.phase === 'joining'"><zwei-icon name="group"></zwei-icon></button>
         </header>
+        <p class="group-settings-loading group-access-status" *ngIf="departedGroupRefreshPending && showDepartedGroupStatus" role="status">Checking group access… Private content is hidden until access is verified.</p>
+        <p class="group-settings-error" *ngIf="departedGroupRefreshFailed && showDepartedGroupStatus" role="alert">{{ groupMembershipRefreshError || 'Could not refresh group membership.' }} The group is hidden until access is verified. <button mat-button type="button" (click)="refreshChats()">Refresh chats</button></p>
         <p class="group-settings-error" *ngIf="groupMembershipRefreshError && groupMembershipRefreshErrorConversationID === selectedConversation?.id && selectedConversation?.kind === 'group'" role="alert">{{ groupMembershipRefreshError }} <button mat-button type="button" (click)="refreshChats()">Refresh chats</button></p>
         <section class="group-manager" *ngIf="showGroupManager && groupSelected as group" aria-label="Group settings" (scroll)="dismissGroupMemberTooltips()">
             <div class="group-manager-heading"><div><span class="eyebrow">Group settings</span><strong>{{ group.name }}</strong></div><button type="button" aria-label="Close group settings" (click)="toggleGroupManager()">Close</button></div>
             <div class="group-settings-panel" *ngIf="showGroupManager" id="group-settings-panel" [attr.aria-busy]="groupLoading" (scroll)="dismissGroupMemberTooltips()">
                 <section class="group-settings-section" *ngIf="canManageGroup()" aria-labelledby="group-name-settings"><div><h3 id="group-name-settings">Group name</h3><p>Choose a name people will recognize.</p></div><form (ngSubmit)="renameGroup()"><label for="group-name-settings-input">Name</label><div class="group-field-action"><input id="group-name-settings-input" [(ngModel)]="groupName" name="renameGroup" maxlength="80" [disabled]="groupLoading"><button type="submit" [disabled]="groupLoading">Save name</button></div></form></section>
-                <section class="group-settings-section" *ngIf="canManageGroup()" aria-labelledby="group-members-settings"><div><h3 id="group-members-settings">Members</h3><p>Search for a person, then select them before adding.</p></div><label for="group-member-search">Find a person</label><input id="group-member-search" [(ngModel)]="groupMemberQuery" name="groupMember" placeholder="Name or email" autocomplete="off" [disabled]="groupLoading" (input)="searchGroupMembers()"><div class="group-member-results" *ngIf="groupMemberResults.length" role="listbox" aria-label="Matching people"><button type="button" *ngFor="let user of groupMemberResults; trackBy: trackUserResult" role="option" [attr.aria-selected]="selectedGroupMember?.id === user.id" (click)="selectGroupMember(user)"><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><span>{{ selectedGroupMember?.id === user.id ? 'Selected' : 'Select' }}</span></button></div><p class="group-search-status" *ngIf="groupMemberQuery.trim().length >= 2 && !groupMemberResults.length && !groupLoading">No people found. Try another name or email.</p><div class="group-field-action"><span class="group-selected-member" *ngIf="selectedGroupMember">Selected: {{ selectedGroupMember.display_name }}</span><button type="button" (click)="addGroupMember()" [disabled]="groupLoading || !selectedGroupMember">Add member</button></div>
+                <section class="group-settings-section" *ngIf="canManageGroup()" aria-labelledby="group-members-settings"><div><h3 id="group-members-settings">Members</h3><p>Search for a person, then select them before adding.</p></div><label for="group-member-search">Find a person</label><input id="group-member-search" [(ngModel)]="groupMemberQuery" name="groupMember" placeholder="Name or email" autocomplete="off" [disabled]="groupLoading" (input)="searchGroupMembers()"><div class="group-member-results" *ngIf="groupMemberResults.length" role="listbox" aria-label="Matching people"><button type="button" *ngFor="let user of groupMemberResults; trackBy: trackUserResult" role="option" [attr.aria-selected]="selectedGroupMember?.id === user.id" (click)="selectGroupMember(user)"><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span><span>{{ selectedGroupMember?.id === user.id ? 'Selected' : 'Select' }}</span></button></div><p class="group-search-status" role="status" aria-live="polite" *ngIf="groupMemberSearchState === 'loading'">Searching people…</p><p class="group-search-status" role="status" aria-live="polite" *ngIf="groupMemberSearchState === 'results'">{{ groupMemberResults.length }} {{ groupMemberResults.length === 1 ? 'person' : 'people' }} found.</p><p class="group-search-status" role="status" aria-live="polite" *ngIf="groupMemberSearchState === 'empty'">No people found. Try another name or email.</p><p class="group-search-status" role="alert" *ngIf="groupMemberSearchState === 'error'">Could not search for people. Try again.</p><div class="group-field-action"><span class="group-selected-member" *ngIf="selectedGroupMember">Selected: {{ selectedGroupMember.display_name }}</span><button type="button" (click)="addGroupMember()" [disabled]="groupLoading || !selectedGroupMember">Add member</button></div>
                     <app-group-member-list [members]="group.members" [actionsForMember]="groupMemberActionsFor" [loading]="groupLoading" (action)="handleGroupMemberAction($event)"></app-group-member-list></section>
                 <p class="group-settings-error" *ngIf="groupError" role="alert">{{ groupError }}</p><span class="group-settings-loading" *ngIf="groupLoading" role="status">Saving group settings…</span><section class="group-settings-section group-danger-zone"><div><h3>Group access</h3><p>Leaving removes this group from your chat list. Deleting removes it for everyone.</p></div><div class="group-danger-actions"><button type="button" (click)="leaveGroup()" [disabled]="groupLoading">Leave group</button><button type="button" *ngIf="canDeleteGroup()" (click)="deleteGroup()" [disabled]="groupLoading">Delete group</button></div></section>
             </div>
         </section>
         <div class="group-call-minimized call-minimized-banner" *ngIf="groupCall?.isOngoing && groupCallMinimized" role="status">
             <button type="button" class="call-minimized-summary" aria-label="Return to group call" (click)="restoreGroupCall()"><span><strong>Group call in progress</strong><small>{{ groupCall.state.statusLabel }}</small></span></button>
-            <button type="button" class="call-minimized-end" (click)="groupCall.end()">End</button>
+            <button type="button" class="call-minimized-end" aria-label="End group call for everyone" title="End group call for everyone" matTooltip="End group call for everyone" matTooltipClass="group-call-end-tooltip" matTooltipPosition="below" (click)="onGroupCallSurfaceIntent({type: 'end'})">End group call</button>
         </div>
         <ng-container *ngIf="groupCall">
         <ng-container *ngIf="groupCall.state$ | async as groupCallState">
-        <app-call-terminal-notice *ngIf="groupCallState.phase === 'ended' || groupCallState.phase === 'error'" [message]="groupCallState.statusLabel" [error]="!!groupCallState.errorLabel" [group]="true"></app-call-terminal-notice>
+        <app-call-terminal-notice *ngIf="showGroupCallTerminalNotice(groupCallState)" [message]="groupCallState.statusLabel" [error]="!!groupCallState.errorLabel" [group]="true"></app-call-terminal-notice>
         <app-group-call-surface [state]="groupCallState" [minimized]="groupCallMinimized" [ongoing]="groupCall.isOngoing" [profile]="groupCallProfile()" [participants]="groupCallParticipants()" [controls]="groupCallControls()" [actions]="groupCallActions()" [panelClass]="callSelectPanelClass()" (intent)="onGroupCallSurfaceIntent($event)"></app-group-call-surface>
         </ng-container>
         </ng-container>
@@ -100,7 +110,7 @@
                 <p>Choose a name now. You can invite people after the group is created.</p>
                 <form (ngSubmit)="createGroup()">
                     <label for="group-name">Group name</label>
-                    <input id="group-name" [(ngModel)]="groupName" name="groupName" maxlength="80" placeholder="Project team" [disabled]="groupLoading" required>
+                    <input id="group-name" [(ngModel)]="groupName" (ngModelChange)="clearGroupNameValidationError($event)" name="groupName" maxlength="80" placeholder="Project team" [disabled]="groupLoading" required>
                     <p *ngIf="groupError" role="alert">{{ groupError }}</p>
                     <div class="group-create-actions">
                         <button type="button" (click)="cancelGroupCreation()" [disabled]="groupLoading">Cancel</button>
@@ -113,19 +123,19 @@
             <div class="empty-orbit"><zwei-icon name="forum"></zwei-icon></div>
             <span class="eyebrow">Private by design</span><h3>Your messages, your space</h3><p>Search for someone to start a secure one-to-one conversation.</p>
         </div>
-        <section #messageHistory class="message-history" *ngIf="selectedConversation && !isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" aria-label="Message history">
+        <section #messageHistory class="message-history" *ngIf="selectedConversation && !(selectedConversation.kind === 'group' && selectedConversation.accessNeedsVerification) && !isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" aria-label="Message history">
             <button class="load-older" *ngIf="historyCursor" mat-stroked-button (click)="loadOlderMessages()" [disabled]="isHistoryLoading">
                 <zwei-icon *ngIf="isHistoryLoading" name="hourglass_top"></zwei-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
             <div class="message-list" *ngIf="messages.length; else emptyMessages">
-                <article class="message-bubble" *ngFor="let message of messages; trackBy: trackMessage" [class.message-own]="isOwnMessage(message)" [class.message-pending]="message.pending">
+                <article class="message-bubble" *ngFor="let message of messages; trackBy: trackMessage" [class.message-own]="message.kind !== 'system' && isOwnMessage(message)" [class.message-system]="message.kind === 'system'" [class.message-pending]="message.pending">
                     <span class="message-sender" *ngIf="message.kind !== 'system'">{{ senderName(message) }}</span>
                     <p>{{ message.body }}</p><div class="message-meta"><time [attr.datetime]="message.createdAt" [attr.title]="messageDateTimeLabel(message)">{{ messageDateLabel(message) }} · {{ message.createdAt | date:'shortTime' }}</time><span class="message-read" *ngIf="isLatestReadMessage(message)" role="img" [attr.aria-label]="readReceiptLabel(message)"><zwei-icon name="done_all"></zwei-icon></span></div><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-pending-label" *ngIf="!message.pending && message.uncertain">Delivery uncertain</span>
                 </article>
             </div>
             <ng-template #emptyMessages><div class="empty-messages"><zwei-icon name="mark_chat_unread"></zwei-icon><p>No messages yet.</p></div></ng-template>
         </section>
-        <form class="composer" *ngIf="!isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
+        <form class="composer" *ngIf="!isCreatingGroup && !(selectedConversation?.kind === 'group' && selectedConversation.accessNeedsVerification)" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
             <mat-form-field appearance="outline">
                 <textarea matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown.enter)="sendMessage($event)"></textarea>
             </mat-form-field>

@@ -164,7 +164,8 @@ func TestHubPropagatesCallerContextToConversationPublication(t *testing.T) {
 
 func TestHubRejectsRateLimitedMessage(t *testing.T) {
 	hub := NewHub(nil, nil, rateLimitedCoordinator{}, nil, nil, nil, nil)
-	err := hub.Handle(context.Background(), testClient{}, []byte(`{"version":1,"type":"message.send","request_id":"request-1","payload":{}}`))
+	client := &recordingClient{}
+	err := hub.Handle(context.Background(), client, []byte(`{"version":1,"type":"message.send","request_id":"request-1","payload":{}}`))
 
 	var requestError *RequestError
 	if !errors.As(err, &requestError) {
@@ -172,6 +173,48 @@ func TestHubRejectsRateLimitedMessage(t *testing.T) {
 	}
 	if requestError.Error() != "message rate limit exceeded" {
 		t.Fatalf("error = %q", requestError.Error())
+	}
+	if requestError.RequestID != "request-1" {
+		t.Fatalf("request ID = %q, want request-1", requestError.RequestID)
+	}
+	if len(client.events) != 0 {
+		t.Fatalf("events after rejection = %#v", client.events)
+	}
+}
+
+func TestHubRejectsMessageWithoutSharedRateCoordinator(t *testing.T) {
+	client := &recordingClient{}
+	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
+
+	err := hub.Handle(context.Background(), client, []byte(`{"version":1,"type":"message.send","request_id":"request-1","payload":{}}`))
+
+	var requestError *RequestError
+	if !errors.As(err, &requestError) || requestError.Error() != "message rate limit exceeded" {
+		t.Fatalf("error = %v, want correlated message rate limit rejection", err)
+	}
+	if requestError.RequestID != "request-1" {
+		t.Fatalf("request ID = %q, want request-1", requestError.RequestID)
+	}
+	if len(client.events) != 0 {
+		t.Fatalf("events after rejection = %#v", client.events)
+	}
+}
+
+func TestHubRejectsMessageWhenSharedRateCoordinatorFails(t *testing.T) {
+	client := &recordingClient{}
+	hub := NewHub(nil, nil, messageRateCoordinator{err: errors.New("redis unavailable")}, nil, nil, nil, nil)
+
+	err := hub.Handle(context.Background(), client, []byte(`{"version":1,"type":"message.send","request_id":"request-1","payload":{}}`))
+
+	var requestError *RequestError
+	if !errors.As(err, &requestError) || requestError.Error() != "message rate limit exceeded" {
+		t.Fatalf("error = %v, want correlated message rate limit rejection", err)
+	}
+	if requestError.RequestID != "request-1" {
+		t.Fatalf("request ID = %q, want request-1", requestError.RequestID)
+	}
+	if len(client.events) != 0 {
+		t.Fatalf("events after rejection = %#v", client.events)
 	}
 }
 
@@ -194,6 +237,105 @@ func TestHubRejectsRateLimitedRealtimeCommands(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHubRejectsRealtimeCommandsWithoutSharedRateCoordinator(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		request   string
+		requestID string
+		want      string
+	}{
+		{name: "call", request: `{"version":1,"type":"call.start","request_id":"call-missing","payload":{"conversation_id":"` + uuid.NewString() + `"}}`, requestID: "call-missing", want: "call rate limit exceeded"},
+		{name: "presence", request: `{"version":1,"type":"presence.refresh","request_id":"presence-missing"}`, requestID: "presence-missing", want: "presence refresh rate limit exceeded"},
+		{name: "read", request: `{"version":1,"type":"conversation.read","request_id":"read-missing","payload":{"conversation_id":"` + uuid.NewString() + `","sequence":2}}`, requestID: "read-missing", want: "read rate limit exceeded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			userID := uuid.New()
+			client := &recordingClient{identity: sharedauth.Identity{UserID: userID}}
+			calls := &fakeCalls{}
+			cursors := &fakeReadCursors{}
+			var presence *snapshotProbePresence
+			if test.name == "presence" {
+				presence = &snapshotProbePresence{}
+			}
+			hub := NewHub(nil, presence, nil, nil, cursors, calls, nil)
+			err := hub.Handle(context.Background(), client, []byte(test.request))
+			var requestError *RequestError
+			if !errors.As(err, &requestError) || requestError.Error() != test.want {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+			if requestError.RequestID != test.requestID {
+				t.Fatalf("request ID = %q, want %q", requestError.RequestID, test.requestID)
+			}
+			if calls.started.ID != uuid.Nil || cursors.userID != uuid.Nil || len(client.events) != 0 || (presence != nil && presence.peerIDsCalls != 0) {
+				t.Fatalf("missing limiter reached protected work: started=%+v cursor=%+v presence=%+v events=%#v", calls.started, cursors, presence, client.events)
+			}
+		})
+	}
+}
+
+type snapshotProbePresence struct{ peerIDsCalls int }
+
+func (p *snapshotProbePresence) PeerIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	p.peerIDsCalls++
+	return nil, nil
+}
+func (*snapshotProbePresence) RecipientID(context.Context, uuid.UUID, uuid.UUID) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+func TestHubRejectsRealtimeCommandsWhenSharedRateCoordinatorFails(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		request   string
+		requestID string
+		want      string
+	}{
+		{name: "call", request: `{"version":1,"type":"call.start","request_id":"call-error","payload":{"conversation_id":"` + uuid.NewString() + `"}}`, requestID: "call-error", want: "call rate limit exceeded"},
+		{name: "presence", request: `{"version":1,"type":"presence.refresh","request_id":"presence-error"}`, requestID: "presence-error", want: "presence refresh rate limit exceeded"},
+		{name: "read", request: `{"version":1,"type":"conversation.read","request_id":"read-error","payload":{"conversation_id":"` + uuid.NewString() + `","sequence":2}}`, requestID: "read-error", want: "read rate limit exceeded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New()}}
+			calls := &fakeCalls{}
+			cursors := &fakeReadCursors{}
+			var presence *snapshotProbePresence
+			if test.name == "presence" {
+				presence = &snapshotProbePresence{}
+			}
+			hub := NewHub(nil, presence, failingRealtimeRateCoordinator{err: errors.New("redis unavailable")}, nil, cursors, calls, nil)
+			err := hub.Handle(context.Background(), client, []byte(test.request))
+			var requestError *RequestError
+			if !errors.As(err, &requestError) || requestError.Error() != test.want {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+			if requestError.RequestID != test.requestID {
+				t.Fatalf("request ID = %q, want %q", requestError.RequestID, test.requestID)
+			}
+			if calls.started.ID != uuid.Nil || cursors.userID != uuid.Nil || len(client.events) != 0 || (presence != nil && presence.peerIDsCalls != 0) {
+				t.Fatalf("limiter failure reached protected work: started=%+v cursor=%+v presence=%+v events=%#v", calls.started, cursors, presence, client.events)
+			}
+		})
+	}
+}
+
+type failingRealtimeRateCoordinator struct {
+	rateLimitedCoordinator
+	err error
+}
+
+func (c failingRealtimeRateCoordinator) AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error) {
+	return true, c.err
+}
+func (c failingRealtimeRateCoordinator) AllowRead(context.Context, uuid.UUID) (bool, error) {
+	return true, c.err
+}
+func (c failingRealtimeRateCoordinator) AllowCall(context.Context, uuid.UUID) (bool, error) {
+	return true, c.err
+}
+func (c failingRealtimeRateCoordinator) AllowSignal(context.Context, uuid.UUID) (bool, error) {
+	return true, c.err
 }
 
 func TestHubReplaysAndMarksPendingMessagesOnConnection(t *testing.T) {
@@ -356,7 +498,7 @@ func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	readerID := uuid.New()
 	peerID := uuid.New()
 	cursors := &fakeReadCursors{sequence: 5, visibleFromSequence: 3, recipientIDs: []uuid.UUID{peerID}}
-	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, nil, nil, cursors, nil, nil)
+	hub := NewHub(nil, authorizedPresence{recipientID: peerID}, onlinePresence{}, nil, cursors, nil, nil)
 	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: uuid.NewString()}}
 	reader := &recordingClient{identity: sharedauth.Identity{UserID: readerID, DeviceID: uuid.NewString()}}
 	hub.Add(context.Background(), peer)
@@ -397,7 +539,7 @@ func TestHubReadCursorFansOutToGroupPeersOnceAndAuthorizesBeforeAdvance(t *testi
 	cursors := &fakeReadCursors{sequence: 8}
 	cursors.recipientIDs = []uuid.UUID{readerID, firstPeerID, secondPeerID}
 	presence := &readRecipientsPresence{}
-	hub := NewHub(nil, presence, nil, nil, cursors, nil, nil)
+	hub := NewHub(nil, presence, onlinePresence{}, nil, cursors, nil, nil)
 	reader := &recordingClient{identity: sharedauth.Identity{UserID: readerID, DeviceID: "reader"}}
 	firstPeer := &recordingClient{identity: sharedauth.Identity{UserID: firstPeerID, DeviceID: "first"}}
 	secondPeer := &recordingClient{identity: sharedauth.Identity{UserID: secondPeerID, DeviceID: "second"}}
@@ -522,6 +664,44 @@ func TestHubRejectsUnsupportedCallSignal(t *testing.T) {
 	}
 }
 
+func TestHubValidatesExactDirectCallSignalShapes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		signal string
+		valid  bool
+	}{
+		{name: "offer", signal: `{"type":"offer","sdp":"private"}`, valid: true},
+		{name: "candidate", signal: `{"type":"candidate","candidate":{"candidate":"ice"}}`, valid: true},
+		{name: "marker", signal: `{"type":"screen-share-started"}`, valid: true},
+		{name: "marker with sdp", signal: `{"type":"screen-share-started","sdp":"private"}`},
+		{name: "marker with candidate", signal: `{"type":"screen-share-stopped","candidate":{}}`},
+		{name: "offer with unknown field", signal: `{"type":"offer","sdp":"private","extra":true}`},
+		{name: "candidate with unknown field", signal: `{"type":"candidate","candidate":{},"extra":true}`},
+		{name: "candidate not object", signal: `{"type":"candidate","candidate":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			callID := uuid.New()
+			hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
+			client := &recordingClient{}
+			request := `{"version":1,"type":"call.signal","request_id":"signal-shape","payload":{"call_id":"` + callID.String() + `","signal":` + test.signal + `}}`
+			err := hub.Handle(context.Background(), client, []byte(request))
+			if test.valid {
+				var requestError *RequestError
+				if !errors.As(err, &requestError) || requestError.Error() != "call rate limit exceeded" {
+					t.Fatalf("Handle() error = %v, want validation success followed by rate-limit rejection", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "unsupported call signal") {
+				t.Fatalf("Handle() error = %v, want invalid signal rejection", err)
+			}
+		})
+	}
+	if validCallSignal(json.RawMessage(`{"type":"screen-share-stopped"}{}`)) {
+		t.Fatal("validCallSignal accepted trailing JSON")
+	}
+}
+
 func TestHubLogsAcceptedCallDeclineWithActorAndCallContext(t *testing.T) {
 	callerID := uuid.New()
 	recipientID := uuid.New()
@@ -544,6 +724,22 @@ func TestHubLogsAcceptedCallDeclineWithActorAndCallContext(t *testing.T) {
 }
 
 type rateLimitedCoordinator struct{}
+
+type messageRateCoordinator struct{ err error }
+
+func (messageRateCoordinator) Connect(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+func (messageRateCoordinator) Disconnect(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+func (messageRateCoordinator) Online(context.Context, []uuid.UUID) (map[uuid.UUID]bool, error) {
+	return nil, nil
+}
+func (messageRateCoordinator) Publish(context.Context, uuid.UUID, bool) error { return nil }
+func (c messageRateCoordinator) AllowMessage(context.Context, uuid.UUID) (bool, error) {
+	return true, c.err
+}
 
 type reconciliationRateCoordinator struct {
 	allowed bool
@@ -738,6 +934,14 @@ func (onlinePresence) Online(_ context.Context, userIDs []uuid.UUID) (map[uuid.U
 	return online, nil
 }
 func (onlinePresence) Publish(context.Context, uuid.UUID, bool) error { return nil }
+func (onlinePresence) AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+func (onlinePresence) AllowRead(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (onlinePresence) AllowCall(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (onlinePresence) AllowSignal(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
 
 type fakeCalls struct {
 	call    Call
@@ -782,6 +986,18 @@ func (c *recordingPresenceCoordinator) Publish(_ context.Context, userID uuid.UU
 	c.userID = userID
 	c.online = online
 	return nil
+}
+func (*recordingPresenceCoordinator) AllowPresenceRefresh(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+func (*recordingPresenceCoordinator) AllowRead(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+func (*recordingPresenceCoordinator) AllowCall(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+func (*recordingPresenceCoordinator) AllowSignal(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
 }
 func (c *recordingPresenceCoordinator) PublishTyping(_ context.Context, conversationID, userID uuid.UUID, started bool) error {
 	c.typingConversationID = conversationID

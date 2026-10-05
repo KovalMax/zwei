@@ -1,28 +1,67 @@
 :host { display: contents; }
-.group-call-panel { display: flex; min-height: 0; flex: 1 1 auto; align-items: center; justify-content: center; overflow: hidden; padding: clamp(16px, 2vw, 32px); border-bottom: 0; background: radial-gradient(circle at 50% 20%, color-mix(in srgb, var(--chat-accent) 14%, transparent), transparent 42%), var(--chat-canvas); color: var(--chat-text); }
-.group-call-card { position: relative; display: flex; width: min(100%, 720px); height: min(100%, clamp(620px, 78vh, 760px)); min-height: 0; box-sizing: border-box; flex-direction: column; padding: clamp(22px, 4vw, 42px); border: 1px solid var(--chat-line-strong); border-radius: 28px; background: var(--chat-surface); color: var(--chat-text); box-shadow: 0 24px 70px rgba(17, 28, 43, .16); }
-.group-call-card > app-call-profile { display: block; min-width: 0; flex: 0 0 auto; margin-top: 20px; padding-bottom: 22px; border-bottom: 1px solid var(--chat-line-strong); }
+.group-call-panel { display: flex; min-height: 0; flex: 1 1 auto; align-items: center; justify-content: center; overflow: hidden; padding: clamp(12px, 1.5vw, 20px); border-bottom: 0; background: radial-gradient(circle at 50% 20%, color-mix(in srgb, var(--chat-accent) 14%, transparent), transparent 42%), var(--chat-canvas); color: var(--chat-text); }
+.group-call-card { position: relative; display: flex; width: min(100%, 720px); height: min(100%, clamp(760px, 92vh, 920px)); min-height: 0; box-sizing: border-box; flex-direction: column; padding: clamp(20px, 3vw, 32px); border: 1px solid var(--chat-line-strong); border-radius: 28px; background: var(--chat-surface); color: var(--chat-text); box-shadow: 0 24px 70px rgba(17, 28, 43, .16); }
+.group-call-header { position: absolute; z-index: 2; top: 24px; right: 24px; display: flex; }
+.group-call-collapse-button { display: grid; width: 44px; height: 44px; min-width: 44px; box-sizing: border-box; place-items: center; padding: 0; border: 1px solid var(--chat-call-control-border); border-radius: 50%; background: var(--chat-surface-control); color: var(--chat-call-icon); }
+.group-call-collapse-button:hover { background: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface-control)); }
+.group-call-collapse-button zwei-icon { width: 24px; height: 24px; }
+.group-call-collapse-button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.group-call-card > app-call-profile { display: block; min-width: 0; flex: 0 0 auto; padding: 0 54px 18px 0; border-bottom: 1px solid var(--chat-line-strong); }
 .group-call-card audio { display: none; }
-.group-call-content { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 18px; overflow-y: auto; padding: 20px 2px 14px; scrollbar-color: var(--chat-scroll-thumb) var(--chat-scroll-track); scrollbar-width: thin; }
-.group-presentation { display: block; width: 100%; max-height: 260px; border: 1px solid var(--chat-line-strong); border-radius: 16px; background: var(--chat-call-screen-surface); object-fit: contain; }
-.group-call-actions { display: grid; flex: 0 0 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-top: 20px; border-top: 1px solid var(--chat-line-strong); color: var(--chat-text); }
-.group-call-actions button { min-width: 0; min-height: 48px; border-radius: 12px; font-weight: 700; white-space: normal; }
-.group-call-actions button[mat-flat-button][color="primary"] { background-color: var(--chat-accent) !important; color: #fff !important; }
-.group-call-actions button[color="warn"] { background-color: var(--zwei-danger) !important; color: #fff !important; }
-.group-call-actions app-call-icon-actions { grid-column: 1 / -1; justify-self: start; }
-.group-call-devices { padding-top: 26px; }
-.group-call-devices .call-select { background: var(--chat-surface-control); }
-:host-context(.light-theme) .group-call-panel { background: radial-gradient(circle at 50% 20%, rgba(76, 134, 198, .12), transparent 42%), #f6f8fc; }
+.group-call-content { display: block; min-height: 0; flex: 1 1 auto; overflow-y: auto; padding: 16px 2px 12px; scrollbar-color: var(--chat-scroll-thumb) var(--chat-scroll-track); scrollbar-width: thin; }
+.group-call-content-inner { display: grid; width: 100%; min-width: 0; min-height: 100%; box-sizing: border-box; grid-auto-rows: max-content; gap: 18px; }
+.group-call-content, .group-call-devices { box-sizing: border-box; width: 100%; min-width: 0; overflow-x: hidden; }
+.group-call-roster { display: grid; min-width: 0; gap: 8px; }
+.group-call-roster h3 { margin: 0; color: var(--chat-text-strong); font: 700 13px/1.2 'DM Sans', sans-serif; }
+.group-call-roster .call-presentation-participants { gap: 8px; }
+.group-call-roster .call-presentation-participants span { padding: 7px 11px; border-color: var(--chat-line-strong); background: var(--chat-surface-raised); color: var(--chat-text); font-size: 12px; font-weight: 600; }
+.group-call-presentation { display: flex; min-width: 0; flex: 0 0 auto; flex-direction: column; overflow: hidden; border: 1px solid var(--chat-line-strong); border-radius: 18px; background: var(--chat-call-screen-surface); }
+.group-call-presentation-heading { display: flex; min-height: 36px; align-items: center; gap: 8px; padding: 0 12px; color: var(--chat-call-screen-text); font-size: 12px; font-weight: 700; }
+.group-call-presentation-heading zwei-icon { width: 18px; height: 18px; }
+.group-call-live-indicator { margin-left: auto; color: var(--zwei-success); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.group-presentation { display: block; width: 100%; max-height: 96px; flex: 0 0 auto; border-top: 1px solid var(--chat-line-strong); background: var(--chat-call-screen-surface); object-fit: contain; }
+.group-call-devices ::ng-deep .call-presentation-devices .call-quality-control { grid-column: 1 / -1; }
+.group-call-actions { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 10px; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--chat-line-strong); color: var(--chat-text); }
+.group-call-active-controls { display: grid; width: min(100%, 260px); grid-template-columns: 52px 68px 52px; align-items: center; justify-content: center; gap: 18px; }
+.group-call-active-controls app-call-icon-actions { width: 52px; }
+.group-call-active-controls app-call-icon-actions ::ng-deep .call-presentation-icon-actions { gap: 0; }
+.group-call-active-controls app-call-icon-actions ::ng-deep button { width: 52px; height: 52px; border-radius: 50%; }
+.group-call-active-controls .group-call-action-share { justify-self: end; }
+.group-call-end-button { display: grid; width: 68px; height: 68px; min-width: 68px; place-items: center; border: 0; border-radius: 50%; background: var(--zwei-danger) !important; color: #fff !important; }
+.group-call-end-button:hover { filter: brightness(1.08); }
+.group-call-end-button zwei-icon { width: 28px; height: 28px; }
+.group-call-end-button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 3px; }
+.group-call-actions .group-call-leave, .group-call-actions .group-call-join, .group-call-actions .group-call-enable-sound, .group-call-actions .group-call-end-button-labeled { width: min(100%, 260px); min-width: 0; min-height: 48px; height: 48px; border-radius: 12px; font-weight: 700; white-space: normal; }
+.group-call-actions .group-call-leave { --mdc-outlined-button-label-text-color: var(--chat-call-control-text); --mdc-outlined-button-outline-color: var(--chat-call-control-border); border-color: var(--chat-call-control-border) !important; background: var(--chat-surface-control); color: var(--chat-call-control-text) !important; }
+.group-call-actions .group-call-join { background-color: var(--chat-accent) !important; color: #fff !important; }
+.group-call-actions .group-call-enable-sound { border-color: var(--chat-call-control-border) !important; background: var(--chat-surface-control); color: var(--chat-call-control-text) !important; }
+.group-call-actions .group-call-end-button-labeled { background-color: var(--zwei-danger) !important; color: #fff !important; }
+.group-call-devices { flex: 0 0 auto; overflow-x: clip; overflow-y: visible; padding-top: 0; }
+:host-context(.light-theme) .group-call-panel { --chat-surface: #fff; --chat-canvas: #f6f8fc; --chat-surface-raised: #f6f8fc; --chat-text: #172033; --chat-text-strong: #172033; --chat-muted: #4c6077; --chat-accent: #2f6fae; --chat-call-text: #172033; --chat-call-control-text: #172033; --chat-call-control-border: #6d89a7; --chat-call-icon: #2f6fae; --chat-line-strong: #cfd9e8; --chat-call-screen-surface: #e8edf5; --chat-call-screen-text: #4c6077; background: radial-gradient(circle at 50% 20%, rgba(76, 134, 198, .12), transparent 42%), #f6f8fc; }
 :host-context(.light-theme) .group-call-card { border-color: #cfd9e8; background: #fff; color: #172033; }
-:host-context(.light-theme) .group-call-actions { border-color: #cfd9e8; background: #f6f8fc; }
-:host-context(.light-theme) .group-call-actions .mat-mdc-outlined-button { --mdc-outlined-button-label-text-color: #172033; background: #faf9fd; border-color: #cfd9e8 !important; color: #172033 !important; }
-:host-context(.light-theme) .group-call-actions app-call-icon-actions { color: #172033; }
-:host-context(.light-theme) .group-call-panel { --chat-surface-control: var(--mat-sys-surface); --chat-text: #172033; --chat-line-strong: #cfd9e8; }
+:host-context(.light-theme) .group-call-actions { border-color: #cfd9e8; background: #fff; }
+:host-context(.light-theme) .group-call-actions .group-call-leave, :host-context(.light-theme) .group-call-actions .group-call-enable-sound { --mdc-outlined-button-label-text-color: #172033; --mdc-outlined-button-outline-color: #6d89a7; border-color: #6d89a7 !important; background: #faf9fd; color: #172033 !important; }
+:host-context(.light-theme) .group-call-active-controls app-call-icon-actions ::ng-deep button { border-color: #6d89a7; background: #faf9fd; color: #172033; }
+:host-context(.light-theme) .group-call-active-controls app-call-icon-actions ::ng-deep button:hover:not(:disabled) { background: color-mix(in srgb, #2f6fae 12%, #faf9fd); }
+:host-context(.light-theme) .group-call-actions .group-call-join { background-color: #2f6fae !important; }
+:host-context(.light-theme) .group-call-actions .group-call-end-button-labeled, :host-context(.light-theme) .group-call-end-button { background-color: #a84135 !important; }
 @media (max-width: 760px) {
     .group-call-panel { box-sizing: border-box; align-items: stretch; justify-content: flex-start; padding: 12px; }
     .group-call-card { height: auto; flex: 1; padding: 24px 20px; border-radius: 18px; }
-    .group-call-content { padding-top: 16px; }
-    .group-call-devices, .group-call-actions { grid-template-columns: 1fr; }
+    .group-call-header { top: 18px; right: 18px; }
+    .group-call-card > app-call-profile { padding-bottom: 18px; }
+    .group-call-content { padding-top: 10px; }
+    .group-call-content-inner { gap: 10px; }
+    .group-call-roster { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .group-call-roster h3 { flex: 0 0 auto; }
+    .group-call-roster .call-presentation-participants { flex: 1 1 auto; }
+    .group-call-devices { padding-top: 0; }
+    .group-call-active-controls { grid-template-columns: 48px 64px 48px; gap: 14px; }
+    .group-call-active-controls app-call-icon-actions { width: 48px; }
+    .group-call-active-controls app-call-icon-actions ::ng-deep button { width: 48px; height: 48px; }
+    .group-call-end-button { width: 64px; height: 64px; min-width: 64px; }
     .group-call-actions { padding: 16px 0 env(safe-area-inset-bottom); background: var(--chat-surface); box-shadow: 0 -10px 24px rgba(17, 28, 43, .1); }
-    .group-presentation { max-height: 180px; }
+    .group-presentation { max-height: 40px; }
 }
+
+@media (min-width: 761px) and (max-width: 1200px) { .group-presentation { max-height: 88px; } }

@@ -1,8 +1,29 @@
-<div class="call-presentation-devices">
-    <label *ngFor="let control of controls; trackBy: trackControl">
+<div class="call-presentation-devices" [class.call-presentation-devices-with-audio]="showShareAudioOption">
+    <div *ngFor="let control of controls; trackBy: trackControl" class="call-control" [class.call-quality-control]="control.id === 'quality'" [class.call-quality-feature-enabled]="control.id === 'quality' && showShareAudioOption">
         <span>{{ control.label }}</span>
-        <mat-select class="call-select" [aria-label]="control.label" [panelClass]="panelClass" [value]="control.value" [disabled]="control.disabled" (selectionChange)="select(control.id, $event.value)">
-            <mat-option *ngFor="let option of control.options; trackBy: trackDevice" [value]="option.id">{{ option.label }}</mat-option>
-        </mat-select>
-    </label>
+        <ng-container *ngIf="control.id === 'quality' && qualityPickerEnabled; else materialSelect">
+            <div class="call-quality-audio-row" [class.call-quality-audio-row-feature]="showShareAudioOption">
+                <button #qualityTrigger="cdkOverlayOrigin" cdkOverlayOrigin class="call-select call-quality-trigger" type="button" role="combobox" aria-haspopup="listbox" [attr.aria-label]="control.label" [attr.aria-expanded]="qualityPickerOpen" [attr.aria-controls]="qualityPickerOpen ? qualityListboxID(control) : null" [attr.aria-activedescendant]="qualityPickerOpen ? qualityOptionID(control, activeQualityIndex) : null" [disabled]="control.disabled || control.options.length === 0" (click)="toggleQualityPicker(control)" (keydown)="onQualityKeydown($event, control)">
+                    <span class="call-quality-value">{{ selectedLabel(control) }}</span>
+                    <span class="call-quality-arrow" aria-hidden="true"></span>
+                </button>
+                <label *ngIf="showShareAudioOption" class="share-audio-toggle" [class.share-audio-enabled]="shareAudioChecked" [class.share-audio-disabled]="shareAudioDisabled" [attr.title]="shareAudioTooltip">
+                    <input type="checkbox" [checked]="shareAudioChecked" [disabled]="shareAudioDisabled" [attr.aria-label]="shareAudioLabel" [attr.aria-describedby]="shareAudioStatusID" [attr.aria-description]="shareAudioDescription" (change)="toggleShareAudio($event)">
+                    <span class="share-audio-label">Share audio</span>
+                </label>
+                <span class="share-audio-unavailable-reason" *ngIf="shareAudioUnavailableReason as reason" aria-hidden="true">{{ reason }}</span>
+                <span class="share-audio-description" *ngIf="showShareAudioOption" [id]="shareAudioStatusID">{{ shareAudioDescription }}</span>
+            </div>
+            <ng-template #qualityOverlay="cdkConnectedOverlay" cdkConnectedOverlay [cdkConnectedOverlayOrigin]="qualityTrigger" [cdkConnectedOverlayOpen]="qualityPickerOpen" [cdkConnectedOverlayPositions]="qualityPickerOpenBelow ? qualityBelowPositions : qualityAbovePositions" [cdkConnectedOverlayPanelClass]="overlayPanelClasses" [cdkConnectedOverlayScrollStrategy]="repositionOnScroll" (attach)="refreshQualityPosition(qualityOverlay)" (overlayOutsideClick)="closeQualityPicker()">
+                <div class="call-quality-listbox" [ngClass]="qualityListboxClasses" [id]="qualityListboxID(control)" role="listbox" [attr.aria-label]="qualityPickerOpen ? control.label + ' options' : null">
+                    <div *ngFor="let option of control.options; let index = index; trackBy: trackDevice" class="call-quality-option" [id]="qualityOptionID(control, index)" role="option" [attr.aria-selected]="option.id === control.value" [class.call-quality-option-active]="index === activeQualityIndex" (mouseenter)="activeQualityIndex = index" (click)="selectQuality(control.id, option.id)">{{ option.label }}</div>
+                </div>
+            </ng-template>
+        </ng-container>
+        <ng-template #materialSelect>
+            <mat-select class="call-select" [aria-label]="control.label" [panelClass]="panelClass" [value]="control.value" [disabled]="control.disabled" (selectionChange)="select(control.id, $event.value)">
+                <mat-option *ngFor="let option of control.options; trackBy: trackDevice" [value]="option.id">{{ option.label }}</mat-option>
+            </mat-select>
+        </ng-template>
+    </div>
 </div>

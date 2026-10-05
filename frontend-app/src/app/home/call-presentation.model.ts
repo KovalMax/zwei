@@ -19,6 +19,7 @@ export interface CallPresentationParticipants {
 
 export type CallPresentationControlID = 'microphone' | 'speaker' | 'quality';
 export type CallPresentationActionID = 'mute' | 'screen-share';
+export type CallPresentationActionStyle = 'square' | 'round';
 
 export interface CallPresentationControl {
     readonly id: CallPresentationControlID;
@@ -33,6 +34,7 @@ export interface CallPresentationAction {
     readonly label: string;
     readonly active: boolean;
     readonly disabled: boolean;
+    readonly style?: CallPresentationActionStyle;
 }
 
 export interface CallPresentationControlChange {

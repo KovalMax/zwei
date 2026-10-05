@@ -8,6 +8,7 @@ export type GroupCallSurfaceIntent =
     | {readonly type: 'enable-sound'}
     | {readonly type: 'action'; readonly actionID: CallPresentationActionID}
     | {readonly type: 'control-change'; readonly change: CallPresentationControlChange}
+    | {readonly type: 'screen-share-audio-change'; readonly enabled: boolean}
     | {readonly type: 'leave'}
     | {readonly type: 'end'}
     | {readonly type: 'presentation-ready'; readonly event: Event};

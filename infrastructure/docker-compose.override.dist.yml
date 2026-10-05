@@ -1,5 +1,8 @@
 services:
   traefik:
+    networks:
+      messenger-network:
+        ipv4_address: 172.30.0.250
     ports:
       - "80:80"
       - "443:443"

@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,8 @@ const (
 	GroupRoomEnded    = "ended"
 	GroupRoomCapacity = 4
 )
+
+var ErrGroupRoomFull = errors.New("group call is full (maximum 4 participants)")
 
 // GroupRoom is ephemeral signaling coordination state. PostgreSQL membership
 // remains authoritative and is checked by the transport before each command.

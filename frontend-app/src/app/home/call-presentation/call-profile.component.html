@@ -1,5 +1,5 @@
 <div class="call-presentation-profile call-profile">
-    <button *ngIf="collapsible" class="call-presentation-collapse call-collapse-button group-call-collapse-button" mat-icon-button type="button" [attr.aria-label]="collapseLabel" (click)="collapse.emit()">
+    <button *ngIf="collapsible" class="call-presentation-collapse call-collapse-button group-call-collapse-button" [class.call-direct-collapse-button]="!profile.isGroup" [matTooltip]="collapseLabel" matTooltipPosition="above" mat-icon-button type="button" [attr.aria-label]="collapseLabel" (click)="collapse.emit()">
         <zwei-icon name="expand_more"></zwei-icon>
     </button>
     <div class="call-presentation-avatar" [class.call-presentation-avatar-group]="profile.isGroup">

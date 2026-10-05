@@ -10,7 +10,7 @@ endif
 
 .PHONY: help
 help:
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: start
 start: check_dist_files ## - Starting all docker containers from compose file
@@ -45,9 +45,28 @@ migrate: check_dist_files ## - Run PostgreSQL migrations inside the database con
 e2e: check_dist_files ## - Run Playwright tests against an isolated PostgreSQL schema
 	@bash scripts/e2e.sh $(APP_NAME)
 
+.PHONY: e2e-one
+e2e-one: check_dist_files ## - Run one Playwright test title against the isolated test database/Redis
+	@bash scripts/e2e.sh $(APP_NAME) test "$${SPEC:-}" "$${TEST:-}"
+
+.PHONY: e2e-baseline
+e2e-baseline: check_dist_files ## - Update only the visual baseline spec (SPEC=tests/visual-baseline.spec.ts)
+	@bash scripts/e2e.sh $(APP_NAME) baseline "$${SPEC:-}" "$${TEST:-}"
+
+.PHONY: frontend-spec
+frontend-spec: ## - Run one Angular spec in an already-running frontend container
+	@SPEC="$${SPEC:-}"; case "$$SPEC" in src/*.spec.ts|src/**/*.spec.ts) ;; *) printf '%s\n' 'Set SPEC to a frontend spec path, e.g. src/app/home/home.component.spec.ts' >&2; exit 2 ;; esac; \
+	case "/$$SPEC/" in */../*|*//*) printf '%s\n' 'SPEC must be a normalized relative spec path' >&2; exit 2 ;; esac; \
+	docker compose -p $(APP_NAME) exec -T -e SPEC="$$SPEC" frontend sh -lc 'test -f "/app/$$SPEC"' && \
+	docker compose -p $(APP_NAME) exec -T frontend npm test -- --include="$$SPEC"
+
+.PHONY: frontend-build
+frontend-build: ## - Run the Angular production build in an already-running frontend container
+	docker compose -p $(APP_NAME) exec -T frontend npm run build -- --configuration production
+
 .PHONY: frontend-test
 frontend-test: start ## - Run Angular headless tests with the frontend container dependencies
-	docker compose -p $(APP_NAME) exec -T frontend npm test -- --watch=false --browsers=ChromeHeadless
+	docker compose -p $(APP_NAME) exec -T frontend npm test -- --coverage
 
 .PHONY: demo
 demo: check_dist_files ## - Record the README Playwright journey against an isolated schema

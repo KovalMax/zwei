@@ -20,6 +20,7 @@
 ## What Zwei is about
 
 - **Conversations that feel personal** — one-to-one chats keep attention on the person, not the feed.
+- **Small-group conversations** — group chats support up to 16 active members; group audio calls support up to four participants at once. Group member lists show display names and roles, not email addresses.
 - **A live sense of connection** — messages, presence, typing, delivery recovery, and read state work together naturally.
 - **Privacy with accurate language** — Zwei protects application data and browser sessions without pretending that server-mediated encryption is end-to-end encryption.
 - **A considerate interface** — dark and light themes, responsive layouts, keyboard-visible focus, reduced motion, and clear empty/loading/error states.
@@ -53,16 +54,15 @@ make e2e
 
 The E2E environment is isolated from the normal development database. Mailpit is available locally when inspecting test activation messages.
 
-## Browser PWA on macOS
+## Browser PWA installation
 
-Zwei is a browser PWA, not a signed native macOS application. Install it from
-the supported browser at the HTTPS Zwei address: use Chrome or Edge's **Install
-Zwei** action, or Safari 17+ on macOS Sonoma (14)+ with **Add to Dock**. Use
-Chrome or Edge on earlier Safari/macOS versions. If macOS reports a previously
-installed browser app as damaged, remove that app from Applications, update the
-browser, then reinstall it from the same HTTPS origin. Do not install a copied
-or downloaded `.app` bundle. If the interface appears stale after deployment,
-use **Update available — Reload** from the account menu before reinstalling.
+Zwei is a browser PWA, not a signed native application. It is served over HTTPS
+and supports the browser's PWA installation flow where available. Installation
+prompts and installed-app behavior vary by browser and operating system; Safari,
+macOS, and other platform-specific behavior have not yet been verified as part
+of the acceptance coverage (see [PWA acceptance](docs/pwa-acceptance.md)). Do not
+install a copied or downloaded `.app` bundle. If the interface appears stale
+after deployment, use **Update available — Reload** from the account menu.
 
 ## Contributing
 
@@ -77,7 +77,7 @@ Contributions are welcome. A simple workflow:
    go test ./services/...
    go test -race ./services/...
    go vet ./services/...
-   npm --prefix frontend-app test -- --watch=false --browsers=ChromeHeadless
+   npm --prefix frontend-app test -- --coverage --watch=false
    npm --prefix frontend-app run build
    make e2e
    ```

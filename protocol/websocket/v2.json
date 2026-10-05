@@ -1,8 +1,9 @@
 {
   "version": 2,
-  "compatibility": {"predecessor": 1, "route": "/ws/v2", "v1Route": "/ws"},
+  "compatibility": {"predecessor": 1, "route": "/ws/v2", "v1Route": "/ws", "clientEventsInheritFrom": "protocol/websocket/v1.json"},
   "clientEvents": {
     "conversation.reconcile": ["request_id", "payload.conversation_id", "payload.after_sequence"],
+    "group.call.discover": ["request_id", "payload.conversation_id"],
     "group.call.start": ["request_id", "payload.conversation_id"],
     "group.call.join": ["request_id", "payload.conversation_id", "payload.room_id", "payload.generation"],
     "group.call.sync": ["request_id", "payload.conversation_id", "payload.room_id", "payload.generation"],
@@ -38,7 +39,8 @@
     "group.call.presenter.start",
     "group.call.presenter.stop",
     "group.call.signal",
-    "group.call.synced"
+    "group.call.synced",
+    "group.call.discovered"
   ],
   "serverEventFields": {
     "conversation.read": ["payload.conversation_id", "payload.user_id", "payload.sequence", "payload.visible_from_sequence"],
@@ -57,6 +59,15 @@
     "group.call.synced.activeFields": ["payload.conversation_id", "payload.membership_revision", "payload.state_revision", "payload.participants", "payload.expires_at", "payload.presenter"],
     "group.call.synced.active.omittedFields": ["payload.ice_servers"],
     "group.call.synced.endedFields": ["payload.room_id", "payload.generation", "payload.status"],
-    "group.call.synced.ended.omittedFields": ["payload.conversation_id", "payload.membership_revision", "payload.state_revision", "payload.expires_at", "payload.participants", "payload.presenter", "payload.ice_servers"]
+    "group.call.synced.ended.omittedFields": ["payload.conversation_id", "payload.membership_revision", "payload.state_revision", "payload.expires_at", "payload.participants", "payload.presenter", "payload.ice_servers"],
+    "group.call.discovered": ["request_id", "payload.conversation_id", "payload.room"],
+    "group.call.discovered.room": ["payload.room.room_id", "payload.room.conversation_id", "payload.room.membership_revision", "payload.room.generation", "payload.room.state_revision", "payload.room.status", "payload.room.expires_at", "payload.room.participants"],
+    "group.call.discovered.roomNullable": true,
+    "group.call.discovered.room.omittedFields": ["payload.room.ice_servers", "payload.room.participants.connection_id"],
+    "group.call.signal": ["payload.room_id", "payload.generation", "payload.from_user_id", "payload.from_device_id", "payload.signal"],
+    "group.call.signal.signal": {"$ref": "protocol/websocket/v1.json#/$defs/callSignal"}
+  },
+  "clientEventFieldSchemas": {
+    "group.call.signal.payload.signal": {"$ref": "protocol/websocket/v1.json#/$defs/callSignal"}
   }
 }

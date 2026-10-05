@@ -1,4 +1,4 @@
-import {ChangeDetectionStrategy, Component, Input} from '@angular/core';
+import {ChangeDetectionStrategy, Component, EventEmitter, Input, Output} from '@angular/core';
 
 @Component({
     standalone: false,
@@ -11,4 +11,6 @@ export class CallTerminalNoticeComponent {
     @Input({required: true}) public message = '';
     @Input() public error = false;
     @Input() public group = false;
+    @Input() public rejoinable = false;
+    @Output() public readonly rejoin = new EventEmitter<void>();
 }

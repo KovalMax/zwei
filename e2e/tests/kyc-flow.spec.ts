@@ -121,6 +121,128 @@ async function captureTableBounds(page: Page, testInfo: TestInfo, name: string):
   await table.evaluate(element => { element.scrollTop = 0; });
 }
 
+async function assertPinnedTableSurfacesAreOpaque(page: Page): Promise<void> {
+  const surfaces = await page.locator('.table-wrap').evaluate(tableElement => {
+    const table = tableElement as HTMLElement;
+    table.scrollLeft = table.scrollWidth;
+    const allSurfaces = Array.from(table.querySelectorAll<HTMLElement>('thead th, tbody td:first-child, tbody td:last-child'));
+    const pinnedSurfaces = new Set(table.querySelectorAll<HTMLElement>('thead th:first-child, thead th:last-child, tbody td:first-child, tbody td:last-child'));
+    return allSurfaces.map(surface => {
+      const background = getComputedStyle(surface).backgroundColor;
+      const channels = background.match(/[\d.]+/g) ?? [];
+      const alpha = background.startsWith('rgba') ? Number(channels[3]) : 1;
+      const rect = surface.getBoundingClientRect();
+      const tableRect = table.getBoundingClientRect();
+      return {alpha, pinned: pinnedSurfaces.has(surface), left: rect.left, right: rect.right, tableLeft: tableRect.left, tableRight: tableRect.right};
+    });
+  });
+  expect(surfaces.length).toBeGreaterThan(0);
+  for (const surface of surfaces) {
+    expect(surface.alpha).toBe(1);
+    if (surface.pinned) {
+      expect(surface.left).toBeGreaterThanOrEqual(surface.tableLeft - 1);
+      expect(surface.right).toBeLessThanOrEqual(surface.tableRight + 1);
+    }
+  }
+}
+
+async function assertInvitationFieldContrastAndContainment(page: Page): Promise<void> {
+  const rendered = await page.locator('.invitation-form').evaluate(formElement => {
+    const form = formElement as HTMLElement;
+    const field = form.querySelector<HTMLElement>('mat-form-field');
+    const input = form.querySelector<HTMLInputElement>('input');
+    const label = form.querySelector<HTMLElement>('.mdc-floating-label');
+    const button = form.querySelector<HTMLElement>('button');
+    if (!field || !input || !label || !button) return null;
+
+    const composite = (foreground: string, background: string): string => {
+      const foregroundChannels = foreground.match(/[\d.]+/g) ?? [];
+      const backgroundChannels = background.match(/[\d.]+/g) ?? [];
+      const alpha = foreground.startsWith('rgba') ? Number(foregroundChannels[3]) : 1;
+      const backgroundAlpha = background.startsWith('rgba') ? Number(backgroundChannels[3]) : 1;
+      const outputAlpha = alpha + backgroundAlpha * (1 - alpha);
+      const channels = [0, 1, 2].map(index => {
+        const foregroundChannel = Number(foregroundChannels[index]);
+        const backgroundChannel = Number(backgroundChannels[index]);
+        return Math.round((foregroundChannel * alpha + backgroundChannel * backgroundAlpha * (1 - alpha)) / outputAlpha);
+      });
+      return `rgb(${channels.join(', ')})`;
+    };
+    const compositedBackground = (element: HTMLElement): string => {
+      const ancestors: HTMLElement[] = [];
+      let current: HTMLElement | null = element;
+      while (current) {
+        ancestors.push(current);
+        current = current.parentElement;
+      }
+      let background = 'rgb(255, 255, 255)';
+      for (const ancestor of ancestors.reverse()) {
+        const color = getComputedStyle(ancestor).backgroundColor;
+        if (color !== 'rgba(0, 0, 0, 0)') background = composite(color, background);
+      }
+      return background;
+    };
+    const luminance = (color: string): number => {
+      const channels = (color.match(/[\d.]+/g) ?? []).slice(0, 3).map(channel => Number(channel) / 255).map(channel =>
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+      );
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const contrast = (foreground: string, background: string): number => {
+      const foregroundLuminance = luminance(foreground);
+      const backgroundLuminance = luminance(background);
+      return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+    };
+    const surface = compositedBackground(field);
+    const inputStyle = getComputedStyle(input);
+    const labelStyle = getComputedStyle(label);
+    const rect = (element: HTMLElement) => {
+      const bounds = element.getBoundingClientRect();
+      return {left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom};
+    };
+    const fieldRect = rect(field);
+    const buttonRect = rect(button);
+    return {
+      theme: document.documentElement.className,
+      inputColor: inputStyle.color,
+      labelColor: labelStyle.color,
+      surface,
+      inputContrast: contrast(inputStyle.color, surface),
+      labelContrast: contrast(labelStyle.color, surface),
+      field: fieldRect,
+      button: buttonRect,
+      viewport: {width: document.documentElement.clientWidth, height: document.documentElement.clientHeight},
+      activeElement: document.activeElement === input,
+      focused: input.matches(':focus'),
+    };
+  });
+  if (!rendered) throw new Error('invitation field and submit button were not rendered');
+  console.log('KYC invitation field appearance', JSON.stringify(rendered));
+  expect(rendered.inputContrast, `entered email contrast: ${JSON.stringify(rendered)}`).toBeGreaterThanOrEqual(4.5);
+  expect(rendered.labelContrast, `floating label contrast: ${JSON.stringify(rendered)}`).toBeGreaterThanOrEqual(4.5);
+  expect(rendered.field.left).toBeGreaterThanOrEqual(0);
+  expect(rendered.field.right).toBeLessThanOrEqual(rendered.viewport.width + 1);
+  expect(rendered.field.top).toBeGreaterThanOrEqual(0);
+  expect(rendered.field.bottom).toBeLessThanOrEqual(rendered.viewport.height + 1);
+  expect(rendered.button.left).toBeGreaterThanOrEqual(0);
+  expect(rendered.button.right).toBeLessThanOrEqual(rendered.viewport.width + 1);
+  expect(rendered.button.top).toBeGreaterThanOrEqual(0);
+  expect(rendered.button.bottom).toBeLessThanOrEqual(rendered.viewport.height + 1);
+  const controlsOverlap = rendered.field.left < rendered.button.right && rendered.field.right > rendered.button.left && rendered.field.top < rendered.button.bottom && rendered.field.bottom > rendered.button.top;
+  expect(controlsOverlap).toBeFalsy();
+}
+
+async function switchAdminTheme(page: Page, theme: 'dark' | 'light'): Promise<void> {
+  const currentClass = theme === 'dark' ? 'dark-theme' : 'light-theme';
+  if (await page.locator('html').evaluate((element, className) => element.classList.contains(className), currentClass)) return;
+  await page.getByRole('button', {name: 'Account menu'}).click();
+  await page.getByRole('menuitem', {name: `Switch to ${theme} theme`}).click();
+  await expect(page.locator('html')).toHaveClass(new RegExp(currentClass));
+  await page.keyboard.press('Escape');
+  await expect.poll(() => page.locator('.invitation-form .mdc-floating-label').evaluate(label => getComputedStyle(label).color))
+    .toBe(theme === 'dark' ? 'rgb(192, 204, 218)' : 'rgb(117, 108, 98)');
+}
+
 test('pending registration, admin approval, activation email, and blocked login', async ({browser, request}, testInfo) => {
   expect((await request.get(`${adminBase}/`)).status()).toBe(401);
   const pendingEmail = uniqueEmail('pending');
@@ -171,6 +293,30 @@ test('pending registration, admin approval, activation email, and blocked login'
     expect(geometry.pageFits).toBeTruthy();
     expect(geometry.tableReadyForScroll).toBeTruthy();
     expect(geometry.tableContained).toBeTruthy();
+    if (viewport.width === 390) {
+      await assertPinnedTableSurfacesAreOpaque(admin);
+      const mobileRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
+      await expect(mobileRow.getByText(pendingEmail)).toBeVisible();
+      await expect(mobileRow.getByRole('button', {name: 'Activate account'})).toBeVisible();
+      await expect(mobileRow.getByRole('button', {name: 'Block account'})).toBeVisible();
+      await expect(admin.getByText('Email and row actions stay visible.')).toBeVisible();
+      const pinnedGeometry = await mobileRow.evaluate(row => {
+        const table = row.closest<HTMLElement>('.table-wrap');
+        const email = row.querySelector<HTMLElement>('td:first-child');
+        const actions = row.querySelector<HTMLElement>('td:last-child');
+        if (!table || !email || !actions) return null;
+        table.scrollLeft = 0;
+        const emailRect = email.getBoundingClientRect();
+        const actionsRect = actions.getBoundingClientRect();
+        return {emailLeft: emailRect.left, emailRight: emailRect.right, actionsLeft: actionsRect.left, actionsRight: actionsRect.right, tableLeft: table.getBoundingClientRect().left, tableRight: table.getBoundingClientRect().right, scrollWidth: table.scrollWidth, clientWidth: table.clientWidth};
+      });
+      if (!pinnedGeometry) throw new Error('account identity and action columns were not rendered');
+      expect(pinnedGeometry.scrollWidth).toBeGreaterThan(pinnedGeometry.clientWidth);
+      expect(pinnedGeometry.emailLeft).toBeGreaterThanOrEqual(pinnedGeometry.tableLeft - 1);
+      expect(pinnedGeometry.actionsRight).toBeLessThanOrEqual(pinnedGeometry.tableRight + 1);
+      expect(pinnedGeometry.emailRight).toBeLessThanOrEqual(pinnedGeometry.actionsLeft + 1);
+      await admin.screenshot({path: testInfo.outputPath('kyc-admin-accounts-mobile-dark.png'), fullPage: false});
+    }
   }
   const activationResponsePromise = admin.waitForResponse(response => response.url().includes('/api/admin/users/') && response.url().endsWith('/activate') && response.request().method() === 'POST');
   await pendingRow.getByRole('button', {name: 'Activate'}).click();
@@ -190,9 +336,38 @@ test('pending registration, admin approval, activation email, and blocked login'
   await expect(admin.getByText('Activation link sent.')).toBeVisible();
   const resendButton = admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Resend activation link'});
   await expect(resendButton).toBeEnabled();
+  const assertResendFeedbackDoesNotCoverRow = async (): Promise<void> => {
+    const feedback = admin.getByRole('status').filter({hasText: 'Activation link sent.'});
+    await expect(feedback).toBeVisible();
+    const geometry = await feedback.evaluate(element => {
+      const table = element.parentElement?.querySelector<HTMLElement>('.table-wrap');
+      const feedbackRect = element.getBoundingClientRect();
+      const tableRect = table?.getBoundingClientRect();
+      return tableRect ? {feedbackBottom: feedbackRect.bottom, tableTop: tableRect.top, feedbackLeft: feedbackRect.left, feedbackRight: feedbackRect.right, tableLeft: tableRect.left, tableRight: tableRect.right} : null;
+    });
+    if (!geometry) throw new Error('account feedback and table geometry were not rendered');
+    expect(geometry.feedbackBottom).toBeLessThanOrEqual(geometry.tableTop);
+    expect(geometry.feedbackLeft).toBeGreaterThanOrEqual(geometry.tableLeft - 1);
+    expect(geometry.feedbackRight).toBeLessThanOrEqual(geometry.tableRight + 1);
+    const row = admin.locator('tbody tr').filter({hasText: pendingEmail});
+    await expect(row.getByText(pendingEmail)).toBeVisible();
+    await expect(row.getByRole('button', {name: 'Resend activation link'})).toBeEnabled();
+    await expect(row.getByRole('button', {name: 'Block account'})).toBeEnabled();
+    for (const label of ['Resend activation link', 'Block account']) {
+      const receivesPointer = await row.getByRole('button', {name: label}).evaluate(button => {
+        const rect = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return hit === button || button.contains(hit);
+      });
+      expect(receivesPointer, `${label} remains the hit target`).toBeTruthy();
+    }
+  };
   await admin.setViewportSize({width: 1440, height: 900});
   await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-desktop.png'), fullPage: false});
   await admin.setViewportSize({width: 390, height: 844});
+  await assertResendFeedbackDoesNotCoverRow();
+  await assertPinnedTableSurfacesAreOpaque(admin);
+  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByText(pendingEmail)).toBeVisible();
   const resendGeometry = await resendButton.evaluate(button => {
     const table = button.closest<HTMLElement>('.table-wrap');
     if (!table) return null;
@@ -203,13 +378,23 @@ test('pending registration, admin approval, activation email, and blocked login'
   if (!resendGeometry) throw new Error('resend action is not inside the table');
   expect(resendGeometry.left).toBeGreaterThanOrEqual(0);
   expect(resendGeometry.right).toBeLessThanOrEqual(resendGeometry.viewport + 1);
+  await expect(resendButton).toBeVisible();
+  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Block account'})).toBeVisible();
   await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-mobile.png'), fullPage: false});
   await admin.getByRole('button', {name: 'Account menu'}).click();
   await admin.getByRole('menuitem', {name: 'Switch to light theme'}).click();
   await expect(admin.locator('html')).toHaveClass(/light-theme/);
   await admin.keyboard.press('Escape');
+  await expect(admin.getByRole('menuitem', {name: 'Switch to dark theme'})).toHaveCount(0);
   await admin.setViewportSize({width: 1440, height: 900});
   await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-light.png'), fullPage: false});
+  await admin.setViewportSize({width: 390, height: 844});
+  await assertResendFeedbackDoesNotCoverRow();
+  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByText(pendingEmail)).toBeVisible();
+  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Block account'})).toBeEnabled();
+  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Resend activation link'})).toBeVisible();
+  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-light-mobile.png'), fullPage: false});
+  await admin.setViewportSize({width: 1440, height: 900});
   await admin.getByRole('button', {name: 'Account menu'}).click();
   await admin.getByRole('menuitem', {name: 'Switch to dark theme'}).click();
   await expect(admin.locator('html')).toHaveClass(/dark-theme/);
@@ -242,6 +427,9 @@ test('pending registration, admin approval, activation email, and blocked login'
   await expect(activeRow.getByRole('button', {name: 'Block account'})).toBeEnabled();
   await activeRow.getByRole('button', {name: 'Block account'}).click();
   await expect(admin.getByText('Account blocked.')).toBeVisible();
+  await user.reload();
+  await expect(user).toHaveURL(/\/login$/);
+  await expect(user.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
   await searcher.getByPlaceholder('Name or email').fill('');
   await searcher.getByPlaceholder('Name or email').fill(pendingEmail);
   await expect(searchResult).toHaveCount(0);
@@ -320,6 +508,23 @@ test('invitation code activates and logs in an account, then cannot be reused', 
   await expect(invitationTable).toBeVisible();
   const tableGap = await invitationTable.evaluate(table => table.getBoundingClientRect().top - table.previousElementSibling!.getBoundingClientRect().bottom);
   expect(tableGap).toBeGreaterThanOrEqual(16);
+  for (const theme of ['dark', 'light'] as const) {
+    await switchAdminTheme(admin, theme);
+    for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+      await admin.setViewportSize(viewport);
+      await assertInvitationFieldContrastAndContainment(admin);
+      const input = admin.locator('.invitation-form input');
+      await input.focus();
+      await admin.keyboard.press('Tab');
+      await admin.keyboard.press('Shift+Tab');
+      await expect(input).toBeFocused();
+      await input.press('End');
+      const breakpoint = viewport.width === 390 ? 'mobile' : 'desktop';
+      await admin.screenshot({path: testInfo.outputPath(`kyc-invitations-form-${theme}-${breakpoint}.png`), fullPage: false});
+    }
+  }
+  await switchAdminTheme(admin, 'dark');
+  await admin.setViewportSize({width: 1440, height: 900});
   await admin.screenshot({path: testInfo.outputPath('kyc-invitations-form.png'), fullPage: false});
   await admin.getByRole('button', {name: 'Create invitation'}).click();
   const code = await admin.locator('.created-code code').textContent();

@@ -1,4 +1,5 @@
 import {CommonModule} from '@angular/common';
+import {OverlayModule} from '@angular/cdk/overlay';
 import {NgModule} from '@angular/core';
 import {FormsModule} from '@angular/forms';
 import {RouterModule, Routes} from '@angular/router';
@@ -33,6 +34,7 @@ const routes: Routes = [{path: '', component: HomeComponent}];
     imports: [
         CommonModule,
         FormsModule,
+        OverlayModule,
         RouterModule.forChild(routes),
         AppMaterialModule,
         SharedModule,

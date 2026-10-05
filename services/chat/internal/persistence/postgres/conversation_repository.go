@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -166,7 +167,7 @@ func (r *Repository) CreateGroup(ctx context.Context, ownerID uuid.UUID, name st
 }
 
 func (r *Repository) GetGroup(ctx context.Context, callerID, groupID uuid.UUID) (conversation.Group, error) {
-	rows, err := r.db.Query(ctx, `SELECT c.id, c.group_name, c.group_avatar_seed, c.owner_id, c.membership_revision, c.created_at, COALESCE(c.last_message_at, c.created_at), m.user_id, u.display_name, u.email, m.role, m.visible_from_sequence, m.joined_at FROM conversations c JOIN conversation_members me ON me.conversation_id = c.id AND me.user_id = $1 AND me.active JOIN conversation_members m ON m.conversation_id = c.id AND m.active JOIN users u ON u.id = m.user_id WHERE c.id = $2 AND c.kind = 'group' ORDER BY m.joined_at, m.user_id`, callerID, groupID)
+	rows, err := r.db.Query(ctx, `SELECT c.id, c.group_name, c.group_avatar_seed, c.owner_id, c.membership_revision, c.created_at, COALESCE(c.last_message_at, c.created_at), m.user_id, u.display_name, m.role, m.visible_from_sequence, m.joined_at FROM conversations c JOIN conversation_members me ON me.conversation_id = c.id AND me.user_id = $1 AND me.active JOIN conversation_members m ON m.conversation_id = c.id AND m.active JOIN users u ON u.id = m.user_id WHERE c.id = $2 AND c.kind = 'group' ORDER BY m.joined_at, m.user_id`, callerID, groupID)
 	if err != nil {
 		return conversation.Group{}, err
 	}
@@ -181,14 +182,81 @@ func (r *Repository) GetGroup(ctx context.Context, callerID, groupID uuid.UUID) 
 	return groups[0], nil
 }
 
-// ListGroups returns only projections the caller is currently authorized to see.
-func (r *Repository) ListGroups(ctx context.Context, callerID uuid.UUID) ([]conversation.Group, error) {
-	rows, err := r.db.Query(ctx, `SELECT c.id, c.group_name, c.group_avatar_seed, c.owner_id, c.membership_revision, c.created_at, COALESCE(c.last_message_at, c.created_at), m.user_id, u.display_name, u.email, m.role, m.visible_from_sequence, m.joined_at FROM conversations c JOIN conversation_members me ON me.conversation_id = c.id AND me.user_id = $1 AND me.active JOIN conversation_members m ON m.conversation_id = c.id AND m.active JOIN users u ON u.id = m.user_id WHERE c.kind = 'group' ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC, m.joined_at, m.user_id`, callerID)
+// ListGroupsPage bounds authorized group IDs before assembling their member projections.
+func (r *Repository) ListGroupsPage(ctx context.Context, callerID uuid.UUID, limit int, cursor *application.GroupPageCursor) (application.GroupPage, error) {
+	var upperAt, afterAt any
+	var upperID, afterID any
+	if cursor != nil {
+		upperAt, upperID = cursor.Upper.SortAt, cursor.Upper.GroupID
+		afterAt, afterID = cursor.After.SortAt, cursor.After.GroupID
+	}
+	rows, err := r.db.Query(ctx, `
+		WITH candidates AS MATERIALIZED (
+			SELECT c.id AS group_id, COALESCE(c.last_message_at, c.created_at) AS sort_at
+			FROM conversations c
+			JOIN conversation_members caller ON caller.conversation_id = c.id AND caller.user_id = $1 AND caller.active
+			WHERE c.kind = 'group' AND ($2::timestamptz IS NULL OR
+				(COALESCE(c.last_message_at, c.created_at), c.id) <= ($2::timestamptz, $3::uuid) AND
+				(COALESCE(c.last_message_at, c.created_at), c.id) < ($4::timestamptz, $5::uuid))
+			ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
+			LIMIT $6
+		), page_keys AS MATERIALIZED (
+			SELECT group_id, sort_at
+			FROM candidates
+			ORDER BY sort_at DESC, group_id DESC
+			LIMIT $7
+		), page_state AS (
+			SELECT COUNT(*) > $7 AS has_more FROM candidates
+		)
+		SELECT c.id, c.group_name, c.group_avatar_seed, c.owner_id, c.membership_revision,
+			c.created_at, COALESCE(c.last_message_at, c.created_at), pk.sort_at,
+			m.user_id, u.display_name, m.role, m.visible_from_sequence, m.joined_at,
+			state.has_more
+		FROM page_state state
+		JOIN page_keys pk ON true
+		JOIN conversations c ON c.id = pk.group_id AND c.kind = 'group'
+		JOIN conversation_members caller ON caller.conversation_id = c.id AND caller.user_id = $1 AND caller.active
+		JOIN conversation_members m ON m.conversation_id = c.id AND m.active
+		JOIN users u ON u.id = m.user_id
+		ORDER BY pk.sort_at DESC, pk.group_id DESC, m.joined_at, m.user_id`,
+		callerID, upperAt, upperID, afterAt, afterID, limit+1, limit)
 	if err != nil {
-		return nil, err
+		return application.GroupPage{}, err
 	}
 	defer rows.Close()
-	return scanGroupProjections(rows)
+	groups := make([]conversation.Group, 0, limit)
+	var keys []application.GroupSortKey
+	var hasMore bool
+	for rows.Next() {
+		var group conversation.Group
+		var member conversation.GroupMember
+		var sortAt time.Time
+		if err := rows.Scan(&group.ID, &group.Name, &group.AvatarSeed, &group.OwnerID, &group.MembershipRevision, &group.CreatedAt, &group.LastMessageAt, &sortAt,
+			&member.UserID, &member.DisplayName, &member.Role, &member.VisibleFromSequence, &member.JoinedAt, &hasMore); err != nil {
+			return application.GroupPage{}, err
+		}
+		if len(groups) == 0 || groups[len(groups)-1].ID != group.ID {
+			groups = append(groups, group)
+			keys = append(keys, application.GroupSortKey{SortAt: sortAt, GroupID: group.ID})
+		}
+		current := &groups[len(groups)-1]
+		if len(current.Members) >= conversation.MaxGroupMembers {
+			return application.GroupPage{}, fmt.Errorf("group %s exceeds active-member limit", current.ID)
+		}
+		current.Members = append(current.Members, member)
+	}
+	if err := rows.Err(); err != nil {
+		return application.GroupPage{}, err
+	}
+	page := application.GroupPage{Items: groups}
+	if hasMore && len(groups) > 0 {
+		upper := keys[0]
+		if cursor != nil {
+			upper = cursor.Upper
+		}
+		page.NextCursor = &application.GroupPageCursor{Upper: upper, After: keys[len(keys)-1]}
+	}
+	return page, nil
 }
 
 // scanGroupProjections assembles each bounded active-member projection from one ordered SQL snapshot.
@@ -197,7 +265,7 @@ func scanGroupProjections(rows pgx.Rows) ([]conversation.Group, error) {
 	for rows.Next() {
 		var group conversation.Group
 		var member conversation.GroupMember
-		if err := rows.Scan(&group.ID, &group.Name, &group.AvatarSeed, &group.OwnerID, &group.MembershipRevision, &group.CreatedAt, &group.LastMessageAt, &member.UserID, &member.DisplayName, &member.Email, &member.Role, &member.VisibleFromSequence, &member.JoinedAt); err != nil {
+		if err := rows.Scan(&group.ID, &group.Name, &group.AvatarSeed, &group.OwnerID, &group.MembershipRevision, &group.CreatedAt, &group.LastMessageAt, &member.UserID, &member.DisplayName, &member.Role, &member.VisibleFromSequence, &member.JoinedAt); err != nil {
 			return nil, err
 		}
 		if len(groups) == 0 || groups[len(groups)-1].ID != group.ID {
