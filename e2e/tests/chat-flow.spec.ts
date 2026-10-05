@@ -4090,13 +4090,29 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     });
     expect(restoreAdmin.status()).toBe(200);
 
-    await owner.route(`**/api/chat/groups/${groupID}`, route => route.fulfill({status: 500, contentType: 'application/json', body: '{"error":"test failure"}'}));
+    await owner.route(`**/api/chat/groups/${groupID}`, route => {
+      if (route.request().method() === 'PATCH') {
+        return route.fulfill({status: 500, contentType: 'application/json', body: '{"error":"test failure"}'});
+      }
+      return route.fallback();
+    });
+    const groupReadWhileRouteInstalled = await owner.evaluate(async ({groupID, authorization}) => {
+      const response = await fetch(`/api/chat/groups/${groupID}`, {headers: {Authorization: authorization}});
+      return {status: response.status, body: await response.text()};
+    }, {groupID, authorization: `${ownerToken.token_type} ${ownerToken.access_token}`});
+    expect(groupReadWhileRouteInstalled.status).toBe(200);
+    expect(groupReadWhileRouteInstalled.body).toBeTruthy();
     await owner.getByLabel('Name', {exact: true}).fill('Rejected rename');
+    const rejectedRename = owner.waitForResponse(response => response.url().endsWith(`/api/chat/groups/${groupID}`) && response.request().method() === 'PATCH');
     await owner.locator('.group-manager form').getByRole('button', {name: 'Save name'}).click();
+    expect((await rejectedRename).status()).toBe(500);
     await expect(owner.getByRole('alert')).toHaveText('Group changes could not be saved.');
     await owner.unroute(`**/api/chat/groups/${groupID}`);
+    await expect(owner.locator('.group-manager')).toBeVisible();
     await owner.getByLabel('Name', {exact: true}).fill('Browser acceptance group renamed');
+    const successfulRename = owner.waitForResponse(response => response.url().endsWith(`/api/chat/groups/${groupID}`) && response.request().method() === 'PATCH');
     await owner.locator('.group-manager form').getByRole('button', {name: 'Save name'}).click();
+    expect((await successfulRename).status()).toBe(200);
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group renamed'})).toBeVisible();
 
     await member.reload();
