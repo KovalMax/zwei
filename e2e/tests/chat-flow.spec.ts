@@ -14,10 +14,8 @@ type RenderedContrast = {foreground: string; background: string; ratio: number};
 type RenderedTextContrast = {foreground: string; background: string; ratio: number; opacity: number; disabled: boolean};
 
 async function waitForTooltipAnimation(tooltip: Locator): Promise<void> {
-  await tooltip.evaluate(async element => {
-    const panel = element.closest<HTMLElement>('.mat-mdc-tooltip-panel') ?? element;
-    await Promise.all(panel.getAnimations({subtree: true}).map(animation => animation.finished.catch(() => undefined)));
-  });
+  await expect.poll(async () => (await measureRenderedTextContrastAtSurface(tooltip)).opacity,
+    {message: 'Tooltip should become visibly rendered before geometry/contrast checks', timeout: 5_000}).toBeGreaterThanOrEqual(.8);
 }
 
 async function measureRenderedTextContrast(element: Locator): Promise<RenderedContrast> {
@@ -114,6 +112,7 @@ async function measureRenderedTextContrastAtSurface(element: Locator, pseudoElem
       const opacity = Number.parseFloat(getComputedStyle(layer).opacity);
       foregroundOpacity *= Number.isFinite(opacity) ? opacity : 1;
     }
+    const effectiveOpacity = foregroundOpacity;
     const renderedForeground = composite([foreground[0], foreground[1], foreground[2], foregroundOpacity], background);
     const foregroundLuminance = luminance(renderedForeground);
     const backgroundLuminance = luminance(background);
@@ -121,7 +120,7 @@ async function measureRenderedTextContrastAtSurface(element: Locator, pseudoElem
       foreground: foregroundColor,
       background: `rgba(${background[0]}, ${background[1]}, ${background[2]}, ${background[3]})`,
       ratio: (Math.max(foregroundLuminance, backgroundLuminance) + .05) / (Math.min(foregroundLuminance, backgroundLuminance) + .05),
-      opacity: pseudoOpacity,
+      opacity: effectiveOpacity,
       disabled: 'disabled' in node && Boolean((node as HTMLInputElement).disabled),
     };
   }, pseudoElement);
@@ -641,10 +640,12 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     {id: 'remove-member', label: 'Remove', ariaLabel: 'Remove Member 1', button: adminActionRow.getByRole('button', {name: 'Remove Member 1', exact: true})},
   ];
   const assertTooltipGeometry = async (action: typeof actionButtons[number]): Promise<void> => {
-    const tooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: action.label}).last();
+    const tooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: action.label}).last();
     await expect(tooltip, `${theme} ${viewport.width}px tooltip: ${action.label}`).toBeVisible();
     await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px must render only the active action tooltip`).toHaveCount(1);
-    const contrast = await measureRenderedTextContrast(tooltip);
+    await expect.poll(async () => (await measureRenderedTextContrastAtSurface(tooltip)).opacity, {message: `${theme} ${viewport.width}px tooltip should finish rendering before contrast measurement`, timeout: 5_000}).toBeGreaterThanOrEqual(.8);
+    const contrast = await measureRenderedTextContrastAtSurface(tooltip);
+    expect(contrast.opacity, `${theme} ${viewport.width}px tooltip rendered opacity: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(.8);
     expect(contrast.ratio, `${theme} ${viewport.width}px ${action.label} rendered contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
     const {tooltipRect, managerRect, tooltipClasses, panelClasses, tooltipStyle} = await page.evaluate(label => {
       const toRect = (element: Element | null) => {
@@ -729,17 +730,14 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     list.scrollTop = targetScrollTop;
   }));
   for (const action of actionButtons) {
-    const tooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: action.label}).last();
     await expect(action.button).toHaveAttribute('aria-label', action.ariaLabel);
     await action.button.scrollIntoViewIfNeeded();
     await page.mouse.move(1, viewport.height / 2);
     await action.button.hover();
     await assertTooltipGeometry(action);
-    await waitForTooltipAnimation(tooltip);
     await page.screenshot({path: testInfo.outputPath(`group-member-action-tooltip-hover-${action.id}-${theme}-${viewport.width}.png`), fullPage: false});
     await focusUsingKeyboard(action.button);
     await assertTooltipGeometry(action);
-    await waitForTooltipAnimation(tooltip);
     await page.screenshot({path: testInfo.outputPath(`group-member-action-${action.id}-keyboard-focus-${theme}-${viewport.width}.png`), fullPage: false});
     if (action.id === 'transfer-owner' && viewport.width === 1440) {
       const focusStyle = await action.button.evaluate(button => ({outlineStyle: getComputedStyle(button).outlineStyle, outlineWidth: getComputedStyle(button).outlineWidth}));
@@ -748,7 +746,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     }
   }
   if (viewport.width === 1440 && theme === 'dark') {
-    const resizeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'Remove'}).last();
+    const resizeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: 'Remove'}).last();
     await page.mouse.move(1, viewport.height / 2);
     await actionButtons[2].button.hover();
     await expect(resizeTooltip).toBeVisible();
@@ -761,7 +759,6 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await page.keyboard.press('Tab');
     await expect(actionButtons[2].button, 'keyboard navigation should recover the focused action tooltip without moving the pointer').toBeFocused();
     await assertTooltipGeometry(actionButtons[2]);
-    await waitForTooltipAnimation(resizeTooltip);
     await page.screenshot({path: testInfo.outputPath('group-member-action-remove-keyboard-recovered-after-resize-dark-1440.png'), fullPage: false});
     const focusRecoveryScroll = await scrollMemberListAwayFromCurrentEdge();
     expect(focusRecoveryScroll.targetScrollTop, JSON.stringify(focusRecoveryScroll)).not.toBe(focusRecoveryScroll.before);
@@ -777,7 +774,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await panel.evaluate(element => { element.scrollTop = 0; });
     await page.mouse.move(0, 0);
   }
-  const removeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'Remove'}).last();
+  const removeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: 'Remove'}).last();
   await focusUsingKeyboard(actionButtons[2].button);
   await assertTooltipGeometry(actionButtons[2]);
   await page.mouse.move(0, 0);
@@ -797,11 +794,10 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     }));
     await expect(actionButtons[2].button, `${theme} ${viewport.width}px list scroll should retain keyboard focus`).toBeFocused();
-   await page.keyboard.press('Shift+Tab');
-   await page.keyboard.press('Tab');
-   await expect(actionButtons[2].button, `${theme} ${viewport.width}px keyboard focus should recover without pointer movement`).toBeFocused();
-   await assertTooltipGeometry(actionButtons[2]);
-   await waitForTooltipAnimation(removeTooltip);
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    await expect(actionButtons[2].button, `${theme} ${viewport.width}px keyboard focus should recover without pointer movement`).toBeFocused();
+    await assertTooltipGeometry(actionButtons[2]);
    await expect(removeTooltip, `${theme} ${viewport.width}px keyboard focus should reopen after a list scroll`).toBeVisible();
    await page.screenshot({path: testInfo.outputPath(`group-member-action-remove-keyboard-recovered-after-list-scroll-${theme}-${viewport.width}.png`), fullPage: false});
    const dismissalScroll = await scrollMemberListAwayFromCurrentEdge();
@@ -814,10 +810,9 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await memberScroller.evaluate(element => new Promise<void>(resolve => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     }));
-    await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
-    await actionButtons[2].button.hover();
-   await assertTooltipGeometry(actionButtons[2]);
-   await waitForTooltipAnimation(removeTooltip);
+     await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
+     await actionButtons[2].button.hover();
+    await assertTooltipGeometry(actionButtons[2]);
    await expect(removeTooltip).toBeVisible();
   const settingsScroll = await panel.evaluate(element => {
     const settings = element as HTMLElement;
@@ -899,9 +894,9 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   const lastRemoveButton = manager.locator('.group-members .member-action-button[aria-label^="Remove "]').last();
   await lastRemoveButton.scrollIntoViewIfNeeded();
   await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
-  await page.mouse.move(1, viewport.height / 2);
-  await lastRemoveButton.hover();
-  await assertTooltipGeometry(actionButtons[2]);
+   await page.mouse.move(1, viewport.height / 2);
+   await lastRemoveButton.hover();
+   await assertTooltipGeometry(actionButtons[2]);
   await page.screenshot({path: testInfo.outputPath(`group-member-action-remove-hover-list-end-${theme}-${viewport.width}.png`), fullPage: false});
   const endSettingsScroll = await panel.evaluate(element => {
     const settings = element as HTMLElement;
@@ -4365,7 +4360,10 @@ test('attributes group messages and system actions to their members', async ({br
 });
 
 test('contains group member, message, and rail lists across the required viewports and themes', async ({browser}, testInfo) => {
-  test.setTimeout(180_000);
+  // This flow provisions 12 accounts, then exercises multi-region scrolling,
+  // member actions, and screenshots across both themes and four viewports.
+  // The isolated Docker CI runner needs more time than the local browser.
+  test.setTimeout(360_000);
   const ownerEmail = uniqueEmail('group-visual-owner');
   const memberEmails = Array.from({length: 11}, (_, index) => uniqueEmail(`group-visual-member-${index}`));
   const ownerContext = await browser.newContext({viewport: {width: 2560, height: 1440}});
