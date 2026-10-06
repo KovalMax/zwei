@@ -10,7 +10,7 @@
 .call-device-note { grid-column: 1 / -1; margin: -8px 0 0; }
 
 :host(.call-panel-full) { display: flex; min-height: 0; flex: 1 1 auto; align-items: center; justify-content: center; overflow: hidden; }
-:host(.call-panel-full) .call-card { position: relative; display: flex; width: min(100%, 720px); height: min(100%, clamp(620px, 78vh, 760px)); min-height: 0; box-sizing: border-box; flex-direction: column; align-items: stretch; gap: 0; margin: auto; padding: clamp(22px, 4vw, 42px); border: 1px solid var(--chat-line-strong); border-radius: 28px; background: var(--chat-surface); box-shadow: 0 24px 70px rgba(17, 28, 43, .16); }
+:host(.call-panel-full) .call-card { position: relative; display: flex; width: min(100%, var(--zwei-call-card-max-width)); height: min(100%, var(--zwei-call-card-height)); min-height: 0; box-sizing: border-box; flex-direction: column; align-items: stretch; gap: 0; margin: auto; padding: var(--zwei-call-card-padding); border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-call-card-radius); background: var(--chat-surface); box-shadow: var(--zwei-call-card-shadow); }
 :host(.call-panel-full) .call-card > app-call-profile { flex: 0 0 auto; padding: 8px 0 26px; border-bottom: 1px solid var(--chat-line-strong); }
 :host(.call-panel-full) .call-card-content { display: flex; width: 100%; min-width: 0; box-sizing: border-box; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: auto; padding: 20px 0 8px; }
 :host(.call-panel-full) .call-devices { padding-top: 18px; }

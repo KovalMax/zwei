@@ -771,6 +771,143 @@ describe('GroupCallFacade', () => {
         expect(signalCount('offer')).toBe(offersBeforeLateJoin + 1);
     });
 
+    it('restores the same live remote receiver after presenter stop/start without another ontrack and fences its cleanup', async () => {
+        const participants: GroupCallParticipant[] = [
+            {user_id: 'self-1', device_id: 'device-1'},
+            {user_id: 'peer-1', device_id: 'peer-device'},
+        ];
+        const initial = room('group.call.started', 'active', 'group-1', 1, 1, participants).payload;
+        await facade.join({...initial, presenter: {user_id: 'peer-1', device_id: 'peer-device'}}, 'self-1');
+        events.next({...room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants), payload: {
+            ...room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants).payload,
+            presenter: {user_id: 'peer-1', device_id: 'peer-device'},
+        }});
+
+        let unmuteListener: (() => void) | undefined;
+        let muteListener: (() => void) | undefined;
+        let endedListener: (() => void) | undefined;
+        let muted = false;
+        const remoteTrack = {
+            kind: 'video', get muted() { return muted; }, readyState: 'live',
+            addEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+                if (type === 'unmute') unmuteListener = typeof listener === 'function' ? listener as () => void : () => listener.handleEvent(new Event(type));
+                if (type === 'mute') muteListener = typeof listener === 'function' ? listener as () => void : () => listener.handleEvent(new Event(type));
+                if (type === 'ended') endedListener = typeof listener === 'function' ? listener as () => void : () => listener.handleEvent(new Event(type));
+            }),
+        } as unknown as MediaStreamTrack;
+        const remoteStream = {active: true, getVideoTracks: () => [remoteTrack]} as unknown as MediaStream;
+        const peerConnection = peerConnections[0];
+        if (!peerConnection.ontrack) throw new Error('Peer connection track handler was not installed.');
+        peerConnection.ontrack({track: remoteTrack, streams: [remoteStream]} as unknown as RTCTrackEvent);
+        expect(facade.state.remotePresentation).toBe(remoteStream);
+
+        const stopped = room('group.call.presenter.stop', 'active', 'group-1', 1, 3, participants);
+        events.next({...stopped, payload: {...stopped.payload, presenter: undefined}});
+        expect(facade.state.remotePresentation).toBeUndefined();
+        expect(facade.state.peers[0]?.presentation).toBeUndefined();
+
+        const restarted = room('group.call.presenter.start', 'active', 'group-1', 1, 4, participants);
+        events.next({...restarted, payload: {...restarted.payload, presenter: {user_id: 'peer-1', device_id: 'peer-device'}}});
+        expect(facade.state.remotePresentation).toBe(remoteStream);
+        expect(facade.state.peers[0]?.presentation).toBe(remoteStream);
+
+        muted = true;
+        muteListener?.();
+        expect(facade.state.remotePresentation).toBeUndefined();
+        muted = false;
+        unmuteListener?.();
+        expect(facade.state.remotePresentation).toBe(remoteStream);
+
+        const removed = room('group.call.participant.left', 'active', 'group-1', 1, 5, [participants[0]]);
+        events.next({...removed, payload: {...removed.payload, presenter: undefined}});
+        expect(facade.state.remotePresentation).toBeUndefined();
+        unmuteListener?.();
+        expect(facade.state.remotePresentation).toBeUndefined();
+        endedListener?.();
+        expect(facade.state.remotePresentation).toBeUndefined();
+    });
+
+    it('clears the previous presenter projection when a newer presenter starts before their receiver is ready', async () => {
+        const participants: GroupCallParticipant[] = [
+            {user_id: 'self-1', device_id: 'device-1'},
+            {user_id: 'peer-1', device_id: 'peer-device-a'},
+            {user_id: 'peer-2', device_id: 'peer-device-b'},
+        ];
+        const initial = room('group.call.started', 'active', 'group-1', 1, 1, participants).payload;
+        await facade.join({...initial, presenter: {user_id: 'peer-1', device_id: 'peer-device-a'}}, 'self-1');
+        const joined = room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants);
+        events.next({...joined, payload: {...joined.payload, presenter: {user_id: 'peer-1', device_id: 'peer-device-a'}}});
+
+        const remoteTrack = {kind: 'video', muted: false, readyState: 'live', addEventListener: vi.fn()} as unknown as MediaStreamTrack;
+        const remoteStream = {active: true, getVideoTracks: () => [remoteTrack]} as unknown as MediaStream;
+        const handler = peerConnections[0]?.ontrack;
+        if (!handler) throw new Error('Peer connection track handler was not installed.');
+        handler.call(peerConnections[0], {track: remoteTrack, streams: [remoteStream]} as unknown as RTCTrackEvent);
+        expect(facade.state.remotePresentation).toBe(remoteStream);
+        expect(facade.state.peers.find(peer => peer.userID === 'peer-1')?.presentation).toBe(remoteStream);
+
+        const switched = room('group.call.presenter.start', 'active', 'group-1', 1, 3, participants);
+        events.next({...switched, payload: {...switched.payload, presenter: {user_id: 'peer-2', device_id: 'peer-device-b'}}});
+
+        expect(facade.state.room?.presenter).toEqual({user_id: 'peer-2', device_id: 'peer-device-b'});
+        expect(facade.state.remotePresentation).toBeUndefined();
+        expect(facade.state.peers.every(peer => peer.presentation === undefined)).toBe(true);
+    });
+
+    it('does not restore a retained remote receiver after its room becomes terminal', async () => {
+        const participants: GroupCallParticipant[] = [
+            {user_id: 'self-1', device_id: 'device-1'},
+            {user_id: 'peer-1', device_id: 'peer-device'},
+        ];
+        const initial = room('group.call.started', 'active', 'group-1', 1, 1, participants).payload;
+        await facade.join({...initial, presenter: {user_id: 'peer-1', device_id: 'peer-device'}}, 'self-1');
+        const active = room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants);
+        events.next({...active, payload: {...active.payload, presenter: {user_id: 'peer-1', device_id: 'peer-device'}}});
+        let unmuteListener: (() => void) | undefined;
+        const remoteTrack = {kind: 'video', muted: false, readyState: 'live', addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+            if (type === 'unmute') unmuteListener = typeof listener === 'function' ? listener as () => void : () => listener.handleEvent(new Event(type));
+        }} as unknown as MediaStreamTrack;
+        const remoteStream = {active: true, getVideoTracks: () => [remoteTrack]} as unknown as MediaStream;
+        const handler = peerConnections[0].ontrack;
+        if (!handler) throw new Error('Peer connection track handler was not installed.');
+        handler.call(peerConnections[0], {track: remoteTrack, streams: [remoteStream]} as unknown as RTCTrackEvent);
+
+        events.next(room('group.call.ended', 'ended', 'group-1', 1, 3, participants));
+        unmuteListener?.();
+        expect(facade.state.remotePresentation).toBeUndefined();
+        expect(facade.state.peers).toEqual([]);
+    });
+
+    it('restores the retained presenter receiver when an active sync snapshot restores presenter identity', fakeAsync(async () => {
+        const participants: GroupCallParticipant[] = [
+            {user_id: 'self-1', device_id: 'device-1'},
+            {user_id: 'peer-1', device_id: 'peer-device'},
+        ];
+        void facade.start('group-1', 'self-1');
+        await tick();
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, participants));
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants));
+        let unmuteListener: (() => void) | undefined;
+        const remoteTrack = {kind: 'video', muted: false, readyState: 'live', addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+            if (type === 'unmute') unmuteListener = typeof listener === 'function' ? listener as () => void : () => listener.handleEvent(new Event(type));
+        }} as unknown as MediaStreamTrack;
+        const remoteStream = {active: true, getVideoTracks: () => [remoteTrack]} as unknown as MediaStream;
+        const handler = peerConnections[0]?.ontrack;
+        if (!handler) throw new Error('Peer connection track handler was not installed.');
+        handler.call(peerConnections[0], {track: remoteTrack, streams: [remoteStream]} as unknown as RTCTrackEvent);
+        const stopped = room('group.call.presenter.stop', 'active', 'group-1', 1, 3, participants);
+        events.next({...stopped, payload: {...stopped.payload, presenter: undefined}});
+
+        await tick(10_000);
+        const sync = sentRequestID('group.call.sync');
+        expect(sync).not.toBe('');
+        events.next(synced(sync, {state_revision: 4, participants, presenter: {user_id: 'peer-1', device_id: 'peer-device'}}));
+
+        expect(facade.state.remotePresentation).toBe(remoteStream);
+        unmuteListener?.();
+        expect(facade.state.remotePresentation).toBe(remoteStream);
+    }));
+
     it('keeps video presentation usable when opted-in display capture has no audio track', async () => {
         await facade.start('group-1', 'self-1');
         events.next(room('group.call.started', 'active'));

@@ -14,10 +14,11 @@
                         <h3>Participants</h3>
                         <app-call-participants [participants]="participants"></app-call-participants>
                     </section>
-                    <section class="group-call-presentation" *ngIf="callState.presentation || callState.remotePresentation" aria-label="Shared presentation">
-                        <div class="group-call-presentation-heading"><zwei-icon name="screen_share"></zwei-icon><span>Shared presentation</span><span class="group-call-live-indicator">LIVE</span></div>
-                        <video class="group-presentation" autoplay playsinline muted [srcObject]="callState.presentation || callState.remotePresentation" (loadedmetadata)="emit({type: 'presentation-ready', event: $event})" (canplay)="emit({type: 'presentation-ready', event: $event})"></video>
-                    </section>
+                        <section #presentationStage class="group-call-presentation" *ngIf="callState.presentation || callState.remotePresentation" aria-label="Shared presentation">
+                        <div class="group-call-presentation-heading"><span class="group-call-presentation-title"><zwei-icon name="screen_share"></zwei-icon><span>Shared presentation</span><span class="group-call-live-indicator">LIVE</span></span><button *ngIf="fullscreenSupported" class="group-presentation-fullscreen" mat-icon-button type="button" [attr.aria-label]="presentationFullscreen ? 'Exit fullscreen' : 'Expand shared presentation'" [title]="presentationFullscreen ? 'Exit fullscreen' : 'Expand shared presentation'" (click)="togglePresentationFullscreen()"><zwei-icon [name]="presentationFullscreen ? 'fullscreen_exit' : 'fullscreen'"></zwei-icon></button></div>
+                        <video class="group-presentation" autoplay playsinline muted [attr.aria-label]="callState.remotePresentation ? 'Remote shared presentation' : 'Your shared presentation'" [srcObject]="callState.presentation || callState.remotePresentation" (loadedmetadata)="emit({type: 'presentation-ready', event: $event})" (canplay)="emit({type: 'presentation-ready', event: $event})"></video>
+                        </section>
+                        <p class="group-presentation-fullscreen-status visually-hidden" *ngIf="fullscreenStatus" role="status" aria-live="polite">{{ fullscreenStatus }}</p>
                     <app-call-device-controls class="group-call-devices" *ngIf="callState.localStream" [controls]="controls" [panelClass]="panelClass" [qualityPickerEnabled]="true" [qualityPickerOpenBelow]="true" [showShareAudioOption]="callState.phase === 'active'" [shareAudioChecked]="callState.screenShareAudioEnabled" [shareAudioDisabled]="callState.shareTransitioning || callState.sharing" [shareAudioTooltip]="callState.sharing ? 'Stop presenting before changing system audio.' : 'Include system audio when you share your screen'" (controlChange)="emit({type: 'control-change', change: $event})" (shareAudioChange)="emit({type: 'screen-share-audio-change', enabled: $event})"></app-call-device-controls>
                 </div>
             </div>

@@ -28,14 +28,14 @@
         </div>
 
         <div class="rail-label"><span>All chats</span><span class="count">{{ (conversations | async)?.length || 0 }}</span></div>
-        <div class="people-list" *ngIf="conversations | async as items; else loadingPeople">
+        <div class="people-list" *ngIf="conversations | async as items; else loadingPeople" (scroll)="alignGroupListEnd($event)">
             <button class="person-option" *ngFor="let conversation of items; trackBy: trackConversation" type="button" [attr.data-conversation-id]="conversation.id" [class.selected]="selectedConversation?.id === conversation.id" [attr.aria-label]="conversationName(conversation)" (click)="selectConversation(conversation)">
                 <span class="person-avatar" aria-hidden="true">{{ conversation.kind === 'group' && conversation.accessNeedsVerification ? '?' : initials(conversation) }}</span>
                 <span class="conversation-copy"><strong>{{ conversationName(conversation) }}</strong><small>{{ conversationSubtitle(conversation) }}</small></span><span class="conversation-time" *ngIf="conversation.kind !== 'group' || !conversation.accessNeedsVerification">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="(conversation.kind !== 'group' || !conversation.accessNeedsVerification) && conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
             </button>
             <div class="group-page-error" *ngIf="groupPageError" role="alert">Could not load more groups. <button type="button" [disabled]="groupSnapshotLoading" (click)="loadMoreGroups()">Retry</button></div>
             <button class="load-more-groups" *ngIf="canLoadMoreGroups() && !groupPageError" type="button" [disabled]="groupPageLoading || groupSnapshotLoading" (click)="loadMoreGroups()" [attr.aria-busy]="groupPageLoading || groupSnapshotLoading">{{ groupSnapshotLoading ? 'Refreshing groups…' : groupPageLoading ? 'Loading groups…' : 'Load more groups' }}</button>
-            <p class="groups-exhausted" *ngIf="groupsExhausted" role="status">All groups loaded.</p>
+            <span class="visually-hidden" *ngIf="groupsExhausted" role="status">All groups loaded.</span>
         </div>
         <ng-template #loadingPeople>
             <div class="empty-rail"><zwei-icon [name]="isLoading ? 'hourglass_top' : 'forum'"></zwei-icon><span>{{ isLoading ? 'Loading conversations…' : 'No conversations yet.' }}</span></div>

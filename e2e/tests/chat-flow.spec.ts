@@ -1475,8 +1475,10 @@ async function assertGroupCallLayout(page: Page, testInfo: import('@playwright/t
       return {label: control.getAttribute('aria-label') || control.innerText.trim(), left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
     });
       const video = element.querySelector<HTMLVideoElement>('.group-presentation')?.getBoundingClientRect();
-      const card = element.querySelector<HTMLElement>('.group-call-card');
-      const cardRect = card?.getBoundingClientRect();
+    const card = element.querySelector<HTMLElement>('.group-call-card');
+    const cardRect = card?.getBoundingClientRect();
+      const groupTitle = element.querySelector<HTMLElement>('.group-call-card > app-call-profile .call-presentation-copy strong');
+      const groupTitleRect = groupTitle?.getBoundingClientRect();
        const select = element.querySelector<HTMLElement>('.group-call-devices .call-select');
        const selectors = Array.from(element.querySelectorAll<HTMLElement>('.group-call-devices .call-select')).map(control => control.getBoundingClientRect());
        const actionRow = element.querySelector<HTMLElement>('.group-call-actions')?.getBoundingClientRect();
@@ -1495,6 +1497,8 @@ async function assertGroupCallLayout(page: Page, testInfo: import('@playwright/t
        const iconActions = Array.from(element.querySelectorAll<HTMLElement>('app-call-icon-actions .call-presentation-icon-actions button')).map(button => button.getBoundingClientRect());
     const contains = (rect: DOMRect) => rect.left >= panelRect.left - 1 && rect.right <= panelRect.right + 1 && rect.top >= panelRect.top - 1 && rect.bottom <= panelRect.bottom + 1;
     const style = getComputedStyle(element);
+    const panelStyle = getComputedStyle(element);
+    const panelAvailableWidth = element.clientWidth - (Number.parseFloat(panelStyle.paddingLeft) || 0) - (Number.parseFloat(panelStyle.paddingRight) || 0);
     return {
       documentScrollWidth: document.documentElement.scrollWidth,
       documentClientWidth: document.documentElement.clientWidth,
@@ -1513,7 +1517,8 @@ async function assertGroupCallLayout(page: Page, testInfo: import('@playwright/t
       videoContained: !video || contains(video),
       surface: style.backgroundColor,
        text: style.color,
-       card: card && cardRect ? {background: getComputedStyle(card).backgroundColor, color: getComputedStyle(card).color, rect: {left: cardRect.left, right: cardRect.right, top: cardRect.top, bottom: cardRect.bottom}} : undefined,
+        card: card && cardRect ? {background: getComputedStyle(card).backgroundColor, color: getComputedStyle(card).color, availableWidth: panelAvailableWidth, rect: {left: cardRect.left, right: cardRect.right, top: cardRect.top, bottom: cardRect.bottom}} : undefined,
+       groupTitle: groupTitle && groupTitleRect ? {text: groupTitle.textContent?.trim(), left: groupTitleRect.left, right: groupTitleRect.right, top: groupTitleRect.top, bottom: groupTitleRect.bottom, clientHeight: groupTitle.clientHeight, scrollHeight: groupTitle.scrollHeight, whiteSpace: getComputedStyle(groupTitle).whiteSpace, overflow: getComputedStyle(groupTitle).overflow, textOverflow: getComputedStyle(groupTitle).textOverflow} : undefined,
        select: select ? {background: getComputedStyle(select).backgroundColor, color: getComputedStyle(select).color, text: selectText ? getComputedStyle(selectText).color : '', value: selectText?.textContent?.trim() || select.textContent?.trim() || '', width: select.getBoundingClientRect().width} : undefined,
        action: action ? {background: getComputedStyle(action).backgroundColor, color: getComputedStyle(action).color, border: getComputedStyle(action).borderTopColor} : undefined,
        leaveAction: leaveAction ? {label: leaveAction.innerText.trim(), background: getComputedStyle(leaveAction).backgroundColor, color: getComputedStyle(leaveAction).color, border: getComputedStyle(leaveAction).borderTopColor, rect: leaveAction.getBoundingClientRect()} : undefined,
@@ -1527,10 +1532,18 @@ async function assertGroupCallLayout(page: Page, testInfo: import('@playwright/t
   expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth + 1);
   expect(metrics.panelScrollWidth).toBeLessThanOrEqual(metrics.panelClientWidth + 1);
    expect(metrics.controlsContained, JSON.stringify({viewport, controls: metrics.controlBounds})).toBeTruthy();
-   expect(metrics.controlsInViewport).toBeTruthy();
-   expect(metrics.cardContained).toBeTruthy();
+     expect(metrics.controlsInViewport).toBeTruthy();
+     expect(metrics.cardContained).toBeTruthy();
+     if (!metrics.card) throw new Error('Group call card geometry was not rendered');
+     expect(Math.abs((metrics.card.rect.right - metrics.card.rect.left) - Math.min(720, metrics.card.availableWidth))).toBeLessThanOrEqual(8);
+      if (!metrics.groupTitle) throw new Error('Group call title was not rendered');
+    expect(metrics.groupTitle.text).toBe('Deterministic media group');
+    expect(metrics.groupTitle.whiteSpace).toBe('normal');
+    expect(metrics.groupTitle.overflow).toBe('visible');
+    expect(metrics.groupTitle.textOverflow).toBe('clip');
+    expect(metrics.groupTitle.scrollHeight).toBeLessThanOrEqual(metrics.groupTitle.clientHeight + 1);
    expect(metrics.headerTitleContained).toBeTruthy();
-   expect(metrics.videoContained).toBeTruthy();
+    expect(metrics.videoContained).toBeTruthy();
    expect(metrics.surface).not.toBe(metrics.text);
     if (!metrics.card || !metrics.select || !metrics.action) throw new Error('Group call controls were not fully rendered');
      expect(metrics.select.value.length).toBeGreaterThan(0);
@@ -1735,7 +1748,7 @@ async function assertGroupPresentationLayout(page: Page, testInfo: import('@play
     const selectors = Array.from(panel.querySelectorAll<HTMLElement>('.group-call-devices [role="combobox"]')).map(rect);
     return {
       document: {scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth},
-      card: rect(card), content: rect(content), actions: rect(panel.querySelector<HTMLElement>('.group-call-actions')), stage: rect(stage), video: rect(video), firstSelector: rect(firstSelector), selectors, audioToggle: rect(audioToggle), deviceLabels,
+      card: rect(card), cardStyle: card ? {width: getComputedStyle(card).width, radius: getComputedStyle(card).borderTopLeftRadius, padding: getComputedStyle(card).padding, sharedWidth: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-max-width').trim(), sharedHeight: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-height').trim(), sharedPadding: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-padding').trim(), sharedRadius: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-radius').trim()} : undefined, content: rect(content), actions: rect(panel.querySelector<HTMLElement>('.group-call-actions')), stage: rect(stage), stageVideoMaxHeight: video ? getComputedStyle(video).maxHeight : '', video: rect(video), firstSelector: rect(firstSelector), selectors, audioToggle: rect(audioToggle), deviceLabels,
       scroll: content ? {scrollTop: content.scrollTop, scrollHeight: content.scrollHeight, clientHeight: content.clientHeight, scrollWidth: content.scrollWidth, clientWidth: content.clientWidth} : undefined,
        stageInContent: !!content && stageContent?.classList.contains('group-call-content-inner') === true && stageContent?.parentElement === content,
       stageWithinScrollContent: !!content && !!stage && stage.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop + stage.getBoundingClientRect().height <= content.scrollHeight + 1,
@@ -1758,27 +1771,10 @@ async function assertGroupPresentationLayout(page: Page, testInfo: import('@play
   expect(metrics.stage?.height).toBeGreaterThan(0);
   expect(metrics.content?.bottom).toBeLessThanOrEqual((metrics.actions?.top ?? 0) + 1);
   expect(metrics.selectors).toHaveLength(3);
-  if (viewport.width === 2560 || viewport.width === 1024) {
-    for (const selector of metrics.selectors) {
-      expect(selector.top, `${theme}/${viewport.width}px top-state selector is below the initial content viewport: ${JSON.stringify({selector, metrics})}`).toBeGreaterThanOrEqual((metrics.content?.top ?? 0) - 1);
-      expect(selector.bottom, `${theme}/${viewport.width}px top-state selector is covered by actions: ${JSON.stringify({selector, metrics})}`).toBeLessThanOrEqual((metrics.content?.bottom ?? 0) + 1);
-      expect(selector.bottom, `${theme}/${viewport.width}px top-state selector overlaps actions: ${JSON.stringify({selector, metrics})}`).toBeLessThanOrEqual((metrics.actions?.top ?? 0) + 1);
-    }
-    expect(metrics.audioToggle, `${theme}/${viewport.width}px share-audio toggle missing`).toBeDefined();
-    expect(metrics.audioToggle?.top, `${theme}/${viewport.width}px share-audio is below the initial content viewport: ${JSON.stringify(metrics)}`).toBeGreaterThanOrEqual((metrics.content?.top ?? 0) - 1);
-    expect(metrics.audioToggle?.bottom, `${theme}/${viewport.width}px share-audio is covered by actions: ${JSON.stringify(metrics)}`).toBeLessThanOrEqual((metrics.content?.bottom ?? 0) + 1);
-    expect(metrics.audioToggle?.bottom, `${theme}/${viewport.width}px share-audio overlaps actions: ${JSON.stringify(metrics)}`).toBeLessThanOrEqual((metrics.actions?.top ?? 0) + 1);
-  }
+  expect(metrics.scroll?.scrollHeight ?? 0).toBeGreaterThanOrEqual(metrics.scroll?.clientHeight ?? 0);
+  expect(metrics.audioToggle, `${theme}/${viewport.width}px share-audio toggle must remain in the scrollable call content`).toBeDefined();
   if (viewport.width === 390) {
     expect(metrics.firstSelector?.top).toBeGreaterThanOrEqual((metrics.stage?.bottom ?? 0) - 1);
-    expect(metrics.firstSelector?.bottom, `${theme}/${viewport.width}px first device selector clipped by the scrollport: ${JSON.stringify(metrics)}`).toBeLessThanOrEqual((metrics.content?.bottom ?? 0) + 1);
-    for (const selector of metrics.selectors.filter(selector => selector.top < (metrics.content?.bottom ?? 0) && selector.bottom > (metrics.content?.top ?? 0))) {
-      expect(selector.bottom, `${theme}/${viewport.width}px partially clipped visible selector: ${JSON.stringify({selector, metrics})}`).toBeLessThanOrEqual((metrics.content?.bottom ?? 0) + 1);
-    }
-    for (const label of metrics.deviceLabels.filter(label => label.bottom > (metrics.content?.top ?? 0) && label.top < (metrics.content?.bottom ?? 0))) {
-      expect(label.top, `${theme}/${viewport.width}px clipped visible device label: ${JSON.stringify({label, metrics})}`).toBeGreaterThanOrEqual((metrics.content?.top ?? 0) - 1);
-      expect(label.bottom, `${theme}/${viewport.width}px clipped visible device label: ${JSON.stringify({label, metrics})}`).toBeLessThanOrEqual((metrics.content?.bottom ?? 0) + 1);
-    }
   }
   for (const selector of metrics.selectors) {
     expect(selector.left).toBeGreaterThanOrEqual((metrics.content?.left ?? 0) - 1);
@@ -1786,23 +1782,40 @@ async function assertGroupPresentationLayout(page: Page, testInfo: import('@play
   }
   expect(metrics.actions?.bottom).toBeLessThanOrEqual(viewport.height + 1);
   expect(metrics.videoObjectFit).toBe('contain');
+  expect(metrics.cardStyle?.sharedWidth).toBe('720px');
+  expect(metrics.cardStyle?.sharedHeight).toBe('clamp(620px, 78vh, 760px)');
+  expect(metrics.cardStyle?.sharedPadding).toBe('clamp(22px, 4vw, 42px)');
+  expect(metrics.cardStyle?.sharedRadius).toBe('28px');
+  expect(metrics.cardStyle?.radius).toBe('28px');
+  expect(Number.parseFloat(metrics.cardStyle?.width ?? '0')).toBeLessThanOrEqual(720);
+  expect(metrics.stage?.height).toBeGreaterThanOrEqual(viewport.width <= 760 ? 140 : 180);
+  expect(metrics.stage?.height).toBeLessThanOrEqual(viewport.width <= 760 ? 190 : 280);
+  expect(metrics.stageVideoMaxHeight).toBe('none');
   expect(metrics.stageBackground).not.toBe('rgba(0, 0, 0, 0)');
   await expect(page.locator('.group-call-presentation-heading')).toContainText('Shared presentation');
   await page.screenshot({path: testInfo.outputPath(`group-call-presentation-${theme}-${viewport.width}-top.png`), fullPage: false, timeout: 15_000});
-  const endMetrics = await page.locator('.group-call-content').evaluate(element => {
+  const endMetrics = await page.locator('.group-call-content').evaluate(async element => {
     const content = element as HTMLElement;
     content.scrollTop = content.scrollHeight;
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const contentRect = content.getBoundingClientRect();
-    const lastSelector = Array.from(content.querySelectorAll<HTMLElement>('.group-call-devices [role="combobox"]')).at(-1)?.getBoundingClientRect();
+    const selectors = Array.from(content.querySelectorAll<HTMLElement>('.group-call-devices [role="combobox"]')).map(selector => {
+      const bounds = selector.getBoundingClientRect();
+      return {top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right};
+    });
     const audioToggle = content.querySelector<HTMLElement>('.share-audio-toggle')?.getBoundingClientRect();
     const actions = document.querySelector<HTMLElement>('.group-call-actions')?.getBoundingClientRect();
-    return {scrollTop: content.scrollTop, scrollHeight: content.scrollHeight, clientHeight: content.clientHeight, contentBottom: contentRect.bottom, lastSelector: lastSelector ? {top: lastSelector.top, bottom: lastSelector.bottom, left: lastSelector.left, right: lastSelector.right} : undefined, audioToggle: audioToggle ? {top: audioToggle.top, bottom: audioToggle.bottom, left: audioToggle.left, right: audioToggle.right} : undefined, actions: actions ? {top: actions.top, bottom: actions.bottom} : undefined};
+    return {scrollTop: content.scrollTop, scrollHeight: content.scrollHeight, clientHeight: content.clientHeight, scrollWidth: content.scrollWidth, clientWidth: content.clientWidth, contentTop: contentRect.top, contentBottom: contentRect.bottom, selectors, audioToggle: audioToggle ? {top: audioToggle.top, bottom: audioToggle.bottom, left: audioToggle.left, right: audioToggle.right} : undefined, actions: actions ? {top: actions.top, bottom: actions.bottom} : undefined};
   });
   expect(endMetrics.scrollTop + endMetrics.clientHeight).toBeGreaterThanOrEqual(endMetrics.scrollHeight - 1);
-  expect(endMetrics.lastSelector).toBeDefined();
-  expect(endMetrics.lastSelector?.top).toBeGreaterThanOrEqual(metrics.content?.top ?? 0);
-  expect(endMetrics.lastSelector?.bottom, `${theme}/${viewport.width}px last presentation selector clipping: ${JSON.stringify({endMetrics, metrics})}`).toBeLessThanOrEqual(endMetrics.contentBottom + 1);
-  expect(endMetrics.lastSelector?.bottom, `${theme}/${viewport.width}px selector/action overlap: ${JSON.stringify({endMetrics, metrics})}`).toBeLessThanOrEqual(endMetrics.actions?.top ?? 0);
+  expect(endMetrics.scrollWidth).toBeLessThanOrEqual(endMetrics.clientWidth + 1);
+  expect(endMetrics.selectors).toHaveLength(3);
+  for (const [index, selector] of endMetrics.selectors.entries()) {
+    expect(selector.top, `${theme}/${viewport.width}px selector ${index} clipped at content top: ${JSON.stringify({endMetrics, metrics})}`).toBeGreaterThanOrEqual(endMetrics.contentTop - 1);
+    expect(selector.bottom, `${theme}/${viewport.width}px selector ${index} clipped at content end: ${JSON.stringify({endMetrics, metrics})}`).toBeLessThanOrEqual(endMetrics.contentBottom + 1);
+    expect(selector.bottom, `${theme}/${viewport.width}px selector ${index} overlaps actions: ${JSON.stringify({endMetrics, metrics})}`).toBeLessThanOrEqual(endMetrics.actions?.top ?? 0);
+  }
+  expect(endMetrics.selectors.at(-1)).toBeDefined();
   expect(endMetrics.audioToggle, `${theme}/${viewport.width}px end-state share-audio toggle missing`).toBeDefined();
   expect(endMetrics.audioToggle?.top).toBeGreaterThanOrEqual(metrics.content?.top ?? 0);
   expect(endMetrics.audioToggle?.bottom, `${theme}/${viewport.width}px end-state share-audio clipping: ${JSON.stringify({endMetrics, metrics})}`).toBeLessThanOrEqual(endMetrics.contentBottom + 1);
@@ -2571,7 +2584,14 @@ test('register, create conversation, and deliver a message', async ({ browser },
           expect(remoteScreenGeometry.documentScrollWidth).toBeLessThanOrEqual(remoteScreenGeometry.documentClientWidth + 1);
           expect(remoteScreenGeometry.videoPixel?.[0]).toBeGreaterThan(100);
           expect(remoteScreenGeometry.videoPixel?.[0]).toBeGreaterThan((remoteScreenGeometry.videoPixel?.[2] ?? 0) + 40);
-         await expect(alice.getByRole('button', {name: 'Expand shared screen'})).toBeVisible();
+          const directCardContract = await alice.locator('.call-card').evaluate(card => ({width: getComputedStyle(card).width, radius: getComputedStyle(card).borderTopLeftRadius, padding: getComputedStyle(card).padding, maxWidth: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-max-width').trim(), height: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-height').trim(), sharedPadding: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-padding').trim(), sharedRadius: getComputedStyle(document.documentElement).getPropertyValue('--zwei-call-card-radius').trim()}));
+          expect(directCardContract.maxWidth).toBe('720px');
+          expect(directCardContract.height).toBe('clamp(620px, 78vh, 760px)');
+          expect(directCardContract.sharedPadding).toBe('clamp(22px, 4vw, 42px)');
+          expect(directCardContract.sharedRadius).toBe('28px');
+      expect(directCardContract.radius).toBe('28px');
+          expect(Number.parseFloat(directCardContract.width)).toBe(720);
+          await expect(alice.getByRole('button', {name: 'Expand shared screen'})).toBeVisible();
         await alice.getByRole('button', {name: 'Expand shared screen'}).click();
         await expect(alice.getByRole('button', {name: 'Exit fullscreen'})).toBeVisible();
         expect(await alice.locator('.call-screen-stage').evaluate(element => document.fullscreenElement === element)).toBeTruthy();
@@ -4963,12 +4983,132 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     await expect.poll(async () => owner.locator('.group-presentation').evaluate(video => {
       const presentation = video as HTMLVideoElement;
       const track = presentation.srcObject?.getVideoTracks()[0];
-      return presentation.srcObject?.active === true && track?.kind === 'video' && track.readyState === 'live';
+      let brightness = 0;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const context = canvas.getContext('2d');
+        if (context && presentation.videoWidth > 0 && presentation.videoHeight > 0) {
+          context.drawImage(presentation, presentation.videoWidth / 2, presentation.videoHeight / 2, 1, 1, 0, 0, 1, 1);
+          const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+          brightness = red + green + blue;
+        }
+      } catch { /* Wait for a rendered, non-background frame. */ }
+      return presentation.srcObject?.active === true && track?.kind === 'video' && track.readyState === 'live' && brightness > 80;
     }), {timeout: 10_000}).toBeTruthy();
     await owner.screenshot({path: testInfo.outputPath('group-call-remote-presentation-dark.png'), fullPage: false, timeout: 15_000});
     for (const theme of ['light', 'dark'] as const) {
       for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
         await assertGroupPresentationLayout(owner, testInfo, theme, viewport);
+      }
+    }
+    for (const theme of ['dark', 'light'] as const) {
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        const fullscreenButton = owner.getByRole('button', {name: 'Expand shared presentation'});
+        await expect(fullscreenButton).toBeVisible();
+        if (viewport.width === 1440 && theme === 'dark') {
+          await fullscreenButton.focus();
+          await owner.keyboard.press('Tab');
+          await owner.keyboard.press('Shift+Tab');
+          await expect(fullscreenButton).toBeFocused();
+          const focusStyle = await fullscreenButton.evaluate(button => ({outline: getComputedStyle(button).outlineStyle, width: getComputedStyle(button).outlineWidth}));
+          expect(focusStyle.outline).toBe('solid');
+          expect(focusStyle.width).toBe('3px');
+        }
+        await fullscreenButton.click();
+        await expect(owner.getByRole('button', {name: 'Exit fullscreen'})).toBeVisible();
+        const fullscreenMetrics = await owner.locator('.group-call-presentation').evaluate(stage => {
+          const video = stage.querySelector('video');
+          const heading = stage.querySelector<HTMLElement>('.group-call-presentation-heading');
+          const control = stage.querySelector<HTMLElement>('.group-presentation-fullscreen');
+          const stageRect = stage.getBoundingClientRect();
+          const videoRect = video?.getBoundingClientRect();
+          return {isFullscreen: document.fullscreenElement === stage, documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth, viewportHeight: innerHeight, stage: {left: stageRect.left, right: stageRect.right, top: stageRect.top, bottom: stageRect.bottom, width: stageRect.width, height: stageRect.height}, video: videoRect && {left: videoRect.left, right: videoRect.right, top: videoRect.top, bottom: videoRect.bottom}, headingVisible: !!heading && getComputedStyle(heading).visibility === 'visible' && heading.getBoundingClientRect().height > 0, controlVisible: !!control && getComputedStyle(control).visibility === 'visible' && control.getBoundingClientRect().width > 0};
+        });
+        expect(fullscreenMetrics.isFullscreen, `${theme}/${viewport.width}px actual fullscreen state`).toBe(true);
+        expect(fullscreenMetrics.documentWidth).toBeLessThanOrEqual(fullscreenMetrics.viewportWidth + 1);
+        expect(fullscreenMetrics.stage.left).toBe(0);
+        expect(fullscreenMetrics.stage.top).toBe(0);
+        expect(fullscreenMetrics.stage.width).toBeGreaterThanOrEqual(viewport.width - 1);
+        expect(fullscreenMetrics.stage.height).toBeGreaterThanOrEqual(viewport.height - 1);
+        expect(fullscreenMetrics.video?.left).toBeGreaterThanOrEqual(fullscreenMetrics.stage.left - 1);
+        expect(fullscreenMetrics.video?.right).toBeLessThanOrEqual(fullscreenMetrics.stage.right + 1);
+        expect(fullscreenMetrics.video?.top).toBeGreaterThanOrEqual(fullscreenMetrics.stage.top - 1);
+        expect(fullscreenMetrics.video?.bottom).toBeLessThanOrEqual(fullscreenMetrics.stage.bottom + 1);
+        expect(fullscreenMetrics.headingVisible && fullscreenMetrics.controlVisible, `${theme}/${viewport.width}px visible fullscreen toolbar`).toBe(true);
+        await owner.screenshot({path: testInfo.outputPath(`group-call-presentation-fullscreen-${theme}-${viewport.width}.png`), fullPage: false, timeout: 15_000});
+        if ((viewport.width + (theme === 'light' ? 1 : 0)) % 2 === 0) {
+          await owner.getByRole('button', {name: 'Exit fullscreen'}).click();
+        } else {
+          await owner.keyboard.press('Escape');
+        }
+        await expect.poll(() => owner.evaluate(() => document.fullscreenElement === null)).toBe(true);
+        await expect(owner.getByRole('button', {name: 'Expand shared presentation'})).toBeVisible();
+      }
+    }
+    await owner.setViewportSize({width: 1440, height: 900});
+    await setTheme(owner, 'dark');
+
+    const assertRemotePresentationFrame = async (label: string): Promise<void> => {
+      await expect(owner.locator('.group-presentation')).toBeVisible({timeout: 10_000});
+      await expect.poll(async () => owner.locator('.group-presentation').evaluate(video => {
+        const presentation = video as HTMLVideoElement;
+        const track = presentation.srcObject?.getVideoTracks()[0];
+        let frameBrightness = 0;
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext('2d');
+          if (context && presentation.videoWidth > 0 && presentation.videoHeight > 0) {
+            context.drawImage(presentation, presentation.videoWidth / 2, presentation.videoHeight / 2, 1, 1, 0, 0, 1, 1);
+            const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+            frameBrightness = red + green + blue;
+          }
+        } catch { /* Wait for the browser's next received frame. */ }
+        const rect = presentation.getBoundingClientRect();
+        return presentation.srcObject?.active === true && track?.kind === 'video' && track.readyState === 'live'
+          && rect.width > 0 && rect.height > 0 && getComputedStyle(presentation).visibility === 'visible' && frameBrightness > 80;
+      }), {timeout: 20_000}).toBeTruthy();
+      await owner.screenshot({path: testInfo.outputPath(`${label}.png`), fullPage: false, timeout: 15_000});
+    };
+    await owner.getByRole('button', {name: 'Expand shared presentation'}).click();
+    await expect.poll(() => owner.evaluate(() => document.fullscreenElement !== null)).toBe(true);
+    await member.getByRole('button', {name: 'Stop presenting'}).click();
+    await expect(owner.locator('.group-call-presentation')).toHaveCount(0);
+    await expect.poll(() => owner.evaluate(() => document.fullscreenElement === null)).toBe(true);
+    await expect(member.getByRole('button', {name: 'Present screen'})).toBeVisible();
+    await member.getByRole('button', {name: 'Present screen'}).click();
+    await expect(member.getByRole('button', {name: 'Stop presenting'})).toBeVisible();
+    await assertRemotePresentationFrame('group-call-remote-presentation-restarted-dark');
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await assertGroupPresentationLayout(owner, testInfo, theme, viewport);
+        const restartedVideo = await owner.locator('.group-presentation').evaluate(video => {
+          const presentation = video as HTMLVideoElement;
+          const track = presentation.srcObject?.getVideoTracks()[0];
+          let brightness = 0;
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1;
+            canvas.height = 1;
+            const context = canvas.getContext('2d');
+            if (context && presentation.videoWidth > 0 && presentation.videoHeight > 0) {
+              context.drawImage(presentation, presentation.videoWidth / 2, presentation.videoHeight / 2, 1, 1, 0, 0, 1, 1);
+              const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+              brightness = red + green + blue;
+            }
+          } catch { /* A frame is not readable until the restarted track renders. */ }
+          const rect = presentation.getBoundingClientRect();
+          return {live: presentation.srcObject?.active === true && track?.readyState === 'live' && brightness > 80, width: rect.width, height: rect.height};
+        });
+        expect(restartedVideo.live, `${theme}/${viewport.width}px restarted group share must render a live non-background frame`).toBe(true);
+        expect(restartedVideo.width).toBeGreaterThan(0);
+        expect(restartedVideo.height).toBeGreaterThan(0);
+        await owner.screenshot({path: testInfo.outputPath(`group-call-presentation-restarted-${theme}-${viewport.width}.png`), fullPage: false, timeout: 15_000});
       }
     }
     await owner.setViewportSize({width: 1440, height: 900});

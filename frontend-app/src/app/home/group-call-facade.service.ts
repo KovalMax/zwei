@@ -38,6 +38,15 @@ interface PeerConnectionState {
     readonly candidates: RTCIceCandidateInit[];
 }
 
+interface RemotePresentationReceiver {
+    readonly connection: PeerConnectionState;
+    readonly generation: number;
+    readonly roomID: string;
+    readonly roomGeneration: number;
+    readonly stream: MediaStream;
+    readonly track: MediaStreamTrack;
+}
+
 interface LocalPresentationCapture {
     readonly stream: MediaStream;
     readonly videoTrack: MediaStreamTrack;
@@ -80,6 +89,7 @@ export class GroupCallFacade implements OnDestroy {
     private readonly mediaSenders = new Map<string, RTCRtpSender>();
     private readonly presentationSenders = new Map<string, RTCRtpSender>();
     private readonly presentationAudioSenders = new Map<string, RTCRtpSender>();
+    private readonly remotePresentationReceivers = new Map<string, RemotePresentationReceiver>();
     private presentationCapture?: LocalPresentationCapture;
     private readonly retiredRoomIDs = new Set<string>();
     private rejoinableRoom?: GroupCallRoomPayload;
@@ -496,9 +506,14 @@ export class GroupCallFacade implements OnDestroy {
         if (event.type === 'group.call.participant.left' && previousPresenter && !room.participants.some(participant => participant.user_id === previousPresenter.user_id && participant.device_id === previousPresenter.device_id)) {
             this.clearRemotePresentation();
         }
-        if (event.type === 'group.call.presenter.start' && this.state.presentation && (room.presenter?.user_id !== this.selfID || room.presenter?.device_id !== this.selfDeviceID())) this.clearPresentation(false);
+        if (event.type === 'group.call.presenter.start') {
+            const previousPresenter = this.state.room?.presenter;
+            if (previousPresenter && !sameParticipant(previousPresenter, room.presenter)) this.clearRemotePresentation();
+            if (this.state.presentation && (room.presenter?.user_id !== this.selfID || room.presenter?.device_id !== this.selfDeviceID())) this.clearPresentation(false);
+        }
         if (event.type === 'group.call.presenter.stop') this.setState({...this.state, remotePresentation: undefined, peers: this.state.peers.map(peer => ({...peer, presentation: undefined}))});
         this.applyRoom(room, event.type === 'group.call.started' || event.type === 'group.call.participant.joined');
+        if (event.type === 'group.call.presenter.start') this.restoreRemotePresentation(room);
     }
 
     private handleSynced(event: GroupCallSyncedSocketEvent): void {
@@ -560,6 +575,7 @@ export class GroupCallFacade implements OnDestroy {
         // credentials being reissued to reconcile peers and presenter state.
         const room = {...snapshot, ice_servers: currentRoom.ice_servers};
         this.applyRoom(room, true);
+        this.restoreRemotePresentation(room);
     }
 
     private isRoomEvent(event: MessageSocketEvent): event is GroupCallRoomSocketEvent {
@@ -587,7 +603,14 @@ export class GroupCallFacade implements OnDestroy {
         const peers = room.participants.filter(participant => participant.user_id !== this.selfID).map(participant => this.peer(participant));
         const expected = new Set(peers.map(peer => this.key(peer.userID, peer.deviceID)));
         for (const [key, connection] of this.connections) {
-            if (!expected.has(key)) { connection.connection.close(); this.connections.delete(key); this.mediaSenders.delete(key); this.presentationSenders.delete(key); this.presentationAudioSenders.delete(key); }
+            if (!expected.has(key)) {
+                connection.connection.close();
+                this.connections.delete(key);
+                this.clearRemotePresentationForPeer(key);
+                this.mediaSenders.delete(key);
+                this.presentationSenders.delete(key);
+                this.presentationAudioSenders.delete(key);
+            }
         }
         this.setState({...this.state, room, peers, phase: local ? 'active' : 'ringing', statusLabel: local ? `${room.participants.length} participants in the group call.` : 'Group call is ready to join.'});
         if (local && room.status === 'active') this.startSyncLoop();
@@ -645,15 +668,25 @@ export class GroupCallFacade implements OnDestroy {
                 if (!this.current(generation) || this.connections.get(key) !== state) return;
                 const remote = event.streams[0] || new MediaStream([event.track]);
                 if (event.track.kind === 'video') {
-                    // Non-presenting peers can still have negotiated empty video
-                    // receivers. Keep per-peer ownership, and promote a stream only
-                    // after its receiver has actually started delivering frames.
+                    const currentRoom = this.state.room;
+                    const receiver: RemotePresentationReceiver = {connection: state, generation, roomID: currentRoom?.room_id || '', roomGeneration: currentRoom?.generation || 0, stream: remote, track: event.track};
+                    if (receiver.roomID) this.remotePresentationReceivers.set(key, receiver);
                     const updatePresentation = (): void => {
-                        if (!this.current(generation) || this.connections.get(key) !== state || event.track.muted) return;
+                        if (!this.isCurrentRemotePresentation(key, receiver) || event.track.muted || event.track.readyState !== 'live') return;
+                        const room = this.state.room;
+                        if (!room || !sameParticipant(room.presenter, {user_id: participant.user_id, device_id: participant.device_id})) return;
                         this.setState({...this.state, remotePresentation: remote, peers: this.state.peers.map(peer => peer.userID === participant.user_id && peer.deviceID === participant.device_id ? {...peer, presentation: remote} : peer)});
                     };
                     event.track.addEventListener('unmute', updatePresentation);
+                    event.track.addEventListener('mute', () => {
+                        if (this.isCurrentRemotePresentation(key, receiver) && this.state.remotePresentation === remote) this.clearRemotePresentation();
+                    });
                     updatePresentation();
+                    event.track.addEventListener('ended', () => {
+                        if (this.remotePresentationReceivers.get(key) !== receiver) return;
+                        this.remotePresentationReceivers.delete(key);
+                        if (this.state.remotePresentation === remote) this.clearRemotePresentation();
+                    }, {once: true});
                 } else {
                     this.setState({...this.state, peers: this.state.peers.map(peer => peer.userID === participant.user_id && peer.deviceID === participant.device_id ? {...peer, stream: remote} : peer)});
                 }
@@ -739,6 +772,7 @@ export class GroupCallFacade implements OnDestroy {
         const key = this.key(participant.user_id, participant.device_id);
         this.connections.get(key)?.connection.close();
         this.connections.delete(key);
+        this.clearRemotePresentationForPeer(key);
         this.mediaSenders.delete(key); this.presentationSenders.delete(key); this.presentationAudioSenders.delete(key);
         this.setState({...this.state, peers: this.state.peers.filter(peer => this.key(peer.userID, peer.deviceID) !== key)});
     }
@@ -831,7 +865,7 @@ export class GroupCallFacade implements OnDestroy {
             this.presentationCapture = undefined;
         }
         for (const state of this.connections.values()) state.connection.close();
-        this.connections.clear(); this.pendingSignals.clear(); this.mediaSenders.clear(); this.presentationSenders.clear(); this.presentationAudioSenders.clear(); this.stop(this.state.localStream); this.stop(this.state.presentation);
+        this.connections.clear(); this.remotePresentationReceivers.clear(); this.pendingSignals.clear(); this.mediaSenders.clear(); this.presentationSenders.clear(); this.presentationAudioSenders.clear(); this.stop(this.state.localStream); this.stop(this.state.presentation);
         if (this.deviceListener) navigator.mediaDevices?.removeEventListener?.('devicechange', this.deviceListener);
         this.deviceListener = undefined;
         for (const audio of this.remoteAudios) { audio.pause(); audio.srcObject = null; }
@@ -878,7 +912,7 @@ export class GroupCallFacade implements OnDestroy {
         }
         this.setState({...idleState, phase: 'error', conversationID: this.state.conversationID, statusLabel: label, errorLabel: label});
     }
-    private beginGeneration(selfID: string, conversationID: string): number { window.clearTimeout(this.dismissTimer); this.dismissTimer = undefined; this.screenShareAudioEnabled = false; this.stopSyncLoop(); this.pendingControl = undefined; this.pendingControlReconciliation = undefined; window.clearTimeout(this.controlSyncTimeout); this.controlSyncTimeout = undefined; this.lastAppliedStateRevision = -1; this.generation += 1; this.selfID = selfID; this.conversationID = conversationID; return this.generation; }
+    private beginGeneration(selfID: string, conversationID: string): number { window.clearTimeout(this.dismissTimer); this.dismissTimer = undefined; this.screenShareAudioEnabled = false; this.stopSyncLoop(); this.remotePresentationReceivers.clear(); this.pendingControl = undefined; this.pendingControlReconciliation = undefined; window.clearTimeout(this.controlSyncTimeout); this.controlSyncTimeout = undefined; this.lastAppliedStateRevision = -1; this.generation += 1; this.selfID = selfID; this.conversationID = conversationID; return this.generation; }
     private current(generation: number): boolean { return generation === this.generation; }
     private canStart(): boolean { return ['idle', 'left', 'ended', 'error', 'ringing'].includes(this.state.phase); }
     private key(userID: string, deviceID: string): string { return `${userID}:${deviceID}`; }
@@ -1013,6 +1047,24 @@ export class GroupCallFacade implements OnDestroy {
     }
     private clearRemotePresentation(): void {
         this.setState({...this.state, remotePresentation: undefined, peers: this.state.peers.map(peer => ({...peer, presentation: undefined}))});
+    }
+    private clearRemotePresentationForPeer(key: string): void {
+        const receiver = this.remotePresentationReceivers.get(key);
+        this.remotePresentationReceivers.delete(key);
+        if (receiver && this.state.remotePresentation === receiver.stream) this.clearRemotePresentation();
+    }
+    private isCurrentRemotePresentation(key: string, receiver: RemotePresentationReceiver): boolean {
+        return this.current(receiver.generation) && this.remotePresentationReceivers.get(key) === receiver &&
+            this.connections.get(key) === receiver.connection && receiver.connection.generation === receiver.generation &&
+            this.state.room?.room_id === receiver.roomID && this.state.room.generation === receiver.roomGeneration;
+    }
+    private restoreRemotePresentation(room: GroupCallRoomPayload): void {
+        const presenter = room.presenter;
+        if (!presenter || presenter.user_id === this.selfID && presenter.device_id === this.selfDeviceID()) return;
+        const key = this.key(presenter.user_id, presenter.device_id);
+        const receiver = this.remotePresentationReceivers.get(key);
+        if (!receiver || !this.isCurrentRemotePresentation(key, receiver) || receiver.track.muted || receiver.track.readyState !== 'live' || !receiver.stream.active) return;
+        this.setState({...this.state, remotePresentation: receiver.stream, peers: this.state.peers.map(peer => peer.userID === presenter.user_id && peer.deviceID === presenter.device_id ? {...peer, presentation: receiver.stream} : peer)});
     }
     private selfDeviceID(): string | undefined { return this.state.room?.participants.find(item => item.user_id === this.selfID)?.device_id; }
     private screenConstraints(quality: GroupScreenQuality): MediaTrackConstraints {

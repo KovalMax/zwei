@@ -293,6 +293,38 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public trackConversation(_index: number, conversation: Conversation): string { return conversation.id; }
+
+    public alignGroupListEnd(event: Event): void {
+        const list = event.currentTarget;
+        if (!(list instanceof HTMLElement) || list.scrollTop + list.clientHeight < list.scrollHeight - 70) return;
+
+        const footer = list.querySelector<HTMLElement>('.group-page-error, .load-more-groups');
+        const footerStyle = footer ? getComputedStyle(footer) : undefined;
+        const footerExtent = footer && footerStyle
+            ? footer.getBoundingClientRect().height + (Number.parseFloat(footerStyle.marginTop) || 0) + (Number.parseFloat(footerStyle.marginBottom) || 0)
+            : 0;
+        const listStyle = getComputedStyle(list);
+        const bottomPadding = Number.parseFloat(listStyle.paddingBottom) || 0;
+        const rowsExtent = Math.max(1, list.clientHeight - footerExtent - bottomPadding);
+        const visibleRows = Math.max(1, Math.floor(rowsExtent / 70));
+        const rowHeight = `${(Math.floor((rowsExtent / visibleRows) * 64) / 64).toFixed(5)}px`;
+        if (list.style.getPropertyValue('--people-row-aligned-height') !== rowHeight) {
+            list.style.setProperty('--people-row-aligned-height', rowHeight);
+            list.style.setProperty('--people-end-alignment-offset', '0px');
+            list.scrollTop = list.scrollHeight;
+        }
+
+        const listTop = list.getBoundingClientRect().top;
+        const clippedRow = Array.from(list.querySelectorAll<HTMLElement>('.person-option')).find(row => {
+            const bounds = row.getBoundingClientRect();
+            return bounds.top < listTop && bounds.bottom > listTop;
+        });
+        if (!clippedRow) return;
+
+        const clippedPixels = clippedRow.getBoundingClientRect().bottom - listTop;
+        list.style.setProperty('--people-end-alignment-offset', `${clippedPixels}px`);
+        list.scrollTop = list.scrollHeight;
+    }
     public trackUserResult(_index: number, user: UserSearchResult): string { return user.id; }
     public trackGroupMember(_index: number, member: GroupConversation['members'][number]): string { return member.userId; }
     public trackGroupPeer(_index: number, peer: GroupCallPeer): string { return `${peer.userID}:${peer.deviceID}`; }

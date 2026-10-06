@@ -50,6 +50,44 @@ describe('HomeComponent', () => {
         expect(fixture.nativeElement.querySelector('.conversation-rail .group-search-status[role="status"]')?.textContent?.trim()).toBe('1 person found.');
     });
 
+    it('keeps exhausted group pagination announcement accessible without visible completion copy', () => {
+        component.conversations.next([groupConversation('exhausted-group')]);
+        component.groupPageLoaded = true;
+        component.groupNextCursor = null;
+        fixture.detectChanges();
+
+        const surface = fixture.nativeElement as HTMLElement;
+        const announcement = surface.querySelector<HTMLElement>('.people-list [role="status"]');
+        expect(component.groupsExhausted).toBe(true);
+        expect(component.canLoadMoreGroups()).toBe(false);
+        expect(announcement?.textContent?.trim()).toBe('All groups loaded.');
+        if (!announcement) throw new Error('Accessible group completion announcement is missing');
+        expect(getComputedStyle(announcement).position).toBe('absolute');
+        expect(getComputedStyle(announcement).clip).toBe('rect(0px, 0px, 0px, 0px)');
+        expect(surface.querySelector('.groups-exhausted')).toBeNull();
+    });
+
+    it('row-aligns the group list when its end would clip an earlier row', () => {
+        const list = document.createElement('div');
+        list.style.paddingBottom = '0px';
+        const row = document.createElement('button');
+        row.className = 'person-option';
+        list.append(row);
+        Object.defineProperties(list, {
+            scrollTop: {configurable: true, writable: true, value: 648},
+            clientHeight: {configurable: true, value: 1186},
+            scrollHeight: {configurable: true, value: 1834},
+        });
+        vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({top: 242} as DOMRect);
+        vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({top: 224, bottom: 292} as DOMRect);
+
+        component.alignGroupListEnd({currentTarget: list} as unknown as Event);
+
+        expect(list.scrollTop).toBe(1834);
+        expect(list.style.getPropertyValue('--people-row-aligned-height')).toBe('74.12500px');
+        expect(list.style.getPropertyValue('--people-end-alignment-offset')).toBe('50px');
+    });
+
     it('routes group-call end through the same typed surface-intent dispatcher', () => {
         const end = vi.fn().mockName('end');
         const groupCall = { end, close: () => undefined } as unknown as GroupCallFacade;

@@ -9,12 +9,13 @@
 @import "@fontsource/manrope/latin-600.css";
 @import "@fontsource/manrope/latin-700.css";
 @import "./app/home/home-call-minimized.css";
-app-home .people-list .group-page-error { display: flex; width: calc(100% - 8px); min-width: 0; box-sizing: border-box; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 4px; padding: 10px 12px; border: 1px solid var(--chat-danger-text); border-radius: var(--zwei-radius-control); background: var(--chat-danger-surface); color: var(--chat-danger-text); font-size: 13px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+app-home .people-list .group-page-error { position: sticky; z-index: 1; bottom: 0; display: flex; width: calc(100% - 8px); min-width: 0; box-sizing: border-box; flex-wrap: wrap; align-items: center; gap: 2px 12px; margin: 8px 4px; padding: 4px 12px; border: 1px solid var(--chat-danger-text); border-radius: var(--zwei-radius-control); background: var(--chat-danger-surface); color: var(--chat-danger-text); font-size: 13px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .light-theme app-home .people-list .group-page-error { --chat-danger-surface: #fae9e7; --chat-danger-text: #6b2525; }
 app-home .people-list .group-page-error button { min-height: 44px; flex: 0 0 auto; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); background: var(--chat-surface-control); color: var(--chat-text-strong); font: 700 13px 'DM Sans', sans-serif; cursor: pointer; }
 app-home .people-list .group-page-error button:hover:not(:disabled) { border-color: var(--zwei-focus); background: color-mix(in srgb, var(--zwei-focus) 12%, var(--chat-surface-control)); }
 app-home .people-list .group-page-error button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
-app-home .people-list .load-more-groups { box-sizing: border-box; min-height: 44px; margin: 8px 4px; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); color: var(--chat-text); background: var(--chat-surface-control); font: 700 13px/1 'DM Sans', sans-serif; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+app-home .people-list::after { content: ''; display: block; height: calc(var(--people-row-aligned-height, 70px) * 2 + var(--people-end-alignment-offset, 0px)); flex: 0 0 auto; }
+app-home .people-list .load-more-groups { position: sticky; z-index: 1; bottom: 0; box-sizing: border-box; min-height: 44px; margin: 8px 4px; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); color: var(--chat-text); background: var(--chat-surface-control); font: 700 13px/1 'DM Sans', sans-serif; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
 app-home .people-list .load-more-groups:hover:not(:disabled) { border-color: var(--chat-accent); background: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface-control)); }
 app-home .people-list .load-more-groups:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 app-home .people-list .load-more-groups:disabled { cursor: wait; opacity: .72; }
@@ -24,6 +25,7 @@ html, body {
     height: 100%;
     overflow: hidden;
 }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* Angular Material dims disabled menu items; keep account identity text fully opaque. */
 .cdk-overlay-container .account-menu-panel-dark .account-menu-name.mat-mdc-menu-item,
@@ -42,6 +44,12 @@ html, body {
 .cdk-overlay-container .account-menu-panel-light .account-menu-email.mat-mdc-menu-item { color: #4c6077 !important; }
 
 :root {
+    --zwei-call-card-max-width: 720px;
+    --zwei-call-card-height: clamp(620px, 78vh, 760px);
+    --zwei-call-card-padding: clamp(22px, 4vw, 42px);
+    --zwei-call-card-radius: 28px;
+    --zwei-call-card-shadow: 0 24px 70px rgba(17, 28, 43, .16);
+    --zwei-call-panel-gutters: clamp(16px, 2vw, 36px);
     --zwei-ink: #172033;
     --zwei-ink-soft: #273552;
     --zwei-canvas: #f6f8fc;

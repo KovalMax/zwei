@@ -45,6 +45,39 @@ async function loginToken(page: Page, email: string): Promise<Token> {
   return response.json() as Promise<Token>;
 }
 
+async function expectNoClippedGroupRows(page: Page, state: string): Promise<void> {
+  const list = page.locator('.people-list');
+  await list.hover();
+  await page.mouse.wheel(0, 5000);
+  await expect.poll(async () => list.evaluate(listElement => listElement.scrollTop + listElement.clientHeight >= listElement.scrollHeight - 1), {message: `${state}: group list should reach its end`}).toBe(true);
+  const geometry = await page.locator('.people-list').evaluate(async listElement => {
+    const list = listElement as HTMLElement;
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const bounds = list.getBoundingClientRect();
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.person-option'));
+    return {
+      scrollTop: list.scrollTop,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      scrollWidth: list.scrollWidth,
+      clientWidth: list.clientWidth,
+      listTop: bounds.top,
+      listBottom: bounds.bottom,
+      clippedRows: rows.filter(row => {
+        const rowBounds = row.getBoundingClientRect();
+        const intersectsTop = rowBounds.top < bounds.top - 1 && rowBounds.bottom > bounds.top + 1;
+        const intersectsBottom = rowBounds.top < bounds.bottom - 1 && rowBounds.bottom > bounds.bottom + 1;
+        return intersectsTop || intersectsBottom;
+      }).length,
+      lastRow: rows.at(-1)?.getBoundingClientRect().toJSON(),
+    };
+  });
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+  expect(geometry.clippedRows, `${state}: a group row is clipped at list end: ${JSON.stringify(geometry)}`).toBe(0);
+  expect(geometry.lastRow?.top).toBeGreaterThanOrEqual(geometry.listTop - 1);
+  expect(geometry.lastRow?.bottom).toBeLessThanOrEqual(geometry.listBottom + 1);
+}
+
 async function userID(page: Page, token: Token, email: string): Promise<string> {
   const response = await page.request.get(`${chatBase}/api/chat/users/search?q=${encodeURIComponent(email)}`, {headers: {Authorization: `${token.token_type} ${token.access_token}`}});
   expect(response.status()).toBe(200);
@@ -69,10 +102,13 @@ async function createGroups(page: Page, token: Token, targetID: string, ownerLab
 }
 
 async function expectGroupPageErrorAppearance(page: Page, width: number): Promise<void> {
-  const appearance = await page.getByRole('alert').filter({hasText: 'Could not load more groups.'}).evaluate(alert => {
+  const list = page.locator('.people-list');
+  await list.hover();
+  await page.mouse.wheel(0, 5000);
+  await expect.poll(async () => list.evaluate(listElement => listElement.scrollTop + listElement.clientHeight >= listElement.scrollHeight - 1), {message: `Group-list error should reach its end at ${width}px`}).toBe(true);
+  const appearance = await page.getByRole('alert').filter({hasText: 'Could not load more groups.'}).evaluate(async alert => {
     const list = document.querySelector<HTMLElement>('.people-list');
     if (!list) throw new Error('Group list is missing from the error state');
-    list.scrollTop = list.scrollHeight;
     const rows = Array.from(list.querySelectorAll<HTMLElement>('.person-option'));
     const lastRow = rows.at(-1);
     if (!lastRow) throw new Error('Group rows disappeared from the cursor-error state');
@@ -155,8 +191,11 @@ async function expectGroupPageErrorAppearance(page: Page, width: number): Promis
       partiallyClippedRows: rows.filter(row => {
         const bounds = row.getBoundingClientRect();
         const railBounds = list.getBoundingClientRect();
-        return bounds.top < railBounds.top && bounds.bottom > railBounds.top || bounds.top < railBounds.bottom && bounds.bottom > railBounds.bottom;
-      }).length,
+        return bounds.top < railBounds.top - 1 && bounds.bottom > railBounds.top + 1 || bounds.top < railBounds.bottom - 1 && bounds.bottom > railBounds.bottom + 1;
+      }).map(row => {
+        const bounds = row.getBoundingClientRect();
+        return {top: bounds.top, bottom: bounds.bottom, text: row.textContent?.trim()};
+      }),
     };
   });
 
@@ -176,13 +215,11 @@ async function expectGroupPageErrorAppearance(page: Page, width: number): Promis
   expect(appearance.alert.bottom).toBeLessThanOrEqual(appearance.viewportHeight);
   expect(appearance.control.top).toBeGreaterThanOrEqual(0);
   expect(appearance.control.bottom).toBeLessThanOrEqual(appearance.viewportHeight);
-  expect(appearance.railScrollTop + appearance.railClientHeight).toBeGreaterThanOrEqual(appearance.railScrollHeight - 1);
   expect(appearance.lastRow.top, `Last group row starts above the visible rail: ${JSON.stringify(appearance)}`).toBeGreaterThanOrEqual(appearance.rail.top);
   expect(appearance.lastRow.bottom, `Last group row is clipped at the visible rail end: ${JSON.stringify(appearance)}`).toBeLessThanOrEqual(appearance.rail.bottom);
-  // A partially visible earlier row at the scrollport's top is normal when
-  // parked at scroll end; no row may be clipped at the bottom and the final
-  // row plus retry alert must remain completely reachable in that same view.
-  expect(appearance.partiallyClippedRows, `Unexpected row clipping outside the ordinary scroll boundary: ${JSON.stringify(appearance)}`).toBeLessThanOrEqual(1);
+  // End alignment may leave less than one row of scroll range unused so the
+  // scroll handler can snap the earlier row clear of the rail's top edge.
+   expect(appearance.partiallyClippedRows, `Group rows must align cleanly below the sticky rail heading: ${JSON.stringify(appearance)}`).toHaveLength(0);
   console.log(`Cursor-error rail geometry ${width}x${appearance.viewportHeight}: ${JSON.stringify({scrollTop: appearance.railScrollTop, scrollHeight: appearance.railScrollHeight, clientHeight: appearance.railClientHeight, rail: appearance.rail, lastRow: appearance.lastRow, alert: appearance.alert, partiallyClippedRows: appearance.partiallyClippedRows})}`);
   expect(appearance.alert.top, `Cursor error is above the visible rail: ${JSON.stringify(appearance)}`).toBeGreaterThanOrEqual(appearance.rail.top);
   expect(appearance.alert.bottom, `Cursor error is clipped at the visible rail end: ${JSON.stringify(appearance)}`).toBeLessThanOrEqual(appearance.rail.bottom);
@@ -216,6 +253,7 @@ async function expectAccountMenuOverlayOpen(page: Page): Promise<void> {
 }
 
 test('loads 26 shared groups by pages and keeps the rail contained across theme/viewport matrix', async ({browser}, testInfo) => {
+  test.setTimeout(90_000);
   const ownerOneEmail = uniqueEmail('owner-one');
   const ownerTwoEmail = uniqueEmail('owner-two');
   const targetEmail = uniqueEmail('shared-target');
@@ -280,23 +318,32 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
         const start = await target.evaluate(() => ({documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth, listWidth: document.querySelector<HTMLElement>('.people-list')?.clientWidth ?? 0, listScrollWidth: document.querySelector<HTMLElement>('.people-list')?.scrollWidth ?? 0}));
         expect(start.documentWidth).toBeLessThanOrEqual(start.viewportWidth);
         expect(start.listScrollWidth).toBeLessThanOrEqual(start.listWidth + 1);
-      await target.screenshot({path: testInfo.outputPath(`groups-first-page-${theme}-${width}x${height}-top.png`)});
-      await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
-      await expect(list.locator('.person-option').last()).toBeVisible();
-      const endGeometry = await list.evaluate(element => {
-        const rows = element.querySelectorAll<HTMLElement>('.person-option');
-        const lastRow = rows.item(rows.length - 1);
-        if (!lastRow) throw new Error('Last group row is missing');
-        const listRect = element.getBoundingClientRect();
-        const rowRect = lastRow.getBoundingClientRect();
-        return {scrollTop: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, listTop: listRect.top, listBottom: listRect.bottom, rowTop: rowRect.top, rowBottom: rowRect.bottom};
-      });
-      expect(endGeometry.scrollTop + endGeometry.clientHeight).toBeGreaterThanOrEqual(endGeometry.scrollHeight - 1);
-      expect(endGeometry.rowTop).toBeGreaterThanOrEqual(endGeometry.listTop);
-      expect(endGeometry.rowBottom).toBeLessThanOrEqual(endGeometry.listBottom);
-      const loadMoreControl = target.getByRole('button', {name: 'Load more groups'});
-      await expect(loadMoreControl).toBeVisible();
-      await loadMoreControl.scrollIntoViewIfNeeded();
+        await target.screenshot({path: testInfo.outputPath(`groups-first-page-${theme}-${width}x${height}-top.png`)});
+        await list.hover();
+        await target.mouse.wheel(0, 5000);
+        await expect(list.locator('.person-option').last()).toBeVisible();
+       const endGeometry = await list.evaluate(async element => {
+         await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+         const rows = element.querySelectorAll<HTMLElement>('.person-option');
+         const lastRow = rows.item(rows.length - 1);
+         if (!lastRow) throw new Error('Last group row is missing');
+         const listRect = element.getBoundingClientRect();
+         const rowRect = lastRow.getBoundingClientRect();
+         const clippedRows = Array.from(rows).filter(row => {
+           const bounds = row.getBoundingClientRect();
+           const intersectsTop = bounds.top < listRect.top - 1 && bounds.bottom > listRect.top + 1;
+           const intersectsBottom = bounds.top < listRect.bottom - 1 && bounds.bottom > listRect.bottom + 1;
+           return intersectsTop || intersectsBottom;
+         }).length;
+         return {scrollTop: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth, listTop: listRect.top, listBottom: listRect.bottom, rowTop: rowRect.top, rowBottom: rowRect.bottom, clippedRows};
+       });
+       expect(endGeometry.rowTop).toBeGreaterThanOrEqual(endGeometry.listTop);
+       expect(endGeometry.rowBottom, `First-page end row/action geometry: ${JSON.stringify(endGeometry)}`).toBeLessThanOrEqual(endGeometry.listBottom);
+       expect(endGeometry.clippedRows, `First-page list end has clipped rows: ${JSON.stringify(endGeometry)}`).toBe(0);
+       expect(endGeometry.scrollWidth).toBeLessThanOrEqual(endGeometry.clientWidth + 1);
+       const loadMoreControl = target.getByRole('button', {name: 'Load more groups'});
+       await expect(loadMoreControl).toBeVisible();
+       await expectNoClippedGroupRows(target, `${theme}/${width} load-more state`);
       const restingLoadMore = await loadMoreControl.evaluate(control => {
         const style = getComputedStyle(control);
         const resolveColor = (color: string) => {
@@ -331,12 +378,13 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
       });
       expect(focusedLoadMore.outlineStyle).toBe('solid');
       expect(focusedLoadMore.outlineWidth).toBe('3px');
-      expect(focusedLoadMore.outlineOffset).toBe('2px');
-      await target.screenshot({path: testInfo.outputPath(`groups-first-page-${theme}-${width}x${height}-load-more-focused.png`)});
-      await target.locator('body').click({position: {x: 4, y: 4}});
+       expect(focusedLoadMore.outlineOffset).toBe('2px');
+       await target.screenshot({path: testInfo.outputPath(`groups-first-page-${theme}-${width}x${height}-load-more-focused.png`)});
+       await target.locator('body').click({position: {x: 4, y: 4}});
+       await expectNoClippedGroupRows(target, `${theme}/${width} load-more resting state`);
       const controlBounds = await loadMoreControl.boundingBox();
         const viewportHeight = target.viewportSize()?.height ?? 0;
-        expect(controlBounds && controlBounds.x >= 0 && controlBounds.x + controlBounds.width <= width && controlBounds.y >= 0 && controlBounds.y + controlBounds.height <= viewportHeight).toBe(true);
+        expect(controlBounds && controlBounds.x >= 0 && controlBounds.x + controlBounds.width <= width && controlBounds.y >= 0 && controlBounds.y + controlBounds.height <= viewportHeight, `${theme}/${width} load-more control is outside viewport: ${JSON.stringify({controlBounds, viewportHeight})}`).toBe(true);
         await target.screenshot({path: testInfo.outputPath(`groups-first-page-${theme}-${width}x${height}-end.png`)});
       }
     }
@@ -404,6 +452,7 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
         await target.keyboard.press('Shift+Tab');
         await expect(retry).toBeFocused();
         await expectGroupPageErrorAppearance(target, viewport.width);
+        await expectNoClippedGroupRows(target, `${theme}/${viewport.width} error state`);
         await expectAccountMenuOverlayRemoved(target);
         await target.screenshot({path: testInfo.outputPath(`groups-second-page-error-${theme}-${viewport.width}x${viewport.height}.png`)});
       }
@@ -423,7 +472,13 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
     expect(injectedFailures).toBe(1);
     await expect(target.locator('.person-option')).toHaveCount(26, {timeout: 10_000});
     await expect(target.getByRole('button', {name: 'Load more groups'})).toHaveCount(0);
-    await expect(target.locator('.groups-exhausted')).toHaveText('All groups loaded.');
+    const exhaustedAnnouncement = target.getByRole('status').filter({hasText: 'All groups loaded.'});
+    await expect(exhaustedAnnouncement).toHaveCount(1);
+    await expect(exhaustedAnnouncement).toHaveText('All groups loaded.');
+    const announcementStyle = await exhaustedAnnouncement.evaluate(element => ({position: getComputedStyle(element).position, width: getComputedStyle(element).width, height: getComputedStyle(element).height, clip: getComputedStyle(element).clip, overflow: getComputedStyle(element).overflow}));
+    expect(announcementStyle).toEqual({position: 'absolute', width: '1px', height: '1px', clip: 'rect(0px, 0px, 0px, 0px)', overflow: 'hidden'});
+    await expect(exhaustedAnnouncement).toHaveCSS('position', 'absolute');
+    await expect(exhaustedAnnouncement).toHaveCSS('clip', 'rect(0px, 0px, 0px, 0px)');
     const allNames = await target.locator('.person-option strong').allTextContents();
     expect(allNames.sort()).toEqual(expectedNames);
     expect(new Set(allNames).size).toBe(26);
@@ -443,13 +498,17 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
         }
         const list = target.locator('.people-list');
         await list.evaluate(element => { element.scrollTop = 0; });
+        const hiddenAnnouncement = await exhaustedAnnouncement.evaluate(element => ({width: getComputedStyle(element).width, height: getComputedStyle(element).height, clip: getComputedStyle(element).clip, overflow: getComputedStyle(element).overflow}));
+        expect(hiddenAnnouncement, `${theme}/${width}px completion copy must remain visually hidden`).toEqual({width: '1px', height: '1px', clip: 'rect(0px, 0px, 0px, 0px)', overflow: 'hidden'});
         await expect(list.locator('.person-option').first()).toBeVisible();
         const railStart = await target.evaluate(() => ({documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth, listWidth: document.querySelector<HTMLElement>('.people-list')?.clientWidth ?? 0, listScrollWidth: document.querySelector<HTMLElement>('.people-list')?.scrollWidth ?? 0}));
         expect(railStart.documentWidth).toBeLessThanOrEqual(railStart.viewportWidth);
         expect(railStart.listScrollWidth).toBeLessThanOrEqual(railStart.listWidth + 1);
-        await target.screenshot({path: testInfo.outputPath(`groups-${theme}-${width}x${height}-top.png`)});
-        await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
-        await expect(list.locator('.person-option').last()).toBeVisible();
+         await target.screenshot({path: testInfo.outputPath(`groups-${theme}-${width}x${height}-top.png`)});
+          await list.hover();
+          await target.mouse.wheel(0, 5000);
+         await expect(list.locator('.person-option').last()).toBeVisible();
+        await expectNoClippedGroupRows(target, `${theme}/${width} exhausted state`);
         const lastRow = await list.locator('.person-option').last().boundingBox();
         const rail = await list.boundingBox();
         expect(lastRow && rail && lastRow.x >= rail.x && lastRow.x + lastRow.width <= rail.x + rail.width).toBe(true);
