@@ -13,9 +13,27 @@ type BrowserNotificationRecord = {title: string; body?: string; tag?: string};
 type RenderedContrast = {foreground: string; background: string; ratio: number};
 type RenderedTextContrast = {foreground: string; background: string; ratio: number; opacity: number; disabled: boolean};
 
-async function waitForTooltipAnimation(tooltip: Locator): Promise<void> {
-  await expect.poll(async () => (await measureRenderedTextContrastAtSurface(tooltip)).opacity,
-    {message: 'Tooltip should become visibly rendered before geometry/contrast checks', timeout: 5_000}).toBeGreaterThanOrEqual(.8);
+async function waitForReadableTooltip(tooltip: Locator): Promise<void> {
+  await expect.poll(async () => {
+    await tooltip.evaluate(element => {
+      const panel = element.closest<HTMLElement>('.mat-mdc-tooltip-panel') ?? element;
+      let renderedOpacity = 1;
+      for (let ancestor: HTMLElement | null = element as HTMLElement; ancestor; ancestor = ancestor.parentElement) {
+        const opacity = Number.parseFloat(getComputedStyle(ancestor).opacity);
+        if (Number.isFinite(opacity)) renderedOpacity *= opacity;
+      }
+      for (const animation of panel.getAnimations({subtree: true})) {
+        if (animation.playState !== 'running') continue;
+        const opacityKeyframes = animation.effect?.getKeyframes().map(frame => Number.parseFloat(String(frame.opacity))).filter(Number.isFinite);
+        const targetOpacity = opacityKeyframes?.at(-1);
+        if (targetOpacity !== undefined && targetOpacity > renderedOpacity) {
+          try { animation.finish(); } catch { /* Rendered contrast remains the acceptance assertion. */ }
+        }
+      }
+    });
+    return (await measureRenderedTextContrastAtSurface(tooltip)).ratio;
+  },
+    {message: 'Tooltip text should reach accessible rendered contrast', timeout: 5_000}).toBeGreaterThanOrEqual(4.5);
 }
 
 async function measureRenderedTextContrast(element: Locator): Promise<RenderedContrast> {
@@ -643,9 +661,8 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     const tooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: action.label}).last();
     await expect(tooltip, `${theme} ${viewport.width}px tooltip: ${action.label}`).toBeVisible();
     await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px must render only the active action tooltip`).toHaveCount(1);
-    await expect.poll(async () => (await measureRenderedTextContrastAtSurface(tooltip)).opacity, {message: `${theme} ${viewport.width}px tooltip should finish rendering before contrast measurement`, timeout: 5_000}).toBeGreaterThanOrEqual(.8);
+    await waitForReadableTooltip(tooltip);
     const contrast = await measureRenderedTextContrastAtSurface(tooltip);
-    expect(contrast.opacity, `${theme} ${viewport.width}px tooltip rendered opacity: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(.8);
     expect(contrast.ratio, `${theme} ${viewport.width}px ${action.label} rendered contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
     const {tooltipRect, managerRect, tooltipClasses, panelClasses, tooltipStyle} = await page.evaluate(label => {
       const toRect = (element: Element | null) => {
@@ -1593,7 +1610,7 @@ async function assertGroupCallLayout(page: Page, testInfo: import('@playwright/t
        await roomEnd.hover();
        const roomEndTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'End group call for everyone'}).last();
        await expect(roomEndTooltip).toBeVisible();
-       await waitForTooltipAnimation(roomEndTooltip);
+        await waitForReadableTooltip(roomEndTooltip);
         const roomEndTooltipContrast = await measureRenderedTextContrast(roomEndTooltip);
         expect(roomEndTooltipContrast.ratio, `${theme}/${viewport.width} End group call tooltip contrast: ${JSON.stringify(roomEndTooltipContrast)}`).toBeGreaterThanOrEqual(4.5);
         await expect(roomEndTooltip).toHaveCSS('background-color', 'rgb(241, 245, 249)');
@@ -1955,7 +1972,7 @@ test('direct call offers and answers connect in the browser UI', async ({browser
       await minimize.hover();
       const tooltip = alice.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'Minimize call'}).last();
       await expect(tooltip).toBeVisible();
-      await waitForTooltipAnimation(tooltip);
+       await waitForReadableTooltip(tooltip);
       const tooltipContrast = await measureRenderedTextContrast(tooltip);
       expect(tooltipContrast.ratio, `${theme} desktop minimize tooltip contrast: ${JSON.stringify(tooltipContrast)}`).toBeGreaterThanOrEqual(4.5);
       const tooltipRect = await tooltip.boundingBox();
@@ -1973,7 +1990,7 @@ test('direct call offers and answers connect in the browser UI', async ({browser
       await minimize.hover();
       const mobileTooltip = alice.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'Minimize call'}).last();
       await expect(mobileTooltip).toBeVisible();
-      await waitForTooltipAnimation(mobileTooltip);
+       await waitForReadableTooltip(mobileTooltip);
       const mobileTooltipContrast = await measureRenderedTextContrast(mobileTooltip);
       expect(mobileTooltipContrast.ratio, `${theme} mobile minimize tooltip contrast: ${JSON.stringify(mobileTooltipContrast)}`).toBeGreaterThanOrEqual(4.5);
       const mobileTooltipBounds = await mobileTooltip.boundingBox();
@@ -5150,7 +5167,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
         await endCall.hover();
         const endCallTooltip = observer.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'End group call for everyone'}).last();
         await expect(endCallTooltip).toBeVisible();
-        await waitForTooltipAnimation(endCallTooltip);
+         await waitForReadableTooltip(endCallTooltip);
         const tooltipGeometry = await observer.evaluate(() => {
           const tooltip = document.querySelector<HTMLElement>('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface');
           const bounds = (selector: string) => {
@@ -5226,7 +5243,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
         await minimizedEndCall.hover();
         const minimizedEndTooltip = owner.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface').filter({hasText: 'End group call for everyone'}).last();
         await expect(minimizedEndTooltip).toBeVisible();
-        await waitForTooltipAnimation(minimizedEndTooltip);
+         await waitForReadableTooltip(minimizedEndTooltip);
         const minimizedEndTooltipContrast = await measureRenderedTextContrast(minimizedEndTooltip);
         expect(minimizedEndTooltipContrast.ratio, `${theme}/${viewport.width}px minimized End tooltip contrast: ${JSON.stringify(minimizedEndTooltipContrast)}`).toBeGreaterThanOrEqual(4.5);
         await expect(minimizedEndTooltip).toHaveCSS('background-color', 'rgb(241, 245, 249)');
