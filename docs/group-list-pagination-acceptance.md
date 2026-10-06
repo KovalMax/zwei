@@ -74,7 +74,7 @@ Final current-tree browser verification: the latest full isolated Playwright res
 
 ## Final verification
 
-- Full isolated Playwright `make e2e` on the final tree: **35/35 passed**, no failures or skips. Run marker: `e2e/test-results/2026-10-06T15-37-17-335Z/.last-run.json`; browser screenshots and traces: `e2e/test-results/2026-10-06T15-38-45-858Z/`.
+- Full isolated Playwright `make e2e` on the final tree: **35/35 passed**, no failures or skips. Run marker: `e2e/test-results/2026-10-06T16-10-38-461Z/.last-run.json`; browser screenshots and traces: `e2e/test-results/2026-10-06T16-12-10-366Z/`.
 - Inspected passing screenshots: account-menu light/dark mobile states; pagination first-page and loaded-list top/end in both themes across 2560×1440, 1440×900, 1024×900, and 390×844; cursor-error/retry states at all four widths/themes; focused Load more controls at all four widths/themes; stable Home/search/group-create visual baselines; PWA offline shell. At pagination/error list end, browser assertions and reviewed screenshots confirm the last row and retry are fully contained, with zero partially clipped rows and no horizontal overflow. Fixed 700ms sleeps were replaced by bounded polling for end-scroll state.
 - Angular headless coverage: **366/366 passed** across 31 spec files; production build passed.
 - Go: `go vet ./services/...` passed; `go test -race ./services/...` passed against a freshly migrated, isolated `messenger_go_verify_20261005` database and Redis DB 2. Migration 0012's concurrent-runner, error-release, recovery, definition-validation, and idempotency checks passed in the E2E provisioning path.
