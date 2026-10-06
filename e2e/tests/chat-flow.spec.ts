@@ -4089,6 +4089,15 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
       data: {role: 'admin'},
     });
     expect(restoreAdmin.status()).toBe(200);
+    await owner.reload();
+    const ownerGroupOption = owner.locator('.person-option').filter({hasText: 'Browser acceptance group'});
+    await expect(ownerGroupOption).toBeVisible({timeout: 10_000});
+    await ownerGroupOption.click();
+    await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toBeVisible();
+    await owner.getByRole('button', {name: 'Manage group'}).click();
+    await expect(owner.locator('.group-manager')).toBeVisible();
+    await expect(memberRow.locator('.member-identity small')).toHaveText('admin', {timeout: 10_000});
+    await expect(owner.locator('.group-manager form').getByRole('button', {name: 'Save name'})).toBeEnabled();
 
     await owner.route(`**/api/chat/groups/${groupID}`, route => {
       if (route.request().method() === 'PATCH') {
