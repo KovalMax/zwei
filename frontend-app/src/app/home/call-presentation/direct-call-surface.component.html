@@ -1,6 +1,6 @@
 <ng-container *ngIf="state as callState">
     <audio autoplay playsinline [srcObject]="callState.remoteStream" (loadedmetadata)="emit({type: 'remote-audio-ready', event: $event})" (canplay)="emit({type: 'remote-audio-ready', event: $event})"></audio>
-    <div class="call-card">
+    <div class="call-card" [class.call-card-incoming]="callState.phase === 'incoming'">
         <app-call-profile *ngIf="profile as directProfile" [profile]="directProfile" [collapsible]="isOngoing(callState)" (collapse)="emit({type: 'collapse'})"></app-call-profile>
         <div class="call-card-content">
             <div class="call-sharing-indicator" *ngIf="callState.screenShareStream || callState.remoteScreenStream" role="status" aria-live="polite">

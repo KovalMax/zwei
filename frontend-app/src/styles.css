@@ -20,6 +20,9 @@ app-home .people-list .load-more-groups:hover:not(:disabled) { border-color: var
 app-home .people-list .load-more-groups:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 app-home .people-list .load-more-groups:disabled { cursor: wait; opacity: .72; }
 @media (prefers-reduced-motion: reduce) { app-home .people-list .load-more-groups { transition: none; } }
+app-home .search-results { max-height: min(36rem, 52dvh); min-height: 0; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+app-home .search-result { scroll-margin-block: 8px; }
+app-home .search-result:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 html, body {
     font-family: 'Manrope', sans-serif;
     height: 100%;

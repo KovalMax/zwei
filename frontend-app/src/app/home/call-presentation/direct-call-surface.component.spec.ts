@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { AppModule } from '../../app.module';
 import { HomeModule } from '../home.module';
+import { CallState } from '../call-facade.service';
 import { DirectCallSurfaceComponent } from './direct-call-surface.component';
 
 describe('DirectCallSurfaceComponent', () => {
@@ -11,6 +12,23 @@ describe('DirectCallSurfaceComponent', () => {
         await TestBed.configureTestingModule({ imports: [AppModule, HomeModule] }).compileComponents();
         fixture = TestBed.createComponent(DirectCallSurfaceComponent);
         component = fixture.componentInstance;
+    });
+
+    it('scopes theme-specific notification styling to incoming calls', () => {
+        const incomingState: CallState = {
+            phase: 'incoming', role: 'recipient', callID: 'call-1', conversationID: 'conversation-1', peerID: 'peer-1',
+            muted: false, screenShareQuality: '720p', screenShareAudioEnabled: false, screenShareAudioActive: false,
+            screenShareTransition: false, statusLabel: 'Incoming audio call.',
+        };
+        fixture.componentRef.setInput('state', incomingState);
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('.call-card.call-card-incoming')).not.toBeNull();
+
+        fixture.componentRef.setInput('state', {...incomingState, phase: 'active'});
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('.call-card-incoming')).toBeNull();
     });
 
     it('keeps unsupported screen-share audio visible, disabled, and accessibly explained', () => {

@@ -2370,10 +2370,84 @@ test('register, create conversation, and deliver a message', async ({ browser },
    await bob.setViewportSize(desktop.viewport);
 
       await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
-      await alice.getByRole('button', {name: 'Start audio call'}).click();
-       await expect(alice.getByText('Ringing...')).toBeVisible();
-       await expect(bob.getByText('Incoming audio call.')).toBeVisible();
-       await expect(alice.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
+     await alice.getByRole('button', {name: 'Start audio call'}).click();
+     await expect(alice.getByText('Ringing...')).toBeVisible();
+     await expect(bob.getByText('Incoming audio call.')).toBeVisible();
+     for (const theme of ['light', 'dark'] as const) {
+       await setTheme(bob, theme);
+       for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+         await bob.setViewportSize(viewport);
+         const incomingPanel = bob.locator('.call-panel:not(.call-panel-full)');
+         const incomingCard = incomingPanel.locator('.call-card-incoming');
+         await expect(incomingCard).toBeVisible();
+         const accept = incomingCard.getByRole('button', {name: 'Accept'});
+         const decline = incomingCard.getByRole('button', {name: 'Decline'});
+         await expect(accept).toBeVisible();
+         await expect(decline).toBeVisible();
+         const incomingSurface = await bob.evaluate(() => {
+           const panel = document.querySelector<HTMLElement>('.call-panel:not(.call-panel-full)');
+           const card = panel?.querySelector<HTMLElement>('.call-card-incoming');
+           const actions = card?.querySelector<HTMLElement>('.call-actions');
+           const profile = card?.querySelector<HTMLElement>('app-call-profile');
+           const rect = (element?: HTMLElement) => {
+             const bounds = element?.getBoundingClientRect();
+             return bounds ? {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height} : undefined;
+           };
+           return {
+             panel: rect(panel), card: rect(card), actions: rect(actions), profile: rect(profile),
+             buttons: Array.from(actions?.querySelectorAll<HTMLElement>('button') ?? []).flatMap(button => {
+               const bounds = rect(button);
+               return bounds ? [bounds] : [];
+             }),
+             profileActionsOverlap: Boolean(profile && actions && profile.getBoundingClientRect().left < actions.getBoundingClientRect().right && profile.getBoundingClientRect().right > actions.getBoundingClientRect().left && profile.getBoundingClientRect().top < actions.getBoundingClientRect().bottom && profile.getBoundingClientRect().bottom > actions.getBoundingClientRect().top),
+             panelSurface: panel ? getComputedStyle(panel).backgroundColor : '',
+             cardSurface: card ? getComputedStyle(card).backgroundColor : '',
+             actionSurface: actions ? getComputedStyle(actions).backgroundColor : '',
+             panelText: panel ? getComputedStyle(panel).color : '',
+             actionText: actions ? getComputedStyle(actions).color : '',
+             documentWidth: document.documentElement.scrollWidth,
+             viewportWidth: document.documentElement.clientWidth,
+           };
+         });
+         const context = `${theme}/${viewport.width}px incoming-call notification: ${JSON.stringify(incomingSurface)}`;
+         expect(incomingSurface.panelSurface, context).toBe(theme === 'light' ? 'rgb(232, 241, 251)' : 'rgb(38, 57, 79)');
+         expect(incomingSurface.cardSurface, context).toBe(theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(32, 44, 59)');
+         expect(incomingSurface.actionSurface, context).toBe(incomingSurface.cardSurface);
+         expect(incomingSurface.panel?.left, context).toBeGreaterThanOrEqual(0);
+         expect(incomingSurface.panel?.right, context).toBeLessThanOrEqual(viewport.width + 1);
+         expect(incomingSurface.card?.left, context).toBeGreaterThanOrEqual((incomingSurface.panel?.left ?? 0) - 1);
+         expect(incomingSurface.card?.right, context).toBeLessThanOrEqual((incomingSurface.panel?.right ?? viewport.width) + 1);
+         expect(incomingSurface.actions?.left, context).toBeGreaterThanOrEqual((incomingSurface.card?.left ?? 0) - 1);
+         expect(incomingSurface.actions?.right, context).toBeLessThanOrEqual((incomingSurface.card?.right ?? viewport.width) + 1);
+         expect(incomingSurface.actions?.top, context).toBeGreaterThanOrEqual((incomingSurface.panel?.top ?? 0) - 1);
+         expect(incomingSurface.actions?.bottom, context).toBeLessThanOrEqual((incomingSurface.panel?.bottom ?? viewport.height) + 1);
+         expect(incomingSurface.profileActionsOverlap, context).toBe(false);
+         if (viewport.width <= 760) expect(incomingSurface.profile?.bottom, context).toBeLessThanOrEqual((incomingSurface.actions?.top ?? 0) + 1);
+         expect(incomingSurface.buttons, context).toHaveLength(2);
+         for (const button of incomingSurface.buttons) {
+           expect(button.left, context).toBeGreaterThanOrEqual((incomingSurface.actions?.left ?? 0) - 1);
+           expect(button.right, context).toBeLessThanOrEqual((incomingSurface.actions?.right ?? viewport.width) + 1);
+           expect(button.left, context).toBeGreaterThanOrEqual(0);
+           expect(button.right, context).toBeLessThanOrEqual(viewport.width + 1);
+           expect(button.top, context).toBeGreaterThanOrEqual(0);
+           expect(button.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+         }
+         const nameContrast = await measureRenderedTextContrastAtSurface(incomingCard.locator('app-call-profile .call-presentation-copy strong'));
+         const statusContrast = await measureRenderedTextContrastAtSurface(incomingCard.locator('app-call-profile .call-presentation-copy span'));
+         const acceptContrast = await measureRenderedTextContrastAtSurface(accept);
+         const declineContrast = await measureRenderedTextContrastAtSurface(decline);
+         expect(nameContrast.ratio, `${context} caller-name contrast: ${JSON.stringify(nameContrast)}`).toBeGreaterThanOrEqual(4.5);
+         expect(statusContrast.ratio, `${context} incoming status contrast: ${JSON.stringify(statusContrast)}`).toBeGreaterThanOrEqual(4.5);
+         expect(acceptContrast.ratio, `${context} Accept contrast: ${JSON.stringify(acceptContrast)}`).toBeGreaterThanOrEqual(4.5);
+         expect(declineContrast.ratio, `${context} Decline contrast: ${JSON.stringify(declineContrast)}`).toBeGreaterThanOrEqual(4.5);
+         expect(incomingSurface.documentWidth, context).toBeLessThanOrEqual(incomingSurface.viewportWidth + 1);
+         await bob.screenshot({path: testInfo.outputPath(`incoming-call-${theme}-${viewport.width}.png`), fullPage: false});
+       }
+     }
+     expect(await alice.locator('.call-card-incoming').count()).toBe(0);
+     await bob.setViewportSize({width: 2560, height: 1440});
+     await setTheme(bob, 'dark');
+     await expect(alice.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
        await expect(bob.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
        expect(await bob.locator('.call-panel').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
       await expect(bob.locator('.call-profile')).toContainText('Alice');
@@ -4394,6 +4468,128 @@ test('contains group member, message, and rail lists across the required viewpor
     await owner.reload();
     await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'})).toBeVisible({timeout: 10_000});
     await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
+    const peopleSearch = owner.getByPlaceholder('Name or email');
+    await peopleSearch.fill('e2e-group-visual-member');
+    const searchResults = owner.locator('.search-results');
+    await expect(owner.locator('.group-search-status')).toContainText('11 people found.');
+    await expect(searchResults.locator('.search-result')).toHaveCount(11);
+    for (const theme of ['dark', 'light'] as const) {
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        const conversationOpen = await owner.locator('.workspace.conversation-open').count() > 0;
+        if (viewport.width === 390 && conversationOpen) {
+          await owner.getByRole('button', {name: 'Back to chats'}).click();
+        } else if (viewport.width > 760 && !conversationOpen) {
+          await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
+        }
+        await setTheme(owner, theme);
+        await expect(searchResults, `${theme}/${viewport.width}px People search results`).toBeVisible();
+        await searchResults.locator('.search-result').first().scrollIntoViewIfNeeded();
+        const searchGeometry = await searchResults.evaluate(results => {
+          const rail = results.closest<HTMLElement>('.conversation-rail');
+          const heading = rail?.querySelector<HTMLElement>('.rail-heading');
+          const input = rail?.querySelector<HTMLElement>('.search-field');
+          const status = rail?.querySelector<HTMLElement>('.group-search-status');
+          const chatLabel = rail?.querySelector<HTMLElement>('.rail-label');
+          const firstConversation = rail?.querySelector<HTMLElement>('.people-list .person-option');
+          const rect = (element?: HTMLElement) => {
+            const bounds = element?.getBoundingClientRect();
+            return bounds ? {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height} : undefined;
+          };
+          return {
+            results: rect(results), heading: rect(heading), input: rect(input), status: rect(status), chatLabel: rect(chatLabel), firstConversation: rect(firstConversation),
+            scrollTop: results.scrollTop, scrollHeight: results.scrollHeight, clientHeight: results.clientHeight,
+            scrollWidth: results.scrollWidth, clientWidth: results.clientWidth,
+            firstResult: rect(results.querySelector<HTMLElement>('.search-result') ?? undefined),
+            lastResult: rect(results.querySelector<HTMLElement>('.search-result:last-child') ?? undefined),
+            surface: getComputedStyle(results).backgroundColor, maxHeight: getComputedStyle(results).maxHeight,
+            overflowY: getComputedStyle(results).overflowY,
+            railScrollWidth: rail?.scrollWidth, railClientWidth: rail?.clientWidth,
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+          };
+        });
+        const context = `${theme}/${viewport.width}px People search: ${JSON.stringify(searchGeometry)}`;
+        expect(searchGeometry.scrollHeight, context).toBeGreaterThan(searchGeometry.clientHeight);
+        expect(searchGeometry.clientHeight, context).toBeLessThanOrEqual(Math.min(576, viewport.height * 0.52) + 1);
+        expect(Number.parseFloat(searchGeometry.maxHeight), context).toBeCloseTo(Math.min(576, viewport.height * 0.52), 1);
+        expect(searchGeometry.overflowY, context).toBe('auto');
+        expect(searchGeometry.scrollTop, context).toBe(0);
+        expect(searchGeometry.results?.top, context).toBeGreaterThanOrEqual(0);
+        expect(searchGeometry.results?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        expect(searchGeometry.results?.top, context).toBeGreaterThanOrEqual((searchGeometry.status?.bottom ?? 0) + 8);
+        expect(searchGeometry.firstResult?.top, context).toBeGreaterThanOrEqual((searchGeometry.results?.top ?? 0) - 1);
+        expect(searchGeometry.firstResult?.bottom, context).toBeLessThanOrEqual((searchGeometry.results?.bottom ?? 0) + 1);
+        expect(searchGeometry.lastResult?.bottom, context).toBeGreaterThan((searchGeometry.results?.bottom ?? 0) + 1);
+        expect(searchGeometry.heading?.bottom, context).toBeLessThanOrEqual((searchGeometry.results?.top ?? 0) + 1);
+        expect(searchGeometry.input?.bottom, context).toBeLessThanOrEqual((searchGeometry.results?.top ?? 0) + 1);
+        expect(searchGeometry.chatLabel?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        expect(searchGeometry.chatLabel?.top, context).toBeGreaterThanOrEqual(0);
+        expect(searchGeometry.firstConversation?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        expect(searchGeometry.firstConversation?.top, context).toBeGreaterThanOrEqual(0);
+        expect(searchGeometry.scrollWidth, context).toBeLessThanOrEqual(searchGeometry.clientWidth + 1);
+        expect(searchGeometry.railScrollWidth, context).toBeLessThanOrEqual((searchGeometry.railClientWidth ?? 0) + 1);
+        expect(searchGeometry.documentWidth, context).toBeLessThanOrEqual(searchGeometry.viewportWidth + 1);
+        await owner.screenshot({path: testInfo.outputPath(`people-search-results-${theme}-${viewport.width}-top.png`), fullPage: false});
+
+        const firstResult = searchResults.locator('.search-result').first();
+        const lastResult = searchResults.locator('.search-result').last();
+        await firstResult.focus();
+        for (let tab = 1; tab < 11; tab += 1) await owner.keyboard.press('Tab');
+        await expect(lastResult, `${context} keyboard focus should reach the final result`).toBeFocused();
+        const searchEnd = await searchResults.evaluate(results => {
+          const last = results.querySelector<HTMLElement>('.search-result:last-child');
+          const bounds = last?.getBoundingClientRect();
+          const region = results.getBoundingClientRect();
+          const resultStyle = last ? getComputedStyle(last) : undefined;
+          const outlineWidth = Number.parseFloat(resultStyle?.outlineWidth ?? '0');
+          const outlineOffset = Number.parseFloat(resultStyle?.outlineOffset ?? '0');
+          const borderTop = Number.parseFloat(getComputedStyle(results).borderTopWidth);
+          const borderBottom = Number.parseFloat(getComputedStyle(results).borderBottomWidth);
+          const rail = results.closest<HTMLElement>('.conversation-rail');
+          const statusRect = rail?.querySelector<HTMLElement>('.group-search-status')?.getBoundingClientRect();
+          const firstVisibleResult = Array.from(results.querySelectorAll<HTMLElement>('.search-result')).find(result => result.getBoundingClientRect().bottom > region.top);
+          const firstVisibleRect = firstVisibleResult?.getBoundingClientRect();
+          return {
+            scrollTop: results.scrollTop, scrollHeight: results.scrollHeight, clientHeight: results.clientHeight,
+            region: {top: region.top, bottom: region.bottom},
+            status: statusRect && {top: statusRect.top, bottom: statusRect.bottom},
+            firstVisibleResult: firstVisibleRect && {top: firstVisibleRect.top, bottom: firstVisibleRect.bottom},
+            lastResult: bounds && {top: bounds.top, bottom: bounds.bottom},
+            focusRing: bounds && resultStyle && {
+              style: resultStyle.outlineStyle,
+              width: outlineWidth,
+              top: bounds.top - outlineOffset - outlineWidth,
+              bottom: bounds.bottom + outlineOffset + outlineWidth,
+              clipTop: region.top + borderTop,
+              clipBottom: region.bottom - borderBottom,
+            },
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+          };
+        });
+        expect(searchEnd.scrollTop, `${context} keyboard focus should scroll within results: ${JSON.stringify(searchEnd)}`).toBeGreaterThan(0);
+        expect(searchEnd.region.top, context).toBeGreaterThanOrEqual((searchEnd.status?.bottom ?? 0) + 8);
+        expect(searchEnd.lastResult?.top, context).toBeGreaterThanOrEqual(searchEnd.region.top - 1);
+        expect(searchEnd.lastResult?.bottom, context).toBeLessThanOrEqual(searchEnd.region.bottom + 1);
+        expect(searchEnd.focusRing?.style, `${context} focused result should have a visible outline`).not.toBe('none');
+        expect(searchEnd.focusRing?.width, `${context} focused result should have a visible outline`).toBeGreaterThan(0);
+        expect(searchEnd.focusRing?.top, `${context} focused result outline should remain inside the scrollport`).toBeGreaterThanOrEqual(searchEnd.focusRing?.clipTop ?? 0);
+        expect(searchEnd.focusRing?.bottom, `${context} focused result outline should remain inside the scrollport`).toBeLessThanOrEqual(searchEnd.focusRing?.clipBottom ?? 0);
+        expect(searchEnd.documentWidth, context).toBeLessThanOrEqual(searchEnd.viewportWidth + 1);
+        await owner.screenshot({path: testInfo.outputPath(`people-search-results-${theme}-${viewport.width}-keyboard-end.png`), fullPage: false});
+        if (theme === 'light' && viewport.width === 390) {
+          await lastResult.press('Enter');
+          await expect(owner.locator('.chat-header h2')).toHaveText('Member 9', {timeout: 10_000});
+          await owner.screenshot({path: testInfo.outputPath('people-search-result-keyboard-activation-light-390.png'), fullPage: false});
+          await owner.getByRole('button', {name: 'Back to chats'}).click();
+          await expect(peopleSearch).toBeVisible();
+        }
+      }
+    }
+    await peopleSearch.fill('');
+    await expect(searchResults).toHaveCount(0);
+    await owner.setViewportSize({width: 2560, height: 1440});
+    await setTheme(owner, 'dark');
+    if (!(await owner.locator('.workspace.conversation-open').count())) await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
     await owner.getByRole('button', {name: 'Manage group'}).click();
     await expect(owner.locator('.group-members li')).toHaveCount(12);
     await owner.getByPlaceholder('Write a message…').fill(firstGroupMessage);
