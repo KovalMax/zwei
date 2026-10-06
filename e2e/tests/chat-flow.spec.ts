@@ -4364,7 +4364,7 @@ test('contains group member, message, and rail lists across the required viewpor
   // This flow provisions 12 accounts, then exercises multi-region scrolling,
   // member actions, and screenshots across both themes and four viewports.
   // The isolated Docker CI runner needs more time than the local browser.
-  test.setTimeout(360_000);
+  test.setTimeout(600_000);
   const ownerEmail = uniqueEmail('group-visual-owner');
   const memberEmails = Array.from({length: 11}, (_, index) => uniqueEmail(`group-visual-member-${index}`));
   const ownerContext = await browser.newContext({viewport: {width: 2560, height: 1440}});
@@ -4543,7 +4543,6 @@ test('contains group member, message, and rail lists across the required viewpor
     if (!(await owner.locator('.group-manager').isVisible())) await manageGroup.click();
     await expect(owner.locator('.group-manager')).toBeVisible();
     const groupSettingsPanel = owner.locator('.group-manager .group-settings-panel');
-    await groupSettingsPanel.evaluate(element => { element.scrollTop = element.scrollHeight; });
     const deleteButton = groupSettingsPanel.getByRole('button', {name: 'Delete group'});
     await expect(deleteButton).toBeVisible();
     await deleteButton.scrollIntoViewIfNeeded();
