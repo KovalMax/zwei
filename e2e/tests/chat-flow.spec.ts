@@ -4434,45 +4434,43 @@ test('attributes group messages and system actions to their members', async ({br
   }
 });
 
-test('contains group member, message, and rail lists across the required viewports and themes', async ({browser}, testInfo) => {
-  // This flow provisions 12 accounts, then exercises multi-region scrolling,
-  // member actions, and screenshots across both themes and four viewports.
-  // The isolated Docker CI runner needs more time than the local browser.
-  test.setTimeout(600_000);
-  const ownerEmail = uniqueEmail('group-visual-owner');
-  const memberEmails = Array.from({length: 11}, (_, index) => uniqueEmail(`group-visual-member-${index}`));
+test('keeps long People search scrollable and keyboard-accessible across themes and viewports', async ({browser}, testInfo) => {
   const ownerContext = await browser.newContext({viewport: {width: 2560, height: 1440}});
   const owner = await ownerContext.newPage();
-
+  const people = Array.from({length: 11}, (_, index) => ({
+    id: `search-result-user-${index}`,
+    display_name: `Member ${index}`,
+    email: `e2e-search-member-${index}@example.test`,
+  }));
+  const conversationFor = (person: typeof people[number]) => ({
+    id: `search-conversation-${person.id}`, other_user_id: person.id, other_display_name: person.display_name,
+    other_email: person.email, created_at: new Date().toISOString(),
+  });
+  await owner.route('**/api/chat/users/search**', route => route.fulfill({json: people}));
+  await owner.route('**/api/chat/conversations', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({json: [conversationFor(people[0])]});
+    if (route.request().method() !== 'POST') return route.continue();
+    const payload = route.request().postDataJSON() as {other_user_id?: string};
+    const person = people.find(candidate => candidate.id === payload.other_user_id);
+    if (!person) return route.fulfill({status: 400, contentType: 'application/json', body: JSON.stringify({error: 'unknown test user'})});
+    return route.fulfill({status: 201, contentType: 'application/json', body: JSON.stringify(conversationFor(person))});
+  });
   try {
-    await register(owner, ownerEmail, 'Owner');
-    for (const [index, email] of memberEmails.entries()) {
-      const context = await browser.newContext();
-      const page = await context.newPage();
-      await register(page, email, `Member ${index + 1}`);
-      await context.close();
-    }
+    await owner.goto('/login');
+    await login(owner, adminEmail);
     await waitForLiveConnection(owner);
-    const ownerToken = await authenticatedToken(ownerContext, ownerEmail, 'group-visual-owner');
-    const memberIDs = await Promise.all(memberEmails.map(email => userID(ownerContext, ownerToken, email)));
-    const created = await ownerContext.request.post(`${chatBase}/api/chat/groups`, {
-      headers: {Authorization: `${ownerToken.token_type} ${ownerToken.access_token}`}, data: {name: 'Browser acceptance group renamed', member_ids: memberIDs},
-    });
-    expect(created.status()).toBe(201);
-    const groupID = (await created.json() as {id: string}).id;
-    const adminResponse = await ownerContext.request.patch(`${chatBase}/api/chat/groups/${groupID}/members/${memberIDs[0]}`, {
-      headers: {Authorization: `${ownerToken.token_type} ${ownerToken.access_token}`}, data: {role: 'admin'},
-    });
-    expect(adminResponse.status()).toBe(200);
-    const firstGroupMessage = `group-visual-message-${Date.now()}`;
-    await owner.reload();
-    await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'})).toBeVisible({timeout: 10_000});
-    await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
     const peopleSearch = owner.getByPlaceholder('Name or email');
-    await peopleSearch.fill('e2e-group-visual-member');
+    await peopleSearch.fill('e2e-search-member');
     const searchResults = owner.locator('.search-results');
     await expect(owner.locator('.group-search-status')).toContainText('11 people found.');
     await expect(searchResults.locator('.search-result')).toHaveCount(11);
+    await searchResults.locator('.search-result').first().click();
+    await expect(owner.locator('.chat-header h2')).toHaveText('Member 0');
+    await owner.setViewportSize({width: 390, height: 844});
+    await owner.getByRole('button', {name: 'Back to chats'}).click();
+    await peopleSearch.fill('e2e-search-member');
+    await owner.setViewportSize({width: 2560, height: 1440});
+
     for (const theme of ['dark', 'light'] as const) {
       for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
         await owner.setViewportSize(viewport);
@@ -4480,10 +4478,13 @@ test('contains group member, message, and rail lists across the required viewpor
         if (viewport.width === 390 && conversationOpen) {
           await owner.getByRole('button', {name: 'Back to chats'}).click();
         } else if (viewport.width > 760 && !conversationOpen) {
-          await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
+          await owner.locator('.person-option').filter({hasText: 'Member 0'}).click();
         }
         await setTheme(owner, theme);
         await expect(searchResults, `${theme}/${viewport.width}px People search results`).toBeVisible();
+        await expect(searchResults.locator('.search-result')).toHaveCount(people.length);
+        const orderedResults = await searchResults.locator('.search-result').evaluateAll(results => results.map(result => result.textContent ?? ''));
+        for (const [index, person] of people.entries()) expect(orderedResults[index]).toContain(person.display_name);
         await searchResults.locator('.search-result').first().scrollIntoViewIfNeeded();
         const searchGeometry = await searchResults.evaluate(results => {
           const rail = results.closest<HTMLElement>('.conversation-rail');
@@ -4494,7 +4495,7 @@ test('contains group member, message, and rail lists across the required viewpor
           const firstConversation = rail?.querySelector<HTMLElement>('.people-list .person-option');
           const rect = (element?: HTMLElement) => {
             const bounds = element?.getBoundingClientRect();
-            return bounds ? {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height} : undefined;
+            return bounds && {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height};
           };
           return {
             results: rect(results), heading: rect(heading), input: rect(input), status: rect(status), chatLabel: rect(chatLabel), firstConversation: rect(firstConversation),
@@ -4534,7 +4535,7 @@ test('contains group member, message, and rail lists across the required viewpor
         const firstResult = searchResults.locator('.search-result').first();
         const lastResult = searchResults.locator('.search-result').last();
         await firstResult.focus();
-        for (let tab = 1; tab < 11; tab += 1) await owner.keyboard.press('Tab');
+        for (let tab = 1; tab < people.length; tab += 1) await owner.keyboard.press('Tab');
         await expect(lastResult, `${context} keyboard focus should reach the final result`).toBeFocused();
         const searchEnd = await searchResults.evaluate(results => {
           const last = results.querySelector<HTMLElement>('.search-result:last-child');
@@ -4556,12 +4557,9 @@ test('contains group member, message, and rail lists across the required viewpor
             firstVisibleResult: firstVisibleRect && {top: firstVisibleRect.top, bottom: firstVisibleRect.bottom},
             lastResult: bounds && {top: bounds.top, bottom: bounds.bottom},
             focusRing: bounds && resultStyle && {
-              style: resultStyle.outlineStyle,
-              width: outlineWidth,
-              top: bounds.top - outlineOffset - outlineWidth,
-              bottom: bounds.bottom + outlineOffset + outlineWidth,
-              clipTop: region.top + borderTop,
-              clipBottom: region.bottom - borderBottom,
+              style: resultStyle.outlineStyle, width: outlineWidth,
+              top: bounds.top - outlineOffset - outlineWidth, bottom: bounds.bottom + outlineOffset + outlineWidth,
+              clipTop: region.top + borderTop, clipBottom: region.bottom - borderBottom,
             },
             documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
           };
@@ -4578,15 +4576,52 @@ test('contains group member, message, and rail lists across the required viewpor
         await owner.screenshot({path: testInfo.outputPath(`people-search-results-${theme}-${viewport.width}-keyboard-end.png`), fullPage: false});
         if (theme === 'light' && viewport.width === 390) {
           await lastResult.press('Enter');
-          await expect(owner.locator('.chat-header h2')).toHaveText('Member 9', {timeout: 10_000});
+          await expect(owner.locator('.chat-header h2')).toHaveText('Member 10', {timeout: 10_000});
           await owner.screenshot({path: testInfo.outputPath('people-search-result-keyboard-activation-light-390.png'), fullPage: false});
           await owner.getByRole('button', {name: 'Back to chats'}).click();
           await expect(peopleSearch).toBeVisible();
         }
       }
     }
-    await peopleSearch.fill('');
-    await expect(searchResults).toHaveCount(0);
+  } finally {
+    await ownerContext.close();
+  }
+});
+
+test('contains group member, message, and rail lists across the required viewports and themes', async ({browser}, testInfo) => {
+  // This flow provisions 12 accounts, then exercises multi-region scrolling,
+  // member actions, and screenshots across both themes and four viewports.
+  // The isolated Docker CI runner needs more time than the local browser.
+  test.setTimeout(600_000);
+  const ownerEmail = uniqueEmail('group-visual-owner');
+  const memberEmails = Array.from({length: 11}, (_, index) => uniqueEmail(`group-visual-member-${index}`));
+  const ownerContext = await browser.newContext({viewport: {width: 2560, height: 1440}});
+  const owner = await ownerContext.newPage();
+
+  try {
+    await register(owner, ownerEmail, 'Owner');
+    for (const [index, email] of memberEmails.entries()) {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await register(page, email, `Member ${index + 1}`);
+      await context.close();
+    }
+    await waitForLiveConnection(owner);
+    const ownerToken = await authenticatedToken(ownerContext, ownerEmail, 'group-visual-owner');
+    const memberIDs = await Promise.all(memberEmails.map(email => userID(ownerContext, ownerToken, email)));
+    const created = await ownerContext.request.post(`${chatBase}/api/chat/groups`, {
+      headers: {Authorization: `${ownerToken.token_type} ${ownerToken.access_token}`}, data: {name: 'Browser acceptance group renamed', member_ids: memberIDs},
+    });
+    expect(created.status()).toBe(201);
+    const groupID = (await created.json() as {id: string}).id;
+    const adminResponse = await ownerContext.request.patch(`${chatBase}/api/chat/groups/${groupID}/members/${memberIDs[0]}`, {
+      headers: {Authorization: `${ownerToken.token_type} ${ownerToken.access_token}`}, data: {role: 'admin'},
+    });
+    expect(adminResponse.status()).toBe(200);
+    const firstGroupMessage = `group-visual-message-${Date.now()}`;
+    await owner.reload();
+    await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'})).toBeVisible({timeout: 10_000});
+    await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
     await owner.setViewportSize({width: 2560, height: 1440});
     await setTheme(owner, 'dark');
     if (!(await owner.locator('.workspace.conversation-open').count())) await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
