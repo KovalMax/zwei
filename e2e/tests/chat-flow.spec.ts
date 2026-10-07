@@ -2744,23 +2744,30 @@ test('register, create conversation, and deliver a message', async ({ browser },
                if (options.audio !== true || options.systemAudio !== 'include' || options.windowAudio !== 'system') {
                  throw new Error('Screen-share request did not ask the browser to offer system audio');
                }
-               const canvas = document.createElement('canvas');
-               canvas.width = 3440;
-               canvas.height = 1440;
-              const context = canvas.getContext('2d');
-               if (context) {
-                 context.fillStyle = '#b84a3a';
-                 context.fillRect(0, 0, canvas.width, canvas.height);
-               }
-               const stream = canvas.captureStream(5);
+                const canvas = document.createElement('canvas');
+                canvas.width = 3440;
+                canvas.height = 1440;
+                const context = canvas.getContext('2d');
+                const drawTestCapture = (target: CanvasRenderingContext2D): void => {
+                  target.fillStyle = '#b84a3a';
+                  target.fillRect(0, 0, canvas.width, canvas.height);
+                  const markerSize = 120;
+                  target.fillStyle = '#19a974';
+                  target.fillRect(canvas.width - markerSize, 0, markerSize, markerSize);
+                  target.fillStyle = '#2878d0';
+                  target.fillRect(0, canvas.height - markerSize, markerSize, markerSize);
+                  target.fillStyle = '#e6c229';
+                  target.fillRect(canvas.width - markerSize, canvas.height - markerSize, markerSize, markerSize);
+                }
+                if (context) drawTestCapture(context);
+                const stream = canvas.captureStream(5);
                const audioContext = new AudioContext();
                const destination = audioContext.createMediaStreamDestination();
                const audioTrack = destination.stream.getAudioTracks()[0];
                if (audioTrack) stream.addTrack(audioTrack);
                const timer = window.setInterval(() => {
-                if (!context) return;
-                context.fillStyle = '#b84a3a';
-                context.fillRect(0, 0, canvas.width, canvas.height);
+               if (!context) return;
+                 drawTestCapture(context);
               }, 200);
               stream.getVideoTracks()[0]?.addEventListener('ended', () => window.clearInterval(timer));
               return stream;
@@ -2842,8 +2849,75 @@ test('register, create conversation, and deliver a message', async ({ browser },
         await alice.getByRole('button', {name: 'Expand shared screen'}).click();
         await expect(alice.getByRole('button', {name: 'Exit fullscreen'})).toBeVisible();
         expect(await alice.locator('.call-screen-stage').evaluate(element => document.fullscreenElement === element)).toBeTruthy();
+        const directFullscreenGeometry = await alice.locator('.call-screen-stage').evaluate(stage => {
+          const video = stage.querySelector<HTMLVideoElement>('.call-screen-main');
+          if (!video || !video.videoWidth || !video.videoHeight) return undefined;
+          const stageRect = stage.getBoundingClientRect();
+          const videoRect = video.getBoundingClientRect();
+          const scale = Math.min(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
+          const paintedWidth = video.videoWidth * scale;
+          const paintedHeight = video.videoHeight * scale;
+          const paintedRect = {
+            left: videoRect.left + (videoRect.width - paintedWidth) / 2,
+            right: videoRect.left + (videoRect.width + paintedWidth) / 2,
+            top: videoRect.top + (videoRect.height - paintedHeight) / 2,
+            bottom: videoRect.top + (videoRect.height + paintedHeight) / 2,
+          };
+          const ancestors = [];
+          for (let ancestor: HTMLElement | null = video.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            const style = getComputedStyle(ancestor);
+            ancestors.push({className: ancestor.className, overflowX: style.overflowX, overflowY: style.overflowY});
+            if (ancestor === stage) break;
+          }
+          return {
+            isFullscreen: document.fullscreenElement === stage,
+            stage: {left: stageRect.left, right: stageRect.right, top: stageRect.top, bottom: stageRect.bottom, width: stageRect.width, height: stageRect.height, scrollWidth: stage.scrollWidth, clientWidth: stage.clientWidth, scrollHeight: stage.scrollHeight, clientHeight: stage.clientHeight},
+            video: {left: videoRect.left, right: videoRect.right, top: videoRect.top, bottom: videoRect.bottom, width: videoRect.width, height: videoRect.height, videoWidth: video.videoWidth, videoHeight: video.videoHeight, objectFit: getComputedStyle(video).objectFit, objectPosition: getComputedStyle(video).objectPosition},
+            paintedRect,
+            ancestors,
+            document: {scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, scrollHeight: document.documentElement.scrollHeight, clientHeight: document.documentElement.clientHeight},
+          };
+        });
+        console.info(`DIRECT_FULLSCREEN_SCREEN_GEOMETRY ${JSON.stringify(directFullscreenGeometry)}`);
+        if (!directFullscreenGeometry) throw new Error('Fullscreen shared video geometry was unavailable');
+        expect(directFullscreenGeometry.isFullscreen).toBe(true);
+        expect(directFullscreenGeometry.video.objectFit).toBe('contain');
+        expect(directFullscreenGeometry.paintedRect.left).toBeGreaterThanOrEqual(directFullscreenGeometry.stage.left - 1);
+        expect(directFullscreenGeometry.paintedRect.right).toBeLessThanOrEqual(directFullscreenGeometry.stage.right + 1);
+        expect(directFullscreenGeometry.paintedRect.top).toBeGreaterThanOrEqual(directFullscreenGeometry.stage.top - 1);
+        expect(directFullscreenGeometry.paintedRect.bottom).toBeLessThanOrEqual(directFullscreenGeometry.stage.bottom + 1);
+        expect(directFullscreenGeometry.stage.scrollWidth).toBeLessThanOrEqual(directFullscreenGeometry.stage.clientWidth + 1);
+        expect(directFullscreenGeometry.stage.scrollHeight).toBeLessThanOrEqual(directFullscreenGeometry.stage.clientHeight + 1);
         await alice.screenshot({path: testInfo.outputPath('call-screen-share-fullscreen-dark.png'), fullPage: false});
         await alice.getByRole('button', {name: 'Exit fullscreen'}).click();
+        await bob.getByRole('button', {name: 'Expand shared screen'}).click();
+        await expect(bob.getByRole('button', {name: 'Exit fullscreen'})).toBeVisible();
+        const remoteFullscreenGeometry = await bob.locator('.call-screen-stage').evaluate(stage => {
+          const video = stage.querySelector<HTMLVideoElement>('.call-screen-remote');
+          if (!video || !video.videoWidth || !video.videoHeight) return undefined;
+          const stageRect = stage.getBoundingClientRect();
+          const videoRect = video.getBoundingClientRect();
+          const style = getComputedStyle(video);
+          const scale = Math.min(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
+          const paintedWidth = video.videoWidth * scale;
+          const paintedHeight = video.videoHeight * scale;
+          return {
+            isFullscreen: document.fullscreenElement === stage,
+            video: {objectFit: style.objectFit, videoWidth: video.videoWidth, videoHeight: video.videoHeight},
+            stage: {left: stageRect.left, right: stageRect.right, top: stageRect.top, bottom: stageRect.bottom, width: stageRect.width, height: stageRect.height},
+            paintedRect: {left: videoRect.left + (videoRect.width - paintedWidth) / 2, right: videoRect.left + (videoRect.width + paintedWidth) / 2, top: videoRect.top + (videoRect.height - paintedHeight) / 2, bottom: videoRect.top + (videoRect.height + paintedHeight) / 2},
+          };
+        });
+        console.info(`REMOTE_FULLSCREEN_SCREEN_GEOMETRY ${JSON.stringify(remoteFullscreenGeometry)}`);
+        if (!remoteFullscreenGeometry) throw new Error('Fullscreen remote screen geometry was unavailable');
+        expect(remoteFullscreenGeometry.isFullscreen).toBe(true);
+        expect(remoteFullscreenGeometry.video.objectFit).toBe('contain');
+        expect(remoteFullscreenGeometry.paintedRect.left).toBeGreaterThanOrEqual(remoteFullscreenGeometry.stage.left - 1);
+        expect(remoteFullscreenGeometry.paintedRect.right).toBeLessThanOrEqual(remoteFullscreenGeometry.stage.right + 1);
+        expect(remoteFullscreenGeometry.paintedRect.top).toBeGreaterThanOrEqual(remoteFullscreenGeometry.stage.top - 1);
+        expect(remoteFullscreenGeometry.paintedRect.bottom).toBeLessThanOrEqual(remoteFullscreenGeometry.stage.bottom + 1);
+        await bob.screenshot({path: testInfo.outputPath('call-screen-share-remote-fullscreen-dark.png'), fullPage: false});
+        await bob.getByRole('button', {name: 'Exit fullscreen'}).click();
         await alice.getByRole('button', {name: 'Stop sharing'}).click();
         await expect(alice.locator('.call-screen-stage')).not.toBeVisible();
         await expect(bob.locator('.call-screen-stage')).not.toBeVisible({timeout: 5_000});
