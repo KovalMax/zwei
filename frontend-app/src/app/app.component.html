@@ -1,5 +1,8 @@
 <div class="app-shell">
     <app-header></app-header>
+    <div *ngIf="pwa.offlineChanges | async" class="offline-banner" role="status" aria-live="polite">
+        You’re offline. Zwei will reconnect when your connection returns.
+    </div>
     <main class="app-content">
         <router-outlet></router-outlet>
     </main>

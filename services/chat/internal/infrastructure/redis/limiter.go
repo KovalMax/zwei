@@ -21,6 +21,9 @@ var policies = map[string]policy{
 	application.RateBucketConversationList:   {window: time.Minute, limit: 120},
 	application.RateBucketConversationCreate: {window: time.Minute, limit: 20},
 	application.RateBucketConversationGet:    {window: time.Minute, limit: 120},
+	application.RateBucketGroupList:          {window: time.Minute, limit: 120},
+	application.RateBucketGroupGet:           {window: time.Minute, limit: 120},
+	application.RateBucketGroupMutation:      {window: time.Minute, limit: 30},
 	application.RateBucketHistory:            {window: time.Minute, limit: 120},
 	application.RateBucketMessage:            {window: time.Minute, limit: 60},
 }
@@ -43,7 +46,11 @@ func (l *RequestLimiter) Allow(ctx context.Context, userID uuid.UUID, bucket str
 	if !ok {
 		return false, errors.New("unknown chat rate-limit bucket")
 	}
-	return l.allow(ctx, "zwei:rate:chat:"+bucket+":"+userID.String(), config.window, config.limit)
+	key := "zwei:rate:chat:" + bucket + ":" + userID.String()
+	if bucket == application.RateBucketMessage {
+		key = "zwei:rate:message:" + userID.String()
+	}
+	return l.allow(ctx, key, config.window, config.limit)
 }
 
 func (l *RequestLimiter) allow(ctx context.Context, key string, window time.Duration, limit int) (bool, error) {

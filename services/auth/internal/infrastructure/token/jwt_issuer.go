@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
@@ -22,6 +23,6 @@ func (i *JWTIssuer) IssueWebSocketTicket(identity sharedauth.Identity, lifetime 
 }
 func (i *JWTIssuer) issue(identity sharedauth.Identity, purpose string, lifetime time.Duration) (string, error) {
 	now := i.now()
-	claims := sharedauth.Claims{SessionVersion: identity.SessionVersion, DeviceID: identity.DeviceID, Purpose: purpose, RegisteredClaims: jwt.RegisteredClaims{Issuer: "p2p-webchat-auth", Subject: identity.UserID.String(), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(lifetime)), NotBefore: jwt.NewNumericDate(now)}}
+	claims := sharedauth.Claims{SessionVersion: identity.SessionVersion, DeviceID: identity.DeviceID, Purpose: purpose, RegisteredClaims: jwt.RegisteredClaims{Issuer: "p2p-webchat-auth", Subject: identity.UserID.String(), ID: uuid.NewString(), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(lifetime)), NotBefore: jwt.NewNumericDate(now)}}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(i.secret)
 }

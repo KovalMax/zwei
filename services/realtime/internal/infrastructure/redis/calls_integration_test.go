@@ -12,6 +12,16 @@ import (
 	"github.com/KovalMax/zwei/services/realtime/internal/application"
 )
 
+func startAdmittedCall(ctx context.Context, coordinator *PresenceCoordinator, call application.Call) (application.Call, error) {
+	userIDs := []uuid.UUID{call.CallerID, call.RecipientID}
+	token, err := coordinator.AcquireCallAdmission(ctx, userIDs)
+	if err != nil {
+		return application.Call{}, err
+	}
+	defer coordinator.ReleaseCallAdmission(ctx, userIDs, token)
+	return coordinator.Start(ctx, call, token)
+}
+
 func TestCallReservationIntegration(t *testing.T) {
 	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
 	if rawURL == "" {
@@ -48,7 +58,7 @@ func TestCallReservationIntegration(t *testing.T) {
 		t.Fatalf("connect recipient device: %v", err)
 	}
 
-	first, err := coordinator.Start(ctx, application.Call{
+	first, err := startAdmittedCall(ctx, coordinator, application.Call{
 		ID:                 firstCallID,
 		ConversationID:     conversationID,
 		CallerID:           callerID,
@@ -63,7 +73,7 @@ func TestCallReservationIntegration(t *testing.T) {
 		t.Fatalf("accept first call: %v", err)
 	}
 
-	if _, err := coordinator.Start(ctx, application.Call{
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{
 		ID:             secondCallID,
 		ConversationID: conversationID,
 		CallerID:       callerID,
@@ -87,7 +97,7 @@ func TestCallReservationIntegration(t *testing.T) {
 		t.Fatalf("reconnect recipient device: %v", err)
 	}
 
-	if _, err := coordinator.Start(ctx, application.Call{
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{
 		ID:                 secondCallID,
 		ConversationID:     conversationID,
 		CallerID:           callerID,
@@ -117,7 +127,7 @@ func TestCallReservationIntegration(t *testing.T) {
 		t.Fatalf("reconnect recipient device: %v", err)
 	}
 
-	if _, err := coordinator.Start(ctx, application.Call{
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{
 		ID:                 thirdCallID,
 		ConversationID:     conversationID,
 		CallerID:           callerID,
@@ -165,7 +175,7 @@ func TestRingingReservationRecoversAfterRecipientDisconnect(t *testing.T) {
 	if _, err := coordinator.Connect(ctx, recipientID, recipientConnection); err != nil {
 		t.Fatalf("connect recipient: %v", err)
 	}
-	if _, err := coordinator.Start(ctx, application.Call{ID: firstCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); err != nil {
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: firstCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); err != nil {
 		t.Fatalf("start ringing call: %v", err)
 	}
 	if _, err := coordinator.Disconnect(ctx, recipientID, recipientConnection); err != nil {
@@ -179,13 +189,13 @@ func TestRingingReservationRecoversAfterRecipientDisconnect(t *testing.T) {
 		t.Fatalf("ended calls = %#v, want call %s", ended, firstCallID)
 	}
 
-	if _, err := coordinator.Start(ctx, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); !errors.Is(err, application.ErrCallUnavailable) {
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); !errors.Is(err, application.ErrCallUnavailable) {
 		t.Fatalf("retry while recipient is offline: err=%v, want unavailable rather than busy", err)
 	}
 	if _, err := coordinator.Connect(ctx, recipientID, recipientConnection); err != nil {
 		t.Fatalf("reconnect recipient: %v", err)
 	}
-	if _, err := coordinator.Start(ctx, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); err != nil {
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); err != nil {
 		t.Fatalf("retry after stale ringing cleanup: %v", err)
 	}
 }

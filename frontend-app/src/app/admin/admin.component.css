@@ -22,4 +22,26 @@
 .action-block { background: #a43b32; color: #fff; }
 .action-expire { background: #d4a72c; color: #2d2412; }
 .action-button:disabled { cursor: not-allowed; opacity: .42; }
+.table-scroll-hint { margin: -4px 0 10px; color: var(--auth-muted); font-size: 12px; }
+.activation-feedback { margin: 0 0 12px; padding: 10px 12px; border: 1px solid #2f8f68; border-radius: 8px; background: #e9f6ef; color: #175c3c; font-size: 13px; }
+.activation-feedback.feedback-error { border-color: #a43b32; background: #fff0ee; color: #7d211b; }
+:host-context(.dark-theme) .activation-feedback { border-color: #4e9b78; background: #183b30; color: #d5f5e5; }
+:host-context(.dark-theme) .activation-feedback.feedback-error { border-color: #c76e65; background: #482b2c; color: #ffe2df; }
+.table-wrap { position: relative; }
+.table-wrap table { table-layout: fixed; }
+.table-wrap table th:first-child, .table-wrap table td:first-child { position: sticky; left: 0; z-index: 2; width: 230px; max-width: 230px; overflow-wrap: anywhere; background: var(--auth-card-surface); box-shadow: 3px 0 8px -7px currentColor; }
+.table-wrap table th:first-child { z-index: 4; }
+.table-wrap table th:last-child, .table-wrap table td:last-child { position: sticky; right: 0; z-index: 2; width: 150px; max-width: 150px; background: var(--auth-card-surface); box-shadow: -3px 0 8px -7px currentColor; }
+.table-wrap table th:last-child { z-index: 3; }
+.table-wrap:focus-visible { outline: 3px solid var(--auth-submit); outline-offset: 2px; }
+:host-context(.dark-theme) .table-scroll-hint { color: #aebdd0; }
+@media (max-width: 640px) { .table-wrap table th:first-child, .table-wrap table td:first-child { width: 135px; max-width: 135px; } .table-wrap table th:last-child, .table-wrap table td:last-child { width: 130px; max-width: 130px; } }
 @media (max-width: 640px) { .invitation-form { grid-template-columns: 1fr; } .invitation-form button { width: 100%; } }
+
+/* Sticky table layers must cover horizontally scrolling cells beneath them. */
+.table-wrap table th,
+.table-wrap table td:first-child,
+.table-wrap table td:last-child { background-color: #fff; }
+:host-context(.dark-theme) .table-wrap table th,
+:host-context(.dark-theme) .table-wrap table td:first-child,
+:host-context(.dark-theme) .table-wrap table td:last-child { background-color: #202c3b; }

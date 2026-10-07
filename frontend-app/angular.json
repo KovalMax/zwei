@@ -27,15 +27,28 @@
                         "aot": true,
                         "assets": [
                             "src/favicon.ico",
-                            "src/assets"
+                            "src/assets",
+                            "src/manifest.webmanifest"
                         ],
                         "styles": [
                             "./node_modules/@angular/material/prebuilt-themes/indigo-pink.css",
                             "src/styles.css"
                         ],
+                        "optimization": {
+                            "scripts": false,
+                            "styles": {
+                                "minify": false,
+                                "inlineCritical": false
+                            },
+                            "fonts": false
+                        },
                         "scripts": []
                     },
                     "configurations": {
+                        "development": {},
+                        "testing": {
+                            "polyfills": []
+                        },
                         "production": {
                             "fileReplacements": [
                                 {
@@ -43,11 +56,18 @@
                                     "with": "src/environments/environment.prod.ts"
                                 }
                             ],
-                            "optimization": true,
+                            "optimization": {
+                                "scripts": true,
+                                "styles": {
+                                    "minify": true,
+                                    "inlineCritical": false
+                                }
+                            },
                             "outputHashing": "all",
                             "sourceMap": false,
                             "namedChunks": false,
                             "extractLicenses": true,
+                            "serviceWorker": "ngsw-config.json",
                             "budgets": [
                                 {
                                     "type": "initial",
@@ -82,23 +102,18 @@
                     }
                 },
                 "test": {
-                    "builder": "@angular/build:karma",
+                    "builder": "@angular/build:unit-test",
                     "options": {
-                        "polyfills": [
-                            "src/polyfills.ts",
-                            "zone.js/testing"
-                        ],
+                        "buildTarget": "messenger:build:testing",
                         "tsConfig": "tsconfig.spec.json",
-                        "codeCoverage": true,
-                        "assets": [
-                            "src/favicon.ico",
-                            "src/assets"
+                        "setupFiles": [
+                            "src/test-setup.ts"
                         ],
-                        "styles": [
-                            "./node_modules/@angular/material/prebuilt-themes/indigo-pink.css",
-                            "src/styles.css"
+                        "browsers": [
+                            "chromium"
                         ],
-                        "scripts": []
+                        "headless": true,
+                        "coverage": true
                     }
                 }
             }

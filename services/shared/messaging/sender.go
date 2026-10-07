@@ -26,7 +26,7 @@ func NewSender(db *pgxpool.Pool, encryptionSecret string) *Sender {
 	return &Sender{db: db, key: key[:], now: time.Now}
 }
 
-// Send commits a message before returning it. Duplicate client IDs return the original message.
+// Send commits a message before returning it. Duplicate client IDs return the original message only within the same conversation.
 func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, error) {
 	request.ClientMessageID = strings.TrimSpace(request.ClientMessageID)
 	request.Body = strings.TrimSpace(request.Body)
@@ -39,9 +39,8 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	}
 	defer tx.Rollback(ctx)
 
-	var recipient uuid.UUID
 	var retention string
-	err = tx.QueryRow(ctx, `SELECT CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END, u.retention_period FROM conversations c JOIN conversation_members m ON m.conversation_id = c.id JOIN users u ON u.id = m.user_id WHERE c.id = $2 AND m.user_id = $1 FOR UPDATE OF c`, request.SenderID, request.ConversationID).Scan(&recipient, &retention)
+	err = tx.QueryRow(ctx, `SELECT u.retention_period FROM conversations c JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = $1 AND m.active JOIN users u ON u.id = $1 WHERE c.id = $2 FOR UPDATE OF c`, request.SenderID, request.ConversationID).Scan(&retention)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, false, ErrConversationNotFound
 	}
@@ -51,13 +50,29 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 
 	var result Message
 	var ciphertext, nonce []byte
-	err = tx.QueryRow(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at FROM messages WHERE sender_id = $1 AND client_message_id = $2`, request.SenderID, request.ClientMessageID).Scan(&result.ID, &result.ConversationID, &result.SenderID, &result.ClientMessageID, &result.Sequence, &ciphertext, &nonce, &result.CreatedAt)
+	var expiresAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, kind, expires_at FROM messages WHERE sender_id = $1 AND client_message_id = $2`, request.SenderID, request.ClientMessageID).Scan(&result.ID, &result.ConversationID, &result.SenderID, &result.ClientMessageID, &result.Sequence, &ciphertext, &nonce, &result.CreatedAt, &result.Kind, &expiresAt)
 	if err == nil {
+		if result.ConversationID != request.ConversationID {
+			return Message{}, false, ErrClientMessageIDConflict
+		}
+		if expiresAt != nil && !expiresAt.After(s.now()) {
+			return Message{}, false, ErrMessageExpired
+		}
 		result.Body, err = sharedmessage.Decrypt(s.key, ciphertext, nonce)
-		if err != nil || tx.Commit(ctx) != nil {
+		if err != nil {
 			return Message{}, false, ErrPersistence
 		}
-		result.RecipientID = recipient
+		result.RecipientIDs, err = s.recipientIDs(ctx, tx, request.SenderID, request.ConversationID)
+		if err != nil {
+			return Message{}, false, ErrPersistence
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return Message{}, false, ErrPersistence
+		}
+		if len(result.RecipientIDs) == 1 {
+			result.RecipientID = result.RecipientIDs[0]
+		}
 		return result, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -82,10 +97,14 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	if err = tx.QueryRow(ctx, `INSERT INTO messages (conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, encryption_key_version, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`, request.ConversationID, request.SenderID, request.ClientMessageID, result.Sequence, ciphertext, nonce, "v1", expires).Scan(&result.ID, &result.CreatedAt); err != nil {
 		return Message{}, false, ErrPersistence
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO message_delivery (message_id, device_id) SELECT $1, id FROM devices WHERE user_id = $2 AND revoked_at IS NULL`, result.ID, recipient); err != nil {
+	result.RecipientIDs, err = s.recipientIDs(ctx, tx, request.SenderID, request.ConversationID)
+	if err != nil {
 		return Message{}, false, ErrPersistence
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO user_read_cursors (user_id, conversation_id, last_read_sequence, unread_count) VALUES ($1, $2, 0, 1) ON CONFLICT (user_id, conversation_id) DO UPDATE SET unread_count = user_read_cursors.unread_count + 1, updated_at = now()`, recipient, request.ConversationID); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO message_delivery (message_id, device_id) SELECT $1, d.id FROM devices d JOIN conversation_members m ON m.user_id = d.user_id WHERE m.conversation_id = $2 AND m.active AND m.user_id <> $3 AND d.revoked_at IS NULL`, result.ID, request.ConversationID, request.SenderID); err != nil {
+		return Message{}, false, ErrPersistence
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO user_read_cursors (user_id, conversation_id, last_read_sequence, unread_count) SELECT m.user_id, $1, m.visible_from_sequence - 1, 1 FROM conversation_members m WHERE m.conversation_id = $1 AND m.active AND m.user_id <> $2 ON CONFLICT (user_id, conversation_id) DO UPDATE SET unread_count = user_read_cursors.unread_count + 1, updated_at = now()`, request.ConversationID, request.SenderID); err != nil {
 		return Message{}, false, ErrPersistence
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -95,6 +114,26 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	result.SenderID = request.SenderID
 	result.ClientMessageID = request.ClientMessageID
 	result.Body = request.Body
-	result.RecipientID = recipient
+	result.Kind = "user"
+	if len(result.RecipientIDs) == 1 {
+		result.RecipientID = result.RecipientIDs[0]
+	}
 	return result, true, nil
+}
+
+func (s *Sender) recipientIDs(ctx context.Context, tx pgx.Tx, senderID, conversationID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `SELECT user_id FROM conversation_members WHERE conversation_id = $1 AND active AND user_id <> $2`, conversationID, senderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var recipients []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		recipients = append(recipients, id)
+	}
+	return recipients, rows.Err()
 }

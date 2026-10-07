@@ -24,14 +24,14 @@ func NewHistoryRepository(db *pgxpool.Pool, encryptionSecret string) *HistoryRep
 }
 
 func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uuid.UUID, before int64, limit int) ([]conversation.Message, string, error) {
-	query := `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at FROM (SELECT conversation_id FROM conversation_members WHERE conversation_id = $2 AND user_id = $1) member CROSS JOIN LATERAL (SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, expires_at FROM messages WHERE conversation_id = member.conversation_id`
+	query := `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at, m.kind FROM (SELECT conversation_id, visible_from_sequence FROM conversation_members WHERE conversation_id = $2 AND user_id = $1 AND active) member CROSS JOIN LATERAL (SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, kind, expires_at FROM messages WHERE conversation_id = member.conversation_id AND sequence >= member.visible_from_sequence`
 	args := []any{userID, conversationID}
 	if before > 0 {
 		query += ` AND sequence < $3`
 		args = append(args, before)
 	}
 	limitArgument := len(args) + 1
-	query += ` AND (expires_at IS NULL OR expires_at > now()) ORDER BY sequence DESC LIMIT $` + strconv.Itoa(limitArgument) + `) m`
+	query += ` AND (expires_at IS NULL OR expires_at > now()) ORDER BY sequence DESC LIMIT $` + strconv.Itoa(limitArgument) + `) m ORDER BY m.sequence DESC`
 	args = append(args, limit+1)
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
@@ -42,7 +42,7 @@ func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uui
 	for rows.Next() {
 		var message conversation.Message
 		var ciphertext, nonce []byte
-		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMessageID, &message.Sequence, &ciphertext, &nonce, &message.CreatedAt); err != nil {
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMessageID, &message.Sequence, &ciphertext, &nonce, &message.CreatedAt, &message.Kind); err != nil {
 			return nil, "", err
 		}
 		body, err := sharedmessage.Decrypt(r.key, ciphertext, nonce)
@@ -58,7 +58,7 @@ func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uui
 	rows.Close()
 	if len(messages) == 0 {
 		var member bool
-		if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2)`, conversationID, userID).Scan(&member); err != nil {
+		if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2 AND active)`, conversationID, userID).Scan(&member); err != nil {
 			return nil, "", err
 		}
 		if !member {

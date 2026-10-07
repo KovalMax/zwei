@@ -21,7 +21,9 @@ services:
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ${KYC_BASIC_AUTH_FILE:?KYC_BASIC_AUTH_FILE is required}:/run/secrets/kyc.htpasswd:ro
       - traefik-acme:/acme
-    networks: [edge]
+    networks:
+      edge:
+        ipv4_address: 172.31.0.250
     restart: unless-stopped
 
   coturn:
@@ -72,6 +74,7 @@ services:
       ACTIVATION_URL: ${ACTIVATION_URL:-https://chat.false.tel/activate}
       INVITATION_URL: ${INVITATION_URL:-https://chat.false.tel/sign-up}
       ADMIN_ALLOWED_IPS: ${ADMIN_ALLOWED_IPS:?ADMIN_ALLOWED_IPS is required}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:?TRUSTED_PROXY_CIDRS is required}
     depends_on:
       database:
         condition: service_healthy
@@ -170,6 +173,9 @@ services:
 
 networks:
   edge:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
   backend:
     internal: true
   turn:

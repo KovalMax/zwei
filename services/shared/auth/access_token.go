@@ -31,12 +31,27 @@ func ParseBearerHeader(authorization string, secret []byte) (Identity, error) {
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return Identity{}, errors.New("missing bearer token")
 	}
-	return Parse(parts[1], secret)
+	claims, err := parseClaims(parts[1], secret)
+	if err != nil {
+		return Identity{}, err
+	}
+	if claims.Purpose != "" {
+		return Identity{}, errors.New("invalid token purpose")
+	}
+	return identityFromClaims(claims)
 }
 
 func Parse(rawToken string, secret []byte) (Identity, error) {
+	claims, err := parseClaims(rawToken, secret)
+	if err != nil {
+		return Identity{}, err
+	}
+	return identityFromClaims(claims)
+}
+
+func parseClaims(rawToken string, secret []byte) (*Claims, error) {
 	if len(secret) < 32 {
-		return Identity{}, errors.New("token secret is too short")
+		return nil, errors.New("token secret is too short")
 	}
 	parsed, err := jwt.ParseWithClaims(rawToken, &Claims{}, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodHS256 {
@@ -45,12 +60,16 @@ func Parse(rawToken string, secret []byte) (Identity, error) {
 		return secret, nil
 	})
 	if err != nil || !parsed.Valid {
-		return Identity{}, errors.New("invalid token")
+		return nil, errors.New("invalid token")
 	}
 	claims, ok := parsed.Claims.(*Claims)
 	if !ok {
-		return Identity{}, errors.New("invalid claims")
+		return nil, errors.New("invalid claims")
 	}
+	return claims, nil
+}
+
+func identityFromClaims(claims *Claims) (Identity, error) {
 	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
 		return Identity{}, errors.New("invalid subject")
@@ -59,18 +78,12 @@ func Parse(rawToken string, secret []byte) (Identity, error) {
 }
 
 func ParseWebSocketTicket(rawToken string, secret []byte) (Identity, error) {
-	identity, err := Parse(rawToken, secret)
+	claims, err := parseClaims(rawToken, secret)
 	if err != nil {
 		return Identity{}, err
 	}
-	parsed, err := jwt.ParseWithClaims(rawToken, &Claims{}, func(token *jwt.Token) (any, error) {
-		if token.Method != jwt.SigningMethodHS256 {
-			return nil, errors.New("unexpected signing method")
-		}
-		return secret, nil
-	})
-	if err != nil || !parsed.Valid || parsed.Claims.(*Claims).Purpose != "websocket" {
+	if claims.Purpose != "websocket" {
 		return Identity{}, errors.New("invalid websocket ticket")
 	}
-	return identity, nil
+	return identityFromClaims(claims)
 }

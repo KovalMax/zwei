@@ -8,12 +8,14 @@ import (
 
 // Message is the transport-neutral result of an accepted message submission.
 type Message struct {
-	ID              uuid.UUID `json:"id"`
-	ConversationID  uuid.UUID `json:"conversation_id"`
-	SenderID        uuid.UUID `json:"sender_id"`
-	ClientMessageID string    `json:"client_message_id"`
-	Sequence        int64     `json:"sequence"`
-	Body            string    `json:"body"`
-	CreatedAt       time.Time `json:"created_at"`
-	RecipientID     uuid.UUID `json:"-"`
+	ID              uuid.UUID   `json:"id"`
+	ConversationID  uuid.UUID   `json:"conversation_id"`
+	SenderID        uuid.UUID   `json:"sender_id"`
+	ClientMessageID string      `json:"client_message_id"`
+	Sequence        int64       `json:"sequence"`
+	Body            string      `json:"body"`
+	CreatedAt       time.Time   `json:"created_at"`
+	Kind            string      `json:"kind"`
+	RecipientID     uuid.UUID   `json:"-"`
+	RecipientIDs    []uuid.UUID `json:"-"`
 }

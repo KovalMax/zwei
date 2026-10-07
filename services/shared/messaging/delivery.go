@@ -23,7 +23,11 @@ func NewDeliveryRepository(db *pgxpool.Pool, encryptionSecret string) *DeliveryR
 }
 
 func (r *DeliveryRepository) Pending(ctx context.Context, deviceID uuid.UUID, limit int) ([]Message, error) {
-	rows, err := r.db.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at FROM message_delivery d JOIN devices device ON device.id = d.device_id JOIN messages m ON m.id = d.message_id WHERE d.device_id = $1 AND d.delivered_at IS NULL AND device.revoked_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > now()) ORDER BY m.created_at, m.id LIMIT $2`, deviceID, limit)
+	// Delivery rows are created at send time, but group membership and history
+	// visibility can change before a device reconnects. Re-check the current
+	// authoritative membership here so an old pending row cannot disclose a
+	// message to a removed member (or one from before a later rejoin).
+	rows, err := r.db.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at, m.kind FROM message_delivery d JOIN devices device ON device.id = d.device_id JOIN messages m ON m.id = d.message_id JOIN conversation_members member ON member.conversation_id = m.conversation_id AND member.user_id = device.user_id AND member.active AND m.sequence >= member.visible_from_sequence WHERE d.device_id = $1 AND d.delivered_at IS NULL AND device.revoked_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > now()) ORDER BY m.created_at, m.id LIMIT $2`, deviceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +37,7 @@ func (r *DeliveryRepository) Pending(ctx context.Context, deviceID uuid.UUID, li
 	for rows.Next() {
 		var message Message
 		var ciphertext, nonce []byte
-		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMessageID, &message.Sequence, &ciphertext, &nonce, &message.CreatedAt); err != nil {
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMessageID, &message.Sequence, &ciphertext, &nonce, &message.CreatedAt, &message.Kind); err != nil {
 			return nil, err
 		}
 		body, err := sharedmessage.Decrypt(r.key, ciphertext, nonce)

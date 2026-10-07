@@ -1,14 +1,16 @@
-import {ChangeDetectorRef} from '@angular/core';
-import {MatSnackBar} from '@angular/material/snack-bar';
-import {of, throwError} from 'rxjs';
+import type {MockedObject} from 'vitest';
+import { ChangeDetectorRef } from '@angular/core';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { of, throwError } from 'rxjs';
 
-import {AdminService, AdminUser} from '../auth/admin.service';
-import {AdminComponent} from './admin.component';
+import { AdminService, AdminUser } from '../auth/admin.service';
+import { AdminComponent } from './admin.component';
+import {AdminModule} from './admin.module';
 
 describe('AdminComponent', () => {
-    let admins: jasmine.SpyObj<AdminService>;
-    let snack: jasmine.SpyObj<MatSnackBar>;
-    let changeDetector: jasmine.SpyObj<ChangeDetectorRef>;
+    let admins: Pick<MockedObject<AdminService>, 'resendActivationLink' | 'users' | 'invitations'>;
+    let snack: Pick<MockedObject<MatSnackBar>, 'open'>;
+    let changeDetector: Pick<MockedObject<ChangeDetectorRef>, 'markForCheck'>;
     let component: AdminComponent;
     const user: AdminUser = {
         id: 'user-1',
@@ -20,33 +22,46 @@ describe('AdminComponent', () => {
     };
 
     beforeEach(() => {
-        admins = jasmine.createSpyObj<AdminService>('AdminService', ['resendActivationLink', 'users', 'invitations']);
-        snack = jasmine.createSpyObj<MatSnackBar>('MatSnackBar', ['open']);
-        changeDetector = jasmine.createSpyObj<ChangeDetectorRef>('ChangeDetectorRef', ['markForCheck']);
-        admins.users.and.returnValue(of([]));
-        admins.invitations.and.returnValue(of([]));
-        component = new AdminComponent(admins, snack, changeDetector);
+        void AdminModule;
+        admins = {
+            resendActivationLink: vi.fn().mockName("AdminService.resendActivationLink"),
+            users: vi.fn().mockName("AdminService.users"),
+            invitations: vi.fn().mockName("AdminService.invitations")
+        };
+        snack = {
+            open: vi.fn().mockName("MatSnackBar.open")
+        };
+        changeDetector = {
+            markForCheck: vi.fn().mockName("ChangeDetectorRef.markForCheck")
+        };
+        admins.users.mockReturnValue(of([]));
+        admins.invitations.mockReturnValue(of([]));
+        component = new AdminComponent(admins as unknown as AdminService, snack as unknown as MatSnackBar, changeDetector as unknown as ChangeDetectorRef);
     });
 
     it('resends an activation link and refreshes the account list', () => {
-        admins.resendActivationLink.and.returnValue(of(void 0));
+        admins.resendActivationLink.mockReturnValue(of(void 0));
 
         component.resendActivation(user);
 
-        expect(admins.resendActivationLink).toHaveBeenCalledOnceWith('user-1');
+        expect(admins.resendActivationLink).toHaveBeenCalledTimes(1);
+
+        expect(admins.resendActivationLink).toHaveBeenCalledWith('user-1');
         expect(admins.users).toHaveBeenCalled();
         expect(admins.invitations).toHaveBeenCalled();
-        expect(snack.open).toHaveBeenCalledWith('Activation link sent.', 'Close', {duration: 5000});
-        expect(component.isResendingActivation(user)).toBeFalse();
+        expect(component.activationFeedback).toEqual({message: 'Activation link sent.', kind: 'success'});
+        expect(snack.open).not.toHaveBeenCalled();
+        expect(component.isResendingActivation(user)).toBe(false);
     });
 
     it('reports a resend failure without refreshing the account list', () => {
-        admins.resendActivationLink.and.returnValue(throwError(() => new Error('mail unavailable')));
+        admins.resendActivationLink.mockReturnValue(throwError(() => new Error('mail unavailable')));
 
         component.resendActivation(user);
 
-        expect(snack.open).toHaveBeenCalledWith('Could not resend the activation link.', 'Close', {duration: 10000});
+        expect(component.activationFeedback).toEqual({message: 'Could not resend the activation link.', kind: 'error'});
+        expect(snack.open).not.toHaveBeenCalled();
         expect(admins.users).not.toHaveBeenCalled();
-        expect(component.isResendingActivation(user)).toBeFalse();
+        expect(component.isResendingActivation(user)).toBe(false);
     });
 });

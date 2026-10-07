@@ -1,0 +1,44 @@
+<ng-container *ngIf="state as callState">
+    <audio autoplay playsinline [srcObject]="callState.remoteStream" (loadedmetadata)="emit({type: 'remote-audio-ready', event: $event})" (canplay)="emit({type: 'remote-audio-ready', event: $event})"></audio>
+    <div class="call-card" [class.call-card-incoming]="callState.phase === 'incoming'">
+        <app-call-profile *ngIf="profile as directProfile" [profile]="directProfile" [collapsible]="isOngoing(callState)" (collapse)="emit({type: 'collapse'})"></app-call-profile>
+        <div class="call-card-content">
+            <div class="call-sharing-indicator" *ngIf="callState.screenShareStream || callState.remoteScreenStream" role="status" aria-live="polite">
+                <span class="call-sharing-dot" aria-hidden="true"></span>
+                <span class="call-sharing-copy">
+                    <strong *ngIf="callState.screenShareStream && callState.remoteScreenStream">You and {{ displayName }} are sharing screens</strong>
+                    <strong *ngIf="callState.screenShareStream && !callState.remoteScreenStream">Your screen is being shared with {{ displayName }}</strong>
+                    <strong *ngIf="!callState.screenShareStream && callState.remoteScreenStream">{{ displayName }} is sharing their screen with you</strong>
+                    <small>Live now</small>
+                </span>
+                <span class="call-sharing-live">LIVE</span>
+            </div>
+            <section #screenStage class="call-screen-stage" *ngIf="callState.screenShareStream || callState.remoteScreenStream" aria-label="Shared screen">
+                <div class="call-screen-toolbar">
+                    <span>Shared screen</span>
+                    <button mat-icon-button type="button" [attr.aria-label]="screenShareFullscreen ? 'Exit fullscreen' : 'Expand shared screen'" [title]="screenShareFullscreen ? 'Exit fullscreen' : 'Expand shared screen'" (click)="toggleScreenShareFullscreen()">
+                        <zwei-icon [name]="screenShareFullscreen ? 'fullscreen_exit' : 'fullscreen'"></zwei-icon>
+                    </button>
+                </div>
+                <video class="call-screen-main call-screen-remote" *ngIf="callState.remoteScreenStream; else localScreen" autoplay [muted]="true" playsinline [attr.aria-label]="'Screen shared by ' + displayName" [srcObject]="callState.remoteScreenStream" (loadedmetadata)="emit({type: 'remote-screen-ready', event: $event})" (canplay)="emit({type: 'remote-screen-ready', event: $event})"></video>
+                <ng-template #localScreen>
+                    <video class="call-screen-main" autoplay [muted]="true" playsinline aria-label="Your shared screen" [srcObject]="callState.screenShareStream"></video>
+                </ng-template>
+                <video class="call-screen-preview" *ngIf="callState.screenShareStream && callState.remoteScreenStream" autoplay muted playsinline aria-label="Your shared screen preview" [srcObject]="callState.screenShareStream"></video>
+            </section>
+            <app-call-device-controls class="call-devices" *ngIf="isOngoing(callState)" [controls]="controls" [panelClass]="panelClass" [qualityPickerEnabled]="true" [showShareAudioOption]="callState.phase === 'active'" [shareAudioChecked]="callState.screenShareAudioEnabled" [shareAudioDisabled]="!screenShareSupported || callState.screenShareTransition || !!callState.screenShareStream" [shareAudioTooltip]="shareAudioTooltip(callState)" (controlChange)="emit({type: 'control-change', change: $event})" (shareAudioChange)="emit({type: 'screen-share-audio-change', enabled: $event})"></app-call-device-controls>
+            <p class="call-device-note" *ngIf="isOngoing(callState) && !outputSelectionSupported">Speaker selection is unavailable in this browser; use the system audio output.</p>
+        </div>
+        <div class="call-actions">
+            <button mat-flat-button color="primary" type="button" *ngIf="callState.phase === 'incoming'" (click)="emit({type: 'accept'})">Accept</button>
+            <button mat-stroked-button type="button" *ngIf="callState.phase === 'incoming'" (click)="emit({type: 'decline'})">Decline</button>
+            <button mat-stroked-button type="button" *ngIf="callState.phase === 'outgoing' || callState.phase === 'requesting'" (click)="emit({type: 'cancel'})">Cancel</button>
+            <button mat-stroked-button type="button" *ngIf="callState.audioPlaybackBlocked" (click)="emit({type: 'enable-sound'})">Enable sound</button>
+            <div class="direct-call-control-row" *ngIf="isOngoing(callState)" role="group" aria-label="Call controls">
+                <app-call-icon-actions [appearance]="'round'" [actions]="actions | slice:0:1" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+                <button class="direct-call-end-button" mat-icon-button type="button" aria-label="End call" title="End call" (click)="emit({type: 'end'})"><zwei-icon name="call_end"></zwei-icon></button>
+                <app-call-icon-actions [appearance]="'round'" [actions]="actions | slice:1" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+            </div>
+        </div>
+    </div>
+</ng-container>

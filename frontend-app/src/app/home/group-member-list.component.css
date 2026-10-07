@@ -1,0 +1,23 @@
+:host { display: block; min-width: 0; }
+.group-members { display: grid; box-sizing: border-box; max-height: 336px; gap: 14.5px; margin: 0; padding: 0 4px 14px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
+.group-members li { display: flex; box-sizing: border-box; height: auto; min-height: 0; flex-shrink: 0; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px; border: 1px solid var(--chat-call-control-border); border-radius: var(--zwei-radius-control); background: var(--chat-surface-raised); }
+.group-members li:has(.member-action-button) { min-height: 56px; }
+.group-members li:not(:has(.member-action-button)) { min-height: 50px; }
+.member-identity { display: grid; min-width: 0; flex: 1 1 auto; align-content: center; gap: 2px; overflow-wrap: anywhere; }
+.member-identity strong { display: block; line-height: 1.2; }
+.member-identity small { display: block; color: #aebdce; }
+:host-context(.light-theme) .member-identity strong { color: #172033; }
+:host-context(.light-theme) .member-identity small { color: #4c6077; }
+:host-context(.light-theme) .group-members li { border-color: #6d89a7; background-color: #f6f8fc; color: #172033; }
+.member-actions { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 4px; margin: 0; }
+.member-action-button { display: inline-flex; width: 44px; min-width: 44px; height: 44px; min-height: 44px; box-sizing: border-box; flex: 0 0 44px; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--chat-line-strong); border-radius: 50%; background: var(--chat-surface-control); color: var(--chat-text); cursor: pointer; }
+.member-action-button:hover:not(:disabled) { border-color: var(--zwei-focus); background: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface-control)); }
+.member-action-button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.member-action-button:disabled { cursor: not-allowed; opacity: .6; }
+.member-action-button zwei-icon { width: 20px; height: 20px; flex-basis: 20px; }
+@media (prefers-reduced-motion: reduce) { .member-action-button { scroll-behavior: auto; transition: none; animation: none; } }
+@media (max-width: 760px) {
+    .group-members { max-height: 252px; margin: 10px 0; }
+    .group-members { row-gap: 18px; }
+    .group-members li:not(:has(.member-action-button)) .member-identity { width: fit-content; max-width: 100%; flex: 0 1 auto; }
+}

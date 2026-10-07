@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/KovalMax/zwei/services/chat/internal/application"
 	redisinfra "github.com/KovalMax/zwei/services/chat/internal/infrastructure/redis"
 	"github.com/KovalMax/zwei/services/chat/internal/persistence/postgres"
 	httptransport "github.com/KovalMax/zwei/services/chat/internal/transport/http"
@@ -38,7 +39,8 @@ func main() {
 	if err := limiter.Ping(ctx); err != nil {
 		panic(err)
 	}
-	handler := httptransport.NewHandler(messaging.NewSender(db, encryptionSecret), sharedauth.NewSessionValidator(db, []byte(secret)), postgres.NewConversationRepository(db), postgres.NewHistoryRepository(db, encryptionSecret), limiter)
+	conversations := postgres.NewConversationRepository(db, encryptionSecret)
+	handler := httptransport.NewHandler(messaging.NewSender(db, encryptionSecret), sharedauth.NewSessionValidator(db, []byte(secret)), conversations, postgres.NewHistoryRepository(db, encryptionSecret), application.NewGroups(conversations), limiter)
 	mux := runtime.NewHealthHandler("chat")
 	handler.Register(mux)
 	origins, err := runtime.ParseOrigins(getenv("ALLOWED_ORIGINS", "https://chat.localhost"))

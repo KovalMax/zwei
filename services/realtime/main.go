@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/KovalMax/zwei/services/internal/runtime"
@@ -55,7 +56,8 @@ func main() {
 		panic(err)
 	}
 	presence := postgresinfra.NewPresenceRepository(db)
-	hub := application.NewHubWithLogger(messaging.NewSender(db, encryptionSecret), presence, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db), coordination, turnIssuer, runtime.NewLogger())
+	groupCall := postgresinfra.NewGroupCallRepository(db)
+	hub := application.NewHubWithGroupCallAuthorizer(messaging.NewSender(db, encryptionSecret), presence, groupCall, coordination, messaging.NewDeliveryRepository(db, encryptionSecret), postgresinfra.NewReadCursorRepository(db), postgresinfra.NewReconciliationRepository(db, encryptionSecret), coordination, turnIssuer, runtime.NewLogger())
 	go coordination.StartHeartbeat(ctx)
 	go func() {
 		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
@@ -67,22 +69,22 @@ func main() {
 	go func() {
 		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
 			return coordination.ConsumeConversations(subscriptionContext, func(change redisinfra.ConversationChange) {
-				hub.DeliverConversationCreated(change.ConversationID, change.UserIDs)
+				if change.MembershipRevision > 0 {
+					hub.DeliverGroupProjection(subscriptionContext, change.ConversationID, change.MembershipRevision, change.Deleted, change.UserIDs)
+					return
+				}
+				_ = hub.DeliverConversationCreated(subscriptionContext, change.ConversationID, change.UserIDs)
 			})
 		})
 	}()
 	go func() {
 		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
 			return coordination.ConsumeTyping(subscriptionContext, func(change redisinfra.TypingChange) {
-				recipientID, err := presence.RecipientID(subscriptionContext, change.UserID, change.ConversationID)
-				if err != nil {
-					return
-				}
 				eventType := "typing.stopped"
 				if change.Started {
 					eventType = "typing.started"
 				}
-				hub.DeliverTyping(eventType, change.ConversationID, change.UserID, recipientID)
+				_ = hub.DeliverTypingToConversation(subscriptionContext, eventType, change.ConversationID, change.UserID)
 			})
 		})
 	}()
@@ -94,13 +96,21 @@ func main() {
 	go func() {
 		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
 			return coordination.ConsumeReads(subscriptionContext, func(change redisinfra.ReadChange) {
-				hub.DeliverReadCursor(change.ReaderID, change.RecipientID, change.ConversationID, change.Sequence)
+				if len(change.RecipientIDs) == 0 && change.RecipientID != uuid.Nil {
+					change.RecipientIDs = []uuid.UUID{change.RecipientID}
+				}
+				hub.DeliverReadCursor(change.ReaderID, change.RecipientIDs, change.ConversationID, change.Sequence, change.VisibleFromSequence)
 			})
 		})
 	}()
 	go func() {
 		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
 			return coordination.ConsumeCalls(subscriptionContext, hub.DeliverCall)
+		})
+	}()
+	go func() {
+		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
+			return coordination.ConsumeGroupRooms(subscriptionContext, hub.DeliverGroupRoom)
 		})
 	}()
 	go func() {
@@ -112,12 +122,17 @@ func main() {
 				return
 			case <-ticker.C:
 				calls, err := coordination.ExpireCalls(ctx)
-				if err != nil {
-					continue
+				if err == nil {
+					for _, call := range calls {
+						hub.DeliverCall(application.CallChange{Type: "ended", Call: call})
+						_ = coordination.PublishCall(ctx, application.CallChange{Type: "ended", Call: call})
+					}
 				}
-				for _, call := range calls {
-					hub.DeliverCall(application.CallChange{Type: "ended", Call: call})
-					_ = coordination.PublishCall(ctx, application.CallChange{Type: "ended", Call: call})
+				// This service-owned loop claims logical group-room expiries and
+				// stops with the process context. Redis TTL retains only a short
+				// terminal snapshot; it cannot itself notify the room participants.
+				if rooms, err := coordination.ExpireGroupRooms(ctx, 100); err == nil {
+					hub.NotifyExpiredGroupRooms(ctx, rooms)
 				}
 			}
 		}
@@ -127,6 +142,7 @@ func main() {
 	handler := websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins)
 	mux := runtime.NewHealthHandler("realtime")
 	mux.Handle("GET /ws", handler)
+	mux.Handle("GET /ws/v2", websockettransport.NewVersionedHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins, 2))
 	server := &http.Server{
 		Addr:    ":" + getenv("REALTIME_PORT", "8083"),
 		Handler: mux,
@@ -137,7 +153,25 @@ func main() {
 	}
 }
 
-func consumeConversationEvents(ctx context.Context, outbox *postgresinfra.OutboxRepository, hub *application.Hub) {
+type conversationEventOutbox interface {
+	ClaimConversationCreated(context.Context, int) ([]postgresinfra.ConversationCreatedEvent, error)
+	MarkProcessed(context.Context, postgresinfra.ConversationCreatedEvent) error
+	Release(context.Context, postgresinfra.ConversationCreatedEvent) error
+}
+
+type conversationEventNotifier interface {
+	NotifyConversationCreated(context.Context, uuid.UUID, []uuid.UUID) error
+	NotifyGroupProjection(context.Context, uuid.UUID, int64, bool, []uuid.UUID) error
+}
+
+const (
+	conversationOutboxBatchSize      = 100
+	conversationOutboxClaimTimeout   = 5 * time.Second
+	conversationOutboxEventTimeout   = 10 * time.Second
+	conversationOutboxReleaseTimeout = 2 * time.Second
+)
+
+func consumeConversationEvents(ctx context.Context, outbox conversationEventOutbox, hub conversationEventNotifier) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -145,15 +179,48 @@ func consumeConversationEvents(ctx context.Context, outbox *postgresinfra.Outbox
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			events, err := outbox.ClaimConversationCreated(ctx, 100)
-			if err != nil {
-				continue
-			}
-			for _, event := range events {
-				hub.NotifyConversationCreated(event.ConversationID, event.UserIDs)
+			processConversationEvents(ctx, outbox, hub)
+		}
+	}
+}
+
+func processConversationEvents(ctx context.Context, outbox conversationEventOutbox, hub conversationEventNotifier) {
+	claimCtx, cancelClaim := context.WithTimeout(ctx, conversationOutboxClaimTimeout)
+	events, err := outbox.ClaimConversationCreated(claimCtx, conversationOutboxBatchSize)
+	cancelClaim()
+	if err != nil {
+		return
+	}
+	for _, event := range events {
+		if ctx.Err() != nil {
+			_ = releaseConversationEvent(ctx, outbox, event)
+			return
+		}
+		eventCtx, cancelEvent := context.WithTimeout(ctx, conversationOutboxEventTimeout)
+		if event.EventType == "group.membership.changed" {
+			err = hub.NotifyGroupProjection(eventCtx, event.ConversationID, event.MembershipRevision, event.Deleted, event.UserIDs)
+		} else {
+			err = hub.NotifyConversationCreated(eventCtx, event.ConversationID, event.UserIDs)
+		}
+		if err == nil {
+			err = outbox.MarkProcessed(eventCtx, event)
+		}
+		cancelEvent()
+		if err != nil {
+			_ = releaseConversationEvent(ctx, outbox, event)
+			if ctx.Err() != nil {
+				return
 			}
 		}
 	}
+}
+
+func releaseConversationEvent(ctx context.Context, outbox conversationEventOutbox, event postgresinfra.ConversationCreatedEvent) error {
+	// Cleanup gets a small bounded grace period even when service shutdown has
+	// canceled the processing context, so the durable claim is promptly reusable.
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), conversationOutboxReleaseTimeout)
+	defer cancel()
+	return outbox.Release(releaseCtx, event)
 }
 
 func superviseRedisSubscription(ctx context.Context, consume func(context.Context) error) {

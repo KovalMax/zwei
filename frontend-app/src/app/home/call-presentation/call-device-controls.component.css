@@ -1,0 +1,39 @@
+:host { display: grid; gap: 16px; min-width: 0; }
+.call-presentation-devices { display: grid; box-sizing: border-box; width: 100%; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding-inline: 5px; }
+.call-presentation-devices-with-audio { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; }
+.call-presentation-devices .call-control { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--chat-call-text); font-size: 12px; font-weight: 700; }
+.call-presentation-devices-with-audio .call-quality-control { grid-column: 1 / -1; }
+.call-presentation-devices-with-audio .call-quality-control > span { display: block; margin-bottom: 4px; }
+.call-quality-audio-row { display: block; min-width: 0; }
+.call-quality-audio-row-feature { display: grid; box-sizing: border-box; min-width: 0; grid-template-columns: minmax(0, 1fr) max-content; gap: 8px; align-items: center; }
+.call-quality-audio-row .call-quality-trigger { min-width: 0; }
+.call-quality-audio-row-feature .share-audio-toggle { grid-column: 2; grid-row: 1; min-width: 118px; }
+.share-audio-unavailable-reason { grid-column: 1 / -1; max-width: 52ch; color: var(--chat-call-text); font-size: 12px; font-weight: 500; line-height: 1.4; }
+.call-presentation-devices label { box-sizing: border-box; width: 100%; min-width: 0; }
+.call-presentation-devices .call-select { width: 100%; min-width: 0; }
+.call-presentation-devices label.call-quality-control { width: 100%; }
+.call-presentation-devices .call-select { box-sizing: border-box; height: 48px; min-height: 48px; border: 1px solid var(--chat-call-control-border); border-radius: 12px; background: var(--chat-surface-control); color: var(--chat-call-control-text); }
+.call-quality-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; text-align: left; cursor: pointer; }
+.call-quality-trigger[disabled] { cursor: not-allowed; opacity: .6; }
+.call-quality-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-quality-arrow { width: 0; height: 0; flex: 0 0 auto; border-top: 5px solid currentColor; border-right: 4px solid transparent; border-left: 4px solid transparent; }
+.call-quality-trigger:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.share-audio-toggle { display: flex; min-width: 118px; height: 48px; box-sizing: border-box; align-items: center; justify-content: center; gap: 8px; padding: 0 10px; border: 1px solid var(--chat-call-control-border); border-radius: 12px; background: var(--chat-surface-control); color: var(--chat-call-control-text); cursor: pointer; }
+.share-audio-toggle input { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; accent-color: var(--chat-accent); cursor: inherit; }
+.share-audio-label { color: inherit; font-size: 12px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.call-presentation-devices .share-audio-toggle:has(input:checked) { border-color: #73c99b; background: color-mix(in srgb, #297c50 38%, var(--chat-surface-control)); color: #fff; }
+.share-audio-toggle.share-audio-disabled { cursor: not-allowed; opacity: .62; }
+.share-audio-toggle input:focus-visible { outline: none; }
+.share-audio-toggle:focus-within { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.share-audio-description { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
+:host-context(.light-theme) .share-audio-toggle { border-color: #8a98aa; background: #f0f2f6; color: #172033; }
+:host-context(.light-theme) .call-presentation-devices .share-audio-toggle:has(input:checked) { border-color: #315fba; background: #dbe8ff; color: #173c83; }
+:host-context(.light-theme) .call-quality-trigger { border-color: #6d89a7; background: #fff; color: #172033; }
+.call-presentation-devices .call-select .mat-mdc-select-trigger { box-sizing: border-box; height: 46px; min-height: 46px; padding: 0 10px; }
+:host ::ng-deep .call-presentation-devices .call-select .mat-mdc-select-arrow-wrapper { width: 16px; flex: 0 0 16px; }
+:host ::ng-deep .call-presentation-devices .call-select .mat-mdc-select-arrow { width: 16px; }
+:host ::ng-deep .call-presentation-devices .call-select .mat-mdc-select-arrow svg { width: 16px; }
+:host-context(.light-theme) .call-presentation-devices .call-select { border-color: #6d89a7; background: #fff; color: #172033; }
+:host-context(.light-theme) .call-presentation-devices label { color: #4c6077; }
+:host-context(.light-theme) .share-audio-unavailable-reason { color: #34465d; }
+@media (max-width: 760px) { .call-presentation-devices { grid-template-columns: 1fr; } .call-presentation-devices-with-audio { grid-template-columns: minmax(0, 1fr); } .call-presentation-devices-with-audio .call-quality-control { grid-column: 1; } }

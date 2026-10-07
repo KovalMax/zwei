@@ -66,6 +66,9 @@ func TestWithCORSAllowsConfiguredOrigin(t *testing.T) {
 	if got := response.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
 		t.Fatalf("allow credentials = %q", got)
 	}
+	if got := response.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PATCH, DELETE, OPTIONS" {
+		t.Fatalf("allow methods = %q", got)
+	}
 }
 
 func TestWithCORSRejectsUnknownPreflightOrigin(t *testing.T) {

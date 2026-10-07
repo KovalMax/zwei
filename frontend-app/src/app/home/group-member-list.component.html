@@ -1,0 +1,12 @@
+<ul #memberScroller class="group-members" aria-label="Group members" (scroll)="onMemberListScroll($event)">
+    <li *ngFor="let member of members; trackBy: trackMember">
+        <div class="member-identity"><strong>{{ member.displayName }}</strong><small>{{ member.role }}</small></div>
+        <ng-container *ngIf="actionsForMember(member) as actions">
+            <div class="member-actions" *ngIf="actions.length">
+                <button class="member-action-button" *ngFor="let action of actions; trackBy: trackAction" #memberTooltip="matTooltip" type="button" [disabled]="loading" [attr.aria-label]="action.ariaLabel" [matTooltip]="action.label" matTooltipClass="group-member-action-tooltip" [matTooltipDisabled]="isTooltipDisabled(memberTooltip)" matTooltipPosition="above" (focus)="showTooltipOnFocus(memberTooltip)" (blur)="hideTooltipOnBlur(memberTooltip)" (mouseenter)="showTooltipOnHover(memberTooltip)" (mouseleave)="hideTooltipOnLeave(memberTooltip)" (pointermove)="restoreHoverOnPointerMove(memberTooltip)" (click)="requestAction(member, action.id)">
+                    <zwei-icon [name]="action.icon"></zwei-icon>
+                </button>
+            </div>
+        </ng-container>
+    </li>
+</ul>

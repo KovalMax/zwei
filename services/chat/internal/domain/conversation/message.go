@@ -14,4 +14,5 @@ type Message struct {
 	Sequence        int64     `json:"sequence"`
 	Body            string    `json:"body"`
 	CreatedAt       time.Time `json:"created_at"`
+	Kind            string    `json:"kind"`
 }

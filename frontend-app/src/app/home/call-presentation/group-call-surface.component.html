@@ -1,0 +1,38 @@
+<ng-container *ngIf="state as callState">
+    <section class="group-call-panel group-call-panel-full" *ngIf="callState.phase !== 'idle' && callState.phase !== 'left' && callState.phase !== 'ended' && callState.phase !== 'error' && !minimized" aria-label="Group audio call" aria-live="polite">
+        <div class="group-call-card">
+            <div class="group-call-header" *ngIf="ongoing">
+                <button class="group-call-collapse-button" mat-icon-button type="button" aria-label="Minimize group call" (click)="emit({type: 'collapse'})">
+                    <zwei-icon name="expand_more"></zwei-icon>
+                </button>
+            </div>
+            <app-call-profile *ngIf="profile as groupProfile" [profile]="groupProfile"></app-call-profile>
+            <audio *ngFor="let peer of callState.peers; trackBy: trackPeer" groupRemoteAudio autoplay playsinline [srcObject]="peer.stream"></audio>
+            <div class="group-call-content">
+                <div class="group-call-content-inner">
+                    <section class="group-call-roster" *ngIf="participants.length" aria-label="Participants">
+                        <h3>Participants</h3>
+                        <app-call-participants [participants]="participants"></app-call-participants>
+                    </section>
+                        <section #presentationStage class="group-call-presentation" *ngIf="callState.presentation || callState.remotePresentation" aria-label="Shared presentation">
+                        <div class="group-call-presentation-heading"><span class="group-call-presentation-title"><zwei-icon name="screen_share"></zwei-icon><span>Shared presentation</span><span class="group-call-live-indicator">LIVE</span></span><button *ngIf="fullscreenSupported" class="group-presentation-fullscreen" mat-icon-button type="button" [attr.aria-label]="presentationFullscreen ? 'Exit fullscreen' : 'Expand shared presentation'" [title]="presentationFullscreen ? 'Exit fullscreen' : 'Expand shared presentation'" (click)="togglePresentationFullscreen()"><zwei-icon [name]="presentationFullscreen ? 'fullscreen_exit' : 'fullscreen'"></zwei-icon></button></div>
+                        <video class="group-presentation" autoplay playsinline muted [attr.aria-label]="callState.remotePresentation ? 'Remote shared presentation' : 'Your shared presentation'" [srcObject]="callState.presentation || callState.remotePresentation" (loadedmetadata)="emit({type: 'presentation-ready', event: $event})" (canplay)="emit({type: 'presentation-ready', event: $event})"></video>
+                        </section>
+                        <p class="group-presentation-fullscreen-status visually-hidden" *ngIf="fullscreenStatus" role="status" aria-live="polite">{{ fullscreenStatus }}</p>
+                    <app-call-device-controls class="group-call-devices" *ngIf="callState.localStream" [controls]="controls" [panelClass]="panelClass" [qualityPickerEnabled]="true" [qualityPickerOpenBelow]="true" [showShareAudioOption]="callState.phase === 'active'" [shareAudioChecked]="callState.screenShareAudioEnabled" [shareAudioDisabled]="callState.shareTransitioning || callState.sharing" [shareAudioTooltip]="callState.sharing ? 'Stop presenting before changing system audio.' : 'Include system audio when you share your screen'" (controlChange)="emit({type: 'control-change', change: $event})" (shareAudioChange)="emit({type: 'screen-share-audio-change', enabled: $event})"></app-call-device-controls>
+                </div>
+            </div>
+            <div class="group-call-actions">
+                <button class="group-call-join" mat-flat-button color="primary" type="button" *ngIf="callState.phase === 'ringing' && !callState.localStream" (click)="emit({type: 'join'})">Join call</button>
+                <button class="group-call-enable-sound" mat-stroked-button type="button" *ngIf="callState.audioPlaybackBlocked" (click)="emit({type: 'enable-sound'})">Enable sound</button>
+                <div class="group-call-active-controls" *ngIf="callState.localStream" role="group" aria-label="Active group call controls">
+                    <app-call-icon-actions class="group-call-action-mute" [actions]="actions | slice:0:1" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+                    <button class="group-call-end-button" mat-icon-button type="button" aria-label="End group call for everyone" title="End group call for everyone" matTooltip="End group call for everyone" matTooltipClass="group-call-end-tooltip" matTooltipPosition="above" (click)="emit({type: 'end'})"><zwei-icon name="call_end"></zwei-icon></button>
+                    <app-call-icon-actions class="group-call-action-share" [actions]="actions | slice:1" (action)="emit({type: 'action', actionID: $event})"></app-call-icon-actions>
+                </div>
+                <button class="group-call-leave" mat-stroked-button type="button" *ngIf="callState.localStream" (click)="emit({type: 'leave'})">Leave call</button>
+                <button class="group-call-end-button group-call-end-button-labeled" mat-flat-button color="warn" type="button" *ngIf="callState.room && !callState.localStream" (click)="emit({type: 'end'})">End call</button>
+            </div>
+        </div>
+    </section>
+</ng-container>

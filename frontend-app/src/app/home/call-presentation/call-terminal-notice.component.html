@@ -1,0 +1,3 @@
+<section class="call-terminal-notice group-call-terminal" [attr.role]="error ? 'alert' : 'status'" aria-live="polite" aria-label="Call status">
+    <zwei-icon [name]="group ? 'group' : 'call'"></zwei-icon><span>{{ message }}</span><button *ngIf="rejoinable" type="button" (click)="rejoin.emit()">Rejoin call</button>
+</section>

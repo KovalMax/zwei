@@ -47,6 +47,13 @@ const screenShareDimensions: Record<ScreenShareQuality, {width: number; height: 
     '2k': {width: 2560, height: 1440},
 };
 
+class ReplaceTrackTimeoutError extends Error {
+    public constructor() {
+        super('RTCRtpSender.replaceTrack timed out.');
+        this.name = 'ReplaceTrackTimeoutError';
+    }
+}
+
 @Injectable()
 export class CallFacade implements OnDestroy {
     private readonly stateSubject = new BehaviorSubject<CallState>(idleState);
@@ -110,15 +117,15 @@ export class CallFacade implements OnDestroy {
         const stream = await this.requestMicrophone(undefined, true, generation);
         if (!stream) return;
         if (!this.isCurrentGeneration(generation) || this.state.phase !== 'requesting') { this.stopStream(stream); return; }
-        if (!this.sendRequest({type: 'call.start', request_id: createRandomID(), payload: {conversation_id: conversationID}}, generation)) { this.stopStream(stream); return; }
         this.setState({...this.state, phase: 'outgoing', role: 'caller', conversationID, peerID, muted: false, localStream: stream, statusLabel: 'Calling...'});
+        if (!this.sendRequest({type: 'call.start', request_id: createRandomID(), payload: {conversation_id: conversationID}}, generation)) { this.stopStream(stream); return; }
     }
     public accept(): void {
         const state = this.state;
         if (state.phase !== 'incoming' || !state.callID) return;
         const generation = this.callGeneration;
-        if (!this.sendRequest({type: 'call.accept', request_id: createRandomID(), payload: {call_id: state.callID}}, generation)) return;
         this.setState({...state, phase: 'connecting', statusLabel: 'Connecting call...'});
+        if (!this.sendRequest({type: 'call.accept', request_id: createRandomID(), payload: {call_id: state.callID}}, generation)) return;
     }
     public decline(): void { this.sendControl('call.decline', 'Call declined.'); }
     public cancel(): void { this.sendControl('call.cancel', 'Call cancelled.'); }
@@ -182,42 +189,59 @@ export class CallFacade implements OnDestroy {
             return;
         }
         const track = stream.getVideoTracks()[0];
-        if (!track) {
+        if (!track || !this.isTrackLive(track)) {
             this.stopStream(stream);
-            this.setState({...this.state, statusLabel: 'No screen was selected.'});
+            this.setState({...this.state, statusLabel: 'No live screen was selected.'});
             return;
         }
         const sender = this.screenSender || connection.getSenders().find(item => item.track?.kind === 'video');
         const audioTrack = stream.getAudioTracks()[0];
+        let videoEnded = false;
+        let audioEnded = false;
+        // Browser termination may race replaceTrack. Observe it before awaiting any
+        // sender operation, then let the serialized stop operation repair signaling.
+        track.onended = () => {
+            videoEnded = true;
+            track.onended = null;
+            void this.enqueueSignaling(() => this.stopScreenShare(track, generation, connection, callID)).catch(() => {
+                if (this.isCurrentGeneration(generation)) this.setError('Screen sharing could not stop.', generation);
+            });
+        };
+        if (audioTrack) audioTrack.onended = () => {
+            audioEnded = true;
+            audioTrack.onended = null;
+            void this.enqueueSignaling(() => this.stopScreenShareAudio(audioTrack, generation, connection, callID)).catch(() => {
+                if (this.isCurrentGeneration(generation)) this.setError('Screen-share audio could not stop.', generation);
+            });
+        };
         try {
-            if (sender) await sender.replaceTrack(track);
+            if (sender) await this.replaceTrack(sender, track);
             else this.screenSender = connection.addTrack(track, stream);
             if (audioTrack) {
-                if (this.screenAudioSender) await this.screenAudioSender.replaceTrack(audioTrack);
+                if (this.screenAudioSender) await this.replaceTrack(this.screenAudioSender, audioTrack);
                 else this.screenAudioSender = connection.addTrack(audioTrack, stream);
             }
-            if (!this.isCurrentGeneration(generation) || this.connection !== connection) {
+            if (!this.isCurrentGeneration(generation) || this.connection !== connection || videoEnded || !this.isTrackLive(track)) {
+                if (this.isCurrentGeneration(generation) && this.connection === connection && sender) {
+                    await this.replaceTrack(sender, null);
+                    if (this.isCurrentGeneration(generation)) await this.createAndSendOffer(generation, connection, callID);
+                }
+                stream.getTracks().forEach(mediaTrack => mediaTrack.onended = null);
                 this.stopStream(stream);
                 return;
             }
             this.screenSender = sender || this.screenSender;
-            track.onended = () => {
-                void this.enqueueSignaling(() => this.stopScreenShare(track, generation, connection, callID)).catch(() => {
-                    if (this.isCurrentGeneration(generation)) this.setError('Screen sharing could not stop.', generation);
-                });
-            };
-            if (audioTrack) {
-                audioTrack.onended = () => {
-                    void this.enqueueSignaling(() => this.stopScreenShareAudio(audioTrack, generation, connection, callID)).catch(() => {
-                        if (this.isCurrentGeneration(generation)) this.setError('Screen-share audio could not stop.', generation);
-                    });
-                };
+            if (audioTrack && (audioEnded || audioTrack.readyState === 'ended')) {
+                if (this.screenAudioSender) await this.replaceTrack(this.screenAudioSender, null);
+                this.stopStream(stream);
+                return;
             }
             const statusLabel = this.state.screenShareAudioEnabled && !audioTrack ? 'You are sharing your screen. System audio was not available.' : 'You are sharing your screen.';
             this.setState({...this.state, screenShareStream: stream, screenShareAudioActive: Boolean(audioTrack), statusLabel, errorLabel: undefined});
             this.sendSignal({type: 'screen-share-started'}, generation, callID);
             await this.createAndSendOffer(generation, connection, callID);
         } catch {
+            stream.getTracks().forEach(mediaTrack => mediaTrack.onended = null);
             this.stopStream(stream);
             if (this.isCurrentGeneration(generation)) this.setState({...this.state, statusLabel: 'Screen sharing could not start.', errorLabel: 'Screen sharing could not start.'});
         }
@@ -232,8 +256,8 @@ export class CallFacade implements OnDestroy {
         stream.getTracks().forEach(mediaTrack => mediaTrack.onended = null);
         this.stopStream(stream);
         try {
-            if (sender) await sender.replaceTrack(null);
-            if (audioSender) await audioSender.replaceTrack(null);
+            if (sender) await this.replaceTrack(sender, null);
+            if (audioSender) await this.replaceTrack(audioSender, null);
             if (!this.isCurrentGeneration(generation) || this.connection !== connection) return;
             this.sendSignal({type: 'screen-share-stopped'}, generation, callID);
             await this.createAndSendOffer(generation, connection, callID);
@@ -245,7 +269,7 @@ export class CallFacade implements OnDestroy {
         if (!this.isCurrentGeneration(generation) || this.connection !== connection || this.state.screenShareStream?.getAudioTracks().includes(track) !== true) return;
         track.onended = null;
         try {
-            await this.screenAudioSender?.replaceTrack(null);
+            if (this.screenAudioSender) await this.replaceTrack(this.screenAudioSender, null);
             if (!this.isCurrentGeneration(generation) || this.connection !== connection) return;
             this.setState({...this.state, screenShareAudioActive: false, statusLabel: 'Screen sharing continues without system audio.'});
             await this.createAndSendOffer(generation, connection, callID);
@@ -257,6 +281,7 @@ export class CallFacade implements OnDestroy {
         const dimensions = screenShareDimensions[quality];
         return {width: {ideal: dimensions.width}, height: {ideal: dimensions.height}, frameRate: {ideal: 30, max: 30}};
     }
+    private isTrackLive(track: MediaStreamTrack): boolean { return track.readyState === 'live'; }
     public playRemoteAudio(event: Event): void {
         const audio = event.currentTarget as HTMLAudioElement | null;
         if (!audio) return;
@@ -283,6 +308,8 @@ export class CallFacade implements OnDestroy {
         const currentStream = this.state.localStream;
         const connection = this.connection;
         let replacement: MediaStream;
+        let sender: RTCRtpSender | undefined;
+        let replacing = false;
         try {
             replacement = await navigator.mediaDevices.getUserMedia({audio: {deviceId: {exact: deviceID}}});
         } catch (error: unknown) {
@@ -299,25 +326,34 @@ export class CallFacade implements OnDestroy {
             this.stopStream(replacement);
             return;
         }
+        track.enabled = !this.state.muted;
         try {
-            const sender = connection?.getSenders().find(item => item.track?.kind === 'audio');
+            sender = connection?.getSenders().find(item => item.track?.kind === 'audio');
             if (!sender) throw new Error('audio sender unavailable');
-            await sender.replaceTrack(track);
+            replacing = true;
+            await this.replaceTrack(sender, track);
             if (!this.isCurrentGeneration(generation) || this.connection !== connection) {
                 this.stopStream(replacement);
                 return;
             }
             this.stopStream(currentStream);
             this.setState({...this.state, localStream: replacement, selectedInputDeviceID: deviceID, errorLabel: undefined, statusLabel: 'Microphone changed.'});
-            await this.refreshDevices(generation);
-        } catch {
+            await this.refreshDevices(generation).catch(() => undefined);
+        } catch (error: unknown) {
+            if (!(error instanceof ReplaceTrackTimeoutError) && replacing && sender && this.isCurrentGeneration(generation) && this.connection === connection) {
+                const previousTrack = currentStream.getAudioTracks()[0];
+                if (previousTrack && previousTrack.readyState !== 'ended') await this.replaceTrack(sender, previousTrack).catch(() => undefined);
+            }
             this.stopStream(replacement);
-            if (this.isCurrentGeneration(generation)) this.setState({...this.state, statusLabel: 'Could not change the microphone.', errorLabel: 'Could not change the microphone.'});
+            if (this.isCurrentGeneration(generation)) {
+                // A device selection is recoverable UI work, not a call transport
+                // failure. Keep the active call and its existing microphone stream.
+                this.setState({...this.state, statusLabel: 'Could not change the microphone.', errorLabel: 'Could not change the microphone.'});
+            }
         }
     }
 
     public async selectOutputDevice(deviceID: string): Promise<void> {
-        if (!deviceID) return;
         const generation = this.callGeneration;
         const audio = this.remoteAudio;
         this.setState({...this.state, selectedOutputDeviceID: deviceID});
@@ -351,7 +387,16 @@ export class CallFacade implements OnDestroy {
             return;
         }
         if (event.type === 'call.accepted') {
-            if (this.state.callID !== event.payload.call_id || this.isRetiredCall(event.payload.call_id)) return;
+            if (this.isRetiredCall(event.payload.call_id)) return;
+            // The recipient may accept after the server has reserved the call but before
+            // this socket has rendered its preceding ringing event.  The outgoing
+            // generation is the only safe pre-publication correlation available on
+            // the v1 event contract; never adopt an accepted event outside it.
+            if (this.state.callID === undefined && this.canAdoptEarlyAccepted(event.payload)) {
+                this.clearPendingRequests(this.callGeneration, 'call.start');
+                this.setState({...this.state, callID: event.payload.call_id, statusLabel: 'Connecting call...'});
+            }
+            if (this.state.callID !== event.payload.call_id) return;
             this.enqueueSignaling(() => this.handleAccepted(event)).catch(() => {
                 if (this.matches(event.payload.call_id)) this.setError('Could not connect the audio call.', this.callGeneration);
             });
@@ -406,7 +451,9 @@ export class CallFacade implements OnDestroy {
         }
         this.setState({...this.state, phase: 'connecting', callID: event.payload.call_id, conversationID: event.payload.conversation_id, peerID: this.peerFor(event.payload), localStream, statusLabel: 'Connecting call...'});
         for (const signal of this.pendingSignals.splice(0)) await this.applySignal(signal);
-        if (this.state.role === 'caller') await this.createAndSendOffer(generation, this.connection, event.payload.call_id);
+        if (this.state.role === 'caller') {
+            await this.createAndSendOffer(generation, this.connection, event.payload.call_id);
+        }
     }
     private async handleSignal(event: CallSignalSocketEvent): Promise<void> {
         if (!this.matches(event.payload.call_id)) return;
@@ -545,10 +592,10 @@ export class CallFacade implements OnDestroy {
             return;
         }
         try {
-            const offer = await connection.createOffer();
+            await connection.setLocalDescription();
+            const offer = connection.localDescription;
             if (!this.isCurrentGeneration(generation) || this.connection !== connection) return;
-            if (offer.type !== 'offer' || typeof offer.sdp !== 'string') throw new Error('offer unavailable');
-            await connection.setLocalDescription(offer);
+            if (offer?.type !== 'offer' || typeof offer.sdp !== 'string') throw new Error('offer unavailable');
             if (!this.isCurrentGeneration(generation) || this.connection !== connection) return;
             this.sendSignal({type: 'offer', sdp: offer.sdp}, generation, callID);
         } catch {
@@ -675,12 +722,40 @@ export class CallFacade implements OnDestroy {
         this.remoteAudio = undefined;
     }
     private stopStream(stream?: MediaStream): void { stream?.getTracks().forEach(track => track.stop()); }
+    private async replaceTrack(sender: RTCRtpSender, track: MediaStreamTrack | null): Promise<void> {
+        let timeout: number | undefined;
+        const ownerConnection = this.connection;
+        const ownerGeneration = this.callGeneration;
+        try {
+            await Promise.race([
+                sender.replaceTrack(track),
+                new Promise<never>((_resolve, reject) => {
+                    timeout = window.setTimeout(() => {
+                        const error = new ReplaceTrackTimeoutError();
+                        // replaceTrack cannot be cancelled. Retire the owning peer
+                        // connection before the caller releases any captured track.
+                        if (ownerConnection && this.connection === ownerConnection && this.isCurrentGeneration(ownerGeneration)) {
+                            this.setError('Call ended because media could not be updated safely.', ownerGeneration);
+                        }
+                        reject(error);
+                    }, 1_500);
+                }),
+            ]);
+        } finally {
+            if (timeout !== undefined) window.clearTimeout(timeout);
+        }
+    }
     private dismissNotice(): void {
         this.clearDismissTimer();
         this.dismissTimer = window.setTimeout(() => { this.dismissTimer = undefined; this.setState(idleState); }, callNoticeDuration);
     }
     private clearDismissTimer(): void { window.clearTimeout(this.dismissTimer); this.dismissTimer = undefined; }
     private canStart(): boolean { return ['idle', 'ended', 'error'].includes(this.state.phase); }
+    private canAdoptEarlyAccepted(payload: CallPayload): boolean {
+        const state = this.state;
+        return state.phase === 'outgoing' && state.role === 'caller' && state.conversationID === payload.conversation_id &&
+            Boolean(state.localStream) && [...this.pendingRequestGenerations.values()].some(request => request.generation === this.callGeneration && request.type === 'call.start');
+    }
     private matches(callID: string): boolean { return this.state.callID === callID; }
     private isCurrentGeneration(generation: number): boolean { return generation === this.callGeneration; }
     private beginCallGeneration(): number {

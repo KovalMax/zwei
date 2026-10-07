@@ -1,0 +1,3 @@
+<div class="call-presentation-participants group-call-participants" *ngIf="participants.length" aria-label="Call participants">
+    <span *ngFor="let participant of participants; trackBy: trackParticipant">{{ participant.name }}</span>
+</div>

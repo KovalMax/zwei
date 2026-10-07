@@ -13,6 +13,9 @@
     "call.end": ["request_id", "payload.call_id"],
     "call.signal": ["request_id", "payload.call_id", "payload.signal"]
   },
+  "clientEventFieldSchemas": {
+    "call.signal.payload.signal": {"$ref": "#/$defs/callSignal"}
+  },
   "callSignalTypes": ["offer", "answer", "candidate", "screen-share-started", "screen-share-stopped"],
   "serverEvents": [
     "message.accepted",
@@ -34,6 +37,45 @@
   ],
   "serverEventFields": {
     "call.accepted": ["payload.call_id", "payload.ice_servers", "payload.ice_servers[].urls", "payload.ice_servers[].username", "payload.ice_servers[].credential"],
-    "conversation.read": ["payload.conversation_id", "payload.user_id", "payload.sequence"]
+    "call.signal": ["payload.call_id", "payload.signal"],
+    "call.signal.signal": {"$ref": "#/$defs/callSignal"},
+    "conversation.read": ["payload.conversation_id", "payload.user_id", "payload.sequence"],
+    "conversation.read.additiveFields": ["payload.visible_from_sequence"]
+  },
+  "$defs": {
+    "callSignal": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "sdp"],
+          "properties": {"type": {"const": "offer"}, "sdp": {"type": "string", "minLength": 1}},
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "sdp"],
+          "properties": {"type": {"const": "answer"}, "sdp": {"type": "string", "minLength": 1}},
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "candidate"],
+          "properties": {"type": {"const": "candidate"}, "candidate": {"type": "object"}},
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {"type": {"const": "screen-share-started"}},
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {"type": {"const": "screen-share-stopped"}},
+          "additionalProperties": false
+        }
+      ]
+    }
   }
 }

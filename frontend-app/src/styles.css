@@ -8,13 +8,51 @@
 @import "@fontsource/manrope/latin-500.css";
 @import "@fontsource/manrope/latin-600.css";
 @import "@fontsource/manrope/latin-700.css";
+@import "./app/home/home-call-minimized.css";
+app-home .people-list .group-page-error { position: sticky; z-index: 1; bottom: 0; display: flex; width: calc(100% - 8px); min-width: 0; box-sizing: border-box; flex-wrap: wrap; align-items: center; gap: 2px 12px; margin: 8px 4px; padding: 4px 12px; border: 1px solid var(--chat-danger-text); border-radius: var(--zwei-radius-control); background: var(--chat-danger-surface); color: var(--chat-danger-text); font-size: 13px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.light-theme app-home .people-list .group-page-error { --chat-danger-surface: #fae9e7; --chat-danger-text: #6b2525; }
+app-home .people-list .group-page-error button { min-height: 44px; flex: 0 0 auto; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); background: var(--chat-surface-control); color: var(--chat-text-strong); font: 700 13px 'DM Sans', sans-serif; cursor: pointer; }
+app-home .people-list .group-page-error button:hover:not(:disabled) { border-color: var(--zwei-focus); background: color-mix(in srgb, var(--zwei-focus) 12%, var(--chat-surface-control)); }
+app-home .people-list .group-page-error button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+app-home .people-list::after { content: ''; display: block; height: calc(var(--people-row-aligned-height, 70px) * 2 + var(--people-end-alignment-offset, 0px)); flex: 0 0 auto; }
+app-home .people-list .load-more-groups { position: sticky; z-index: 1; bottom: 0; box-sizing: border-box; min-height: 44px; margin: 8px 4px; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); color: var(--chat-text); background: var(--chat-surface-control); font: 700 13px/1 'DM Sans', sans-serif; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+app-home .people-list .load-more-groups:hover:not(:disabled) { border-color: var(--chat-accent); background: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface-control)); }
+app-home .people-list .load-more-groups:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+app-home .people-list .load-more-groups:disabled { cursor: wait; opacity: .72; }
+@media (prefers-reduced-motion: reduce) { app-home .people-list .load-more-groups { transition: none; } }
+app-home .search-results { max-height: min(36rem, 52dvh); min-height: 0; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+app-home .search-result { scroll-margin-block: 8px; }
+app-home .search-result:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 html, body {
     font-family: 'Manrope', sans-serif;
     height: 100%;
     overflow: hidden;
 }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* Angular Material dims disabled menu items; keep account identity text fully opaque. */
+.cdk-overlay-container .account-menu-panel-dark .account-menu-name.mat-mdc-menu-item,
+.cdk-overlay-container .account-menu-panel-dark .account-menu-email.mat-mdc-menu-item,
+.cdk-overlay-container .account-menu-panel-light .account-menu-name.mat-mdc-menu-item,
+.cdk-overlay-container .account-menu-panel-light .account-menu-email.mat-mdc-menu-item {
+    opacity: 1 !important;
+}
+.cdk-overlay-container .account-menu-panel-dark .mat-mdc-menu-item[disabled],
+.cdk-overlay-container .account-menu-panel-light .mat-mdc-menu-item[disabled] {
+    opacity: 1 !important;
+}
+.cdk-overlay-container .account-menu-panel-dark .account-menu-name.mat-mdc-menu-item { color: #f1f5f9 !important; }
+.cdk-overlay-container .account-menu-panel-dark .account-menu-email.mat-mdc-menu-item { color: #aebdd0 !important; }
+.cdk-overlay-container .account-menu-panel-light .account-menu-name.mat-mdc-menu-item { color: #172033 !important; }
+.cdk-overlay-container .account-menu-panel-light .account-menu-email.mat-mdc-menu-item { color: #4c6077 !important; }
 
 :root {
+    --zwei-call-card-max-width: 720px;
+    --zwei-call-card-height: clamp(620px, 78vh, 760px);
+    --zwei-call-card-padding: clamp(22px, 4vw, 42px);
+    --zwei-call-card-radius: 28px;
+    --zwei-call-card-shadow: 0 24px 70px rgba(17, 28, 43, .16);
+    --zwei-call-panel-gutters: clamp(16px, 2vw, 36px);
     --zwei-ink: #172033;
     --zwei-ink-soft: #273552;
     --zwei-canvas: #f6f8fc;
@@ -61,18 +99,29 @@ html, body {
     --chat-warning-text: #f7dd8d;
     --chat-danger-surface: #4c3034;
     --chat-danger-text: #ffc0bd;
+    --auth-submit-disabled: #667085;
+    --chat-system-surface: #26394f;
+    --chat-system-text: #edf2fa;
+    --chat-system-border: #30465e;
     --chat-message-own: #2d5c45;
-    --chat-message-sender: #72c86f;
-    --chat-message-read: #b5e680;
+    --chat-message-sender: #8dde88;
+    --chat-message-read: #c9f196;
+    --chat-message-time-own: #b9d6c2;
     --chat-message-min-width: 180px;
     --chat-message-max-width: 680px;
     --chat-message-min-height: 64px;
     --chat-message-max-height: 240px;
     --auth-card-surface: rgba(255, 255, 255, .78);
+    --login-field-surface: rgba(255, 255, 255, .72);
     --auth-card-border: var(--zwei-card-border);
     --auth-title: #171c2b;
     --auth-muted: #817970;
     --auth-icon: #a59b90;
+    --login-accent: #815a38;
+    --login-field-border: #6f6b66;
+    --login-error: #ba1a1a;
+    --login-muted: #756c62;
+    --login-icon: #756c62;
     --auth-submit: #252c40;
     --auth-submit-text: #fff;
 }
@@ -86,10 +135,17 @@ html.dark-theme, body.dark-theme {
     --zwei-card-border: #30465e;
     --zwei-shadow-card: 0 20px 60px rgba(0, 0, 0, .24);
     --auth-card-surface: #202c3b;
+    --login-field-surface: #202c3b;
     --auth-card-border: #30465e;
     --auth-title: #f1f5f9;
     --auth-muted: #aebdd0;
     --auth-icon: #aebdd0;
+    --login-accent: #e2ad84;
+    --login-field-border: #8397ad;
+    --login-error: #ffb4ab;
+    --login-muted: #c0ccda;
+    --login-icon: #c0ccda;
+    --login-card-surface: #202c3b;
     --auth-submit: #4b9ce9;
     --auth-submit-text: #fff;
 }
@@ -105,9 +161,25 @@ html.dark-theme, body.dark-theme {
     --chat-line-strong: #cfd9e8;
     --chat-call-screen-surface: #e8edf5;
     --chat-call-screen-text: #4c6077;
+    --chat-warning-surface: #fff5df;
+    --chat-warning-text: #5f3b00;
+    --chat-system-surface: #e8f1fb;
+    --chat-system-text: #4c6077;
+    --chat-system-border: #cfd9e8;
+    --chat-message-sender: #287a3c;
+    --chat-message-read: #286b3d;
+    --chat-message-time-own: #286b3d;
     --chat-text: #172033;
     --chat-text-strong: #172033;
     --chat-muted: #667085;
+    --chat-presence: #287a3c;
+    --chat-call-surface: var(--chat-surface-raised);
+    --chat-call-text: var(--chat-text);
+    --chat-call-control-border: var(--chat-line-strong);
+    --chat-call-control-text: var(--chat-text);
+    --chat-call-icon: var(--chat-accent);
+    --chat-call-icon-disabled: var(--chat-muted);
+    --zwei-card-border: var(--chat-line-strong);
     --mat-sys-surface: #fff;
     --mat-sys-surface-container: #fff;
     --mat-sys-on-surface: #172033;
@@ -141,6 +213,44 @@ body :is(a, button, select, [tabindex]):focus-visible {
     font: 500 12px/1.2 'Manrope', sans-serif;
 }
 .call-select-panel .mat-pseudo-checkbox { --mat-minimal-pseudo-checkbox-selected-checkmark-color: var(--chat-accent); }
+.call-quality-listbox { box-sizing: border-box; min-width: 220px; padding: 6px; border: 1px solid var(--chat-line-strong); border-radius: 12px; background: #26394f; color: #f1f5f9; box-shadow: 0 18px 40px rgba(17, 28, 43, .24); }
+.call-quality-option { display: flex; min-height: 40px; box-sizing: border-box; align-items: center; padding: 0 12px; border-radius: 8px; color: #f1f5f9; font: 500 12px/1.2 'Manrope', sans-serif; cursor: pointer; }
+.call-quality-option-active { background: #345779; }
+.call-quality-listbox.call-group-quality-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; }
+.call-quality-listbox.call-group-quality-picker .call-quality-option { min-height: 40px; padding: 0 8px; white-space: nowrap; }
+.call-quality-listbox.call-select-panel-light { background: #fff; color: #172033; }
+.call-quality-listbox.call-select-panel-light .call-quality-option { background: #fff; color: #172033; }
+.call-quality-listbox.call-select-panel-light .call-quality-option.call-quality-option-active { background: #dceafa; }
+.call-quality-listbox.call-select-panel-dark { background: #26394f; color: #f1f5f9; }
+.call-quality-listbox.call-select-panel-dark .call-quality-option { background: #26394f; color: #f1f5f9; }
+.call-quality-listbox.call-select-panel-dark .call-quality-option.call-quality-option-active { background: #345779; }
+.call-select { --mat-select-enabled-trigger-text-color: var(--chat-call-control-text); --mat-select-enabled-arrow-color: var(--chat-call-control-text); --mat-select-focused-arrow-color: var(--chat-accent); --mat-select-disabled-trigger-text-color: var(--chat-muted); display: block; width: 100%; min-width: 0; height: 48px; border: 1px solid var(--chat-call-control-border); border-radius: 12px; background: var(--chat-surface-control); color: var(--chat-call-control-text); }
+.call-select .mat-mdc-select-trigger { box-sizing: border-box; height: 46px; min-height: 46px; padding: 0 10px; }
+.call-select .mat-mdc-select-value, .call-select .mat-mdc-select-arrow { color: var(--chat-call-control-text) !important; }
+.call-select .mat-mdc-select-arrow svg { fill: currentColor !important; }
+.call-select.mat-focused { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.call-select.mat-mdc-select-disabled { cursor: not-allowed; opacity: .6; }
+.mat-mdc-select-panel.call-select-panel-dark { --mat-select-panel-background-color: #26394f; background: #26394f !important; color: #f1f5f9 !important; }
+.mat-mdc-select-panel.call-select-panel-dark .mat-mdc-option { --mat-option-focus-state-layer-color: #345779; --mat-option-label-text-color: #f1f5f9; background: #26394f !important; color: #f1f5f9 !important; }
+.mat-mdc-select-panel.call-select-panel-dark .mat-mdc-option.mat-mdc-option-active { background: #345779 !important; }
+.mat-mdc-select-panel.call-select-panel-light { --mat-select-panel-background-color: #fff; background: #fff !important; color: #172033 !important; }
+.mat-mdc-select-panel.call-select-panel-light .mat-mdc-option { --mat-option-focus-state-layer-color: #dceafa; --mat-option-label-text-color: #172033; background: #fff !important; color: #172033 !important; }
+.mat-mdc-select-panel.call-select-panel-light .mat-mdc-option.mat-mdc-option-active { background: #dceafa !important; }
+
+.mat-mdc-tooltip-panel .mat-mdc-tooltip.group-member-action-tooltip .mat-mdc-tooltip-surface {
+    box-sizing: border-box;
+    min-height: 12px !important;
+    padding: 0 4px !important;
+    font-size: 10px !important;
+    line-height: 12px !important;
+}
+
+.mat-mdc-tooltip-panel .mat-mdc-tooltip.group-call-end-tooltip .mat-mdc-tooltip-surface {
+    --mdc-plain-tooltip-container-color: #f1f5f9;
+    --mdc-plain-tooltip-supporting-text-color: #172033;
+    background-color: #f1f5f9 !important;
+    color: #172033 !important;
+}
 
 @media (prefers-reduced-motion: reduce) {
     :root { --zwei-motion-duration: 0ms; }
@@ -160,6 +270,22 @@ html.dark-theme .admin-page p, html.dark-theme .admin-page .admin-nav button { c
 html.dark-theme .admin-page .admin-nav { border-color: #30465e; }
 html.dark-theme .admin-page .table-wrap { border-color: #30465e; scrollbar-color: #6f8aa5 #202e3d; }
 html.dark-theme .admin-page th { background: #202c3b; }
+
+/* Match KYC invitation fields to the semantic colors used by the auth forms. */
+.admin-page .invitation-form input.mat-mdc-input-element {
+    color: var(--auth-title) !important;
+    caret-color: var(--auth-title);
+}
+.admin-page .invitation-form .mdc-floating-label {
+    color: var(--login-muted) !important;
+}
+
+.dark-theme .mat-mdc-tooltip-panel .mdc-tooltip__surface {
+    --mdc-plain-tooltip-container-color: #edf2fa;
+    --mdc-plain-tooltip-supporting-text-color: #172033;
+    background-color: #edf2fa;
+    color: #172033;
+}
 
 .light-theme .topbar { background: #fff; color: var(--zwei-ink); box-shadow: 0 1px 0 var(--zwei-line); }
 .light-theme .connection-pill { color: var(--zwei-muted); }
@@ -187,7 +313,7 @@ html.dark-theme .admin-page th { background: #202c3b; }
 
 app-root { display: block; height: 100dvh; overflow: hidden; }
 
-.dark-theme .mat-mdc-menu-panel { background: var(--chat-surface-raised) !important; }
-.dark-theme .mat-mdc-menu-item, .dark-theme .mat-mdc-menu-item zwei-icon { color: var(--chat-text) !important; }
+.dark-theme .mat-mdc-menu-panel, .dark-theme .mat-mdc-menu-content { background: var(--chat-surface-raised) !important; color: var(--chat-text) !important; }
+.dark-theme .mat-mdc-menu-item, .dark-theme .mat-mdc-menu-item zwei-icon, .dark-theme .mat-mdc-menu-item[disabled] { color: var(--chat-text) !important; }
 .dark-theme .account-menu-name { color: var(--chat-text-strong) !important; }
 .dark-theme .account-menu-email { color: var(--chat-muted) !important; }

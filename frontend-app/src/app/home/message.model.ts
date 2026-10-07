@@ -6,7 +6,9 @@ export interface Message {
     sequence: number;
     body: string;
     createdAt: string;
+    kind?: 'user' | 'system';
     pending?: boolean;
+    uncertain?: boolean;
 }
 
 export interface MessageHistory {

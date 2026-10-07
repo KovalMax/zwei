@@ -3,3 +3,4 @@
 .DS_Store/
 node_modules/
 e2e/test-results/
+infrastructure/e2e/test-results/
