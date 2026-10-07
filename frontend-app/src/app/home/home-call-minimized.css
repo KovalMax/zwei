@@ -1,4 +1,5 @@
 /* Global extraction for Home's call surface: app-home scopes this CSS to its host. */
+app-home { --chat-header-row-min-height: 72px; --chat-header-gutter-x: 26px; }
 app-home .call-panel-full { overflow: hidden; }
 app-home .call-panel-minimized { display: none !important; }
 app-home .call-minimized-banner { display: flex; align-items: stretch; gap: 8px; margin: 0 0 12px; padding: 8px; border: 1px solid var(--chat-line-strong); border-radius: 14px; background: var(--chat-surface-control); color: var(--chat-text); }
@@ -16,6 +17,7 @@ app-home .call-minimized-end { padding: 8px 12px; color: var(--chat-danger-text)
 app-home .call-minimized-end:hover { background: var(--chat-danger-surface); }
 
 @media (max-width: 760px) {
+    app-home { --chat-header-row-min-height: 64px; --chat-header-gutter-x: 12px; }
     app-home .call-panel-full { box-sizing: border-box; align-items: stretch; justify-content: flex-start; overflow: hidden; flex-direction: column; }
     app-home .call-minimized-banner { gap: 4px; padding: 6px; }
     app-home .call-minimized-banner-chat { display: flex; margin: 10px 12px 8px; }

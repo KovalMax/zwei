@@ -141,12 +141,18 @@ async function measureCallNotificationSurface(page: Page, cardSelector: string) 
     const profile = card?.querySelector<HTMLElement>('app-call-profile');
     const panelStyle = panel ? getComputedStyle(panel) : undefined;
     const panelBounds = panel?.getBoundingClientRect();
+    const header = panel?.parentElement?.querySelector<HTMLElement>('.chat-header');
+    const headerStyle = header ? getComputedStyle(header) : undefined;
+    const cardStyle = card ? getComputedStyle(card) : undefined;
+    const actionsStyle = actions ? getComputedStyle(actions) : undefined;
     const rect = (element?: HTMLElement) => {
       const bounds = element?.getBoundingClientRect();
       return bounds ? {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height} : undefined;
     };
     return {
-      panel: rect(panel), card: rect(card), actions: rect(actions), profile: rect(profile),
+      panel: rect(panel), header: rect(header), card: rect(card), actions: rect(actions), profile: rect(profile),
+      panelPadding: panelStyle ? {top: panelStyle.paddingTop, right: panelStyle.paddingRight, bottom: panelStyle.paddingBottom, left: panelStyle.paddingLeft} : undefined,
+      headerPadding: headerStyle ? {top: headerStyle.paddingTop, right: headerStyle.paddingRight, bottom: headerStyle.paddingBottom, left: headerStyle.paddingLeft} : undefined,
       contentLeft: panelBounds && panelStyle ? panelBounds.left + Number.parseFloat(panelStyle.paddingLeft) : undefined,
       contentRight: panelBounds && panelStyle ? panelBounds.right - Number.parseFloat(panelStyle.paddingRight) : undefined,
       buttons: Array.from(actions?.querySelectorAll<HTMLElement>('button') ?? []).flatMap(button => {
@@ -161,6 +167,16 @@ async function measureCallNotificationSurface(page: Page, cardSelector: string) 
       panelSurface: panel ? getComputedStyle(panel).backgroundColor : '',
       cardSurface: card ? getComputedStyle(card).backgroundColor : '',
       actionSurface: actions ? getComputedStyle(actions).backgroundColor : '',
+      panelBottomBorderColor: panelStyle?.borderBottomColor ?? '',
+      panelBottomBorderStyle: panelStyle?.borderBottomStyle ?? '',
+      headerBottomBorderColor: headerStyle?.borderBottomColor ?? '',
+      headerBottomBorderStyle: headerStyle?.borderBottomStyle ?? '',
+      cardBorderWidth: cardStyle?.borderWidth ?? '',
+      cardBorderRadius: cardStyle?.borderRadius ?? '',
+      cardBoxShadow: cardStyle?.boxShadow ?? '',
+      cardMargin: cardStyle?.margin ?? '',
+      actionBorderWidth: actionsStyle?.borderWidth ?? '',
+      actionBoxShadow: actionsStyle?.boxShadow ?? '',
       panelText: panel ? getComputedStyle(panel).color : '',
       actionText: actions ? getComputedStyle(actions).color : '',
       documentWidth: document.documentElement.scrollWidth,
@@ -176,13 +192,32 @@ async function measureCallNotificationSurface(page: Page, cardSelector: string) 
 type CallNotificationSurface = Awaited<ReturnType<typeof measureCallNotificationSurface>>;
 
 function expectCallNotificationLayout(surface: CallNotificationSurface, context: string, viewport: {width: number; height: number}): void {
+  if (viewport.width === 390 || viewport.width === 1440) {
+    console.info(`DIRECT_CALL_HEADER_PARITY ${JSON.stringify({context, header: surface.header, panel: surface.panel, card: surface.card, panelPadding: surface.panelPadding, headerPadding: surface.headerPadding})}`);
+  }
+  expect(surface.panel?.height, context).toBe(surface.header?.height);
+  expect(surface.panelPadding?.top, context).toBe('0px');
+  expect(surface.panelPadding?.bottom, context).toBe('0px');
+  expect(surface.panelPadding?.left, context).toBe(surface.headerPadding?.left);
+  expect(surface.panelPadding?.right, context).toBe(surface.headerPadding?.right);
+  expect(surface.panelSurface, context).toBe(surface.cardSurface);
+  expect(surface.actionSurface, context).toBe(surface.cardSurface);
+  expect(surface.panelBottomBorderColor, context).toBe(surface.headerBottomBorderColor);
+  expect(surface.panelBottomBorderStyle, context).toBe(surface.headerBottomBorderStyle);
+  expect(surface.cardBorderWidth, context).toBe('0px');
+  expect(surface.cardBorderRadius, context).toBe('0px');
+  expect(surface.cardBoxShadow, context).toBe('none');
+  expect(surface.cardMargin, context).toBe('0px');
+  expect(surface.actionBorderWidth, context).toBe('0px');
+  expect(surface.actionBoxShadow, context).toBe('none');
   expect(surface.card?.left, context).toBeCloseTo(surface.contentLeft ?? 0, 0);
   expect(surface.card?.right, context).toBeCloseTo(surface.contentRight ?? viewport.width, 0);
+  expect(Math.abs((surface.card?.height ?? 0) - (surface.header?.height ?? 0)), context).toBeLessThanOrEqual(1);
   expect(surface.profile?.left, context).toBeCloseTo(surface.card?.left ?? 0, 0);
   expect(surface.actions?.left, context).toBeGreaterThanOrEqual((surface.card?.left ?? 0) - 1);
   expect(surface.actions?.right, context).toBeCloseTo(surface.card?.right ?? viewport.width, 0);
   expect(surface.profileActionsOverlap, context).toBe(false);
-  if (viewport.width <= 760) expect(surface.profile?.bottom, context).toBeLessThanOrEqual((surface.actions?.top ?? 0) + 1);
+  expect(surface.profile?.right, context).toBeLessThanOrEqual((surface.buttons[0]?.left ?? viewport.width) + 1);
   expect(surface.documentWidth, context).toBeLessThanOrEqual(surface.viewportWidth + 1);
   expect(surface.panelScrollWidth, context).toBeLessThanOrEqual((surface.panelClientWidth ?? 0) + 1);
   expect(surface.cardScrollWidth, context).toBeLessThanOrEqual((surface.cardClientWidth ?? 0) + 1);
@@ -197,6 +232,8 @@ function expectCallNotificationLayout(surface: CallNotificationSurface, context:
     expect(button.right, context).toBeLessThanOrEqual(viewport.width + 1);
     expect(button.top, context).toBeGreaterThanOrEqual(0);
     expect(button.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+    expect(button.top, context).toBeGreaterThanOrEqual((surface.profile?.top ?? 0) - 1);
+    expect(button.bottom, context).toBeLessThanOrEqual((surface.profile?.bottom ?? viewport.height) + 1);
     if (index === surface.buttons.length - 1) expect(button.right, context).toBeCloseTo(surface.actions?.right ?? viewport.width, 0);
   }
 }
@@ -1963,6 +2000,7 @@ test('direct call offers and answers connect in the browser UI', async ({browser
         const metrics = await alice.evaluate(() => {
           const panel = document.querySelector<HTMLElement>('.call-panel-full');
           const card = panel?.querySelector<HTMLElement>('.call-card');
+          const callActions = panel?.querySelector<HTMLElement>('.call-actions');
           const profile = panel?.querySelector<HTMLElement>('.call-card > app-call-profile');
           const profileName = profile?.querySelector<HTMLElement>('.call-presentation-copy strong');
           const controls = Array.from(panel?.querySelectorAll<HTMLElement>('.call-devices [role="combobox"], .call-presentation-icon-actions button, .call-actions button') || []);
@@ -1976,9 +2014,16 @@ test('direct call offers and answers connect in the browser UI', async ({browser
             theme: document.documentElement.classList.contains('light-theme') ? 'light' : 'dark',
             viewportWidth: document.documentElement.clientWidth,
             scrollWidth: document.documentElement.scrollWidth,
+            panelPadding: panel ? {
+              top: Number.parseFloat(getComputedStyle(panel).paddingTop),
+              right: Number.parseFloat(getComputedStyle(panel).paddingRight),
+              bottom: Number.parseFloat(getComputedStyle(panel).paddingBottom),
+              left: Number.parseFloat(getComputedStyle(panel).paddingLeft),
+            } : undefined,
             card: cardRect ? {left: cardRect.left, right: cardRect.right} : undefined,
             profileSurface: profile ? getComputedStyle(profile).backgroundColor : '',
             profileText: profileName ? getComputedStyle(profileName).color : '',
+            callActionsJustifyContent: callActions ? getComputedStyle(callActions).justifyContent : undefined,
             controls: controls.map(control => { const rect = control.getBoundingClientRect(); return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom}; }),
             endBottom: end?.getBoundingClientRect().bottom,
             end: end ? {left: end.getBoundingClientRect().left, right: end.getBoundingClientRect().right, top: end.getBoundingClientRect().top, bottom: end.getBoundingClientRect().bottom, width: end.getBoundingClientRect().width, height: end.getBoundingClientRect().height} : undefined,
@@ -1990,9 +2035,16 @@ test('direct call offers and answers connect in the browser UI', async ({browser
             viewportHeight: window.innerHeight,
           };
         });
+        const fullCallGutter = viewport.width <= 760 ? 12 : Math.min(36, Math.max(16, viewport.width * .02));
+        const fullCallVerticalPadding = viewport.width <= 760 ? 24 : fullCallGutter;
+        expect(metrics.panelPadding?.top).toBeCloseTo(fullCallVerticalPadding, 1);
+        expect(metrics.panelPadding?.bottom).toBeCloseTo(fullCallVerticalPadding, 1);
+        expect(metrics.panelPadding?.left).toBeCloseTo(fullCallGutter, 1);
+        expect(metrics.panelPadding?.right).toBeCloseTo(fullCallGutter, 1);
         expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.viewportWidth + 1);
         expect(metrics.card).toBeDefined();
         expect(metrics.controls).not.toHaveLength(0);
+        expect(metrics.callActionsJustifyContent).toBe('flex-end');
         if (theme === 'light') {
           expect(metrics.profileSurface).toBe('rgb(255, 255, 255)');
           expect(metrics.profileText).toBe('rgb(23, 32, 51)');
@@ -2484,9 +2536,15 @@ test('register, create conversation, and deliver a message', async ({ browser },
           await expect(outgoingCard).toBeVisible();
           const outgoingSurface = await measureCallNotificationSurface(alice, '.call-card');
           const context = `${theme}/${viewport.width}px outgoing-call notification: ${JSON.stringify(outgoingSurface)}`;
+          const expectedSurface = theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(32, 44, 59)';
+          expect(outgoingSurface.panelSurface, context).toBe(expectedSurface);
+          expect(outgoingSurface.cardSurface, context).toBe(expectedSurface);
+          expect(outgoingSurface.actionSurface, context).toBe(expectedSurface);
           expectCallNotificationLayout(outgoingSurface, context, viewport);
           expect(outgoingSurface.buttons, context).toHaveLength(1);
           if (viewport.width === 390) expectLongCallProfileNameTruncated(outgoingSurface, context);
+          const cancelContrast = await measureRenderedTextContrastAtSurface(outgoingCard.getByRole('button', {name: 'Cancel'}));
+          expect(cancelContrast.ratio, `${context} Cancel contrast: ${JSON.stringify(cancelContrast)}`).toBeGreaterThanOrEqual(4.5);
           await expect(alice.locator('.message-history')).toBeVisible();
           await expect(alice.getByLabel('Message composer')).toBeVisible();
           await alice.screenshot({path: testInfo.outputPath(`outgoing-call-${theme}-${viewport.width}.png`), fullPage: false});
@@ -2512,10 +2570,11 @@ test('register, create conversation, and deliver a message', async ({ browser },
          await expect(accept).toBeVisible();
          await expect(decline).toBeVisible();
           const incomingSurface = await measureCallNotificationSurface(bob, '.call-card-incoming');
-         const context = `${theme}/${viewport.width}px incoming-call notification: ${JSON.stringify(incomingSurface)}`;
-          expect(incomingSurface.panelSurface, context).toBe(theme === 'light' ? 'rgb(232, 241, 251)' : 'rgb(38, 57, 79)');
-          expect(incomingSurface.cardSurface, context).toBe(theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(32, 44, 59)');
-          expect(incomingSurface.actionSurface, context).toBe(incomingSurface.cardSurface);
+          const context = `${theme}/${viewport.width}px incoming-call notification: ${JSON.stringify(incomingSurface)}`;
+          const expectedSurface = theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(32, 44, 59)';
+          expect(incomingSurface.panelSurface, context).toBe(expectedSurface);
+          expect(incomingSurface.cardSurface, context).toBe(expectedSurface);
+          expect(incomingSurface.actionSurface, context).toBe(expectedSurface);
           expectCallNotificationLayout(incomingSurface, context, viewport);
           expect(incomingSurface.buttons, context).toHaveLength(2);
           if (viewport.width === 390) expectLongCallProfileNameTruncated(incomingSurface, context);
