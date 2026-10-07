@@ -17,9 +17,10 @@ async function waitForReadableTooltip(tooltip: Locator): Promise<RenderedTextCon
   const deadline = Date.now() + 5_000;
   let contrast: RenderedTextContrast | undefined;
   while (Date.now() < deadline) {
-    contrast = await measureRenderedTextContrastAtSurface(tooltip);
+    const remaining = Math.max(1, deadline - Date.now());
+    contrast = await measureRenderedTextContrastAtSurface(tooltip, undefined, remaining);
     if (contrast.ratio >= 4.5) return contrast;
-    await tooltip.evaluate(element => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    await tooltip.evaluate(element => new Promise<void>(resolve => requestAnimationFrame(() => resolve())), undefined, {timeout: Math.max(1, deadline - Date.now())});
   }
   throw new Error(`Tooltip did not reach 4.5:1 rendered contrast: ${JSON.stringify(contrast)}`);
 }
@@ -67,7 +68,7 @@ async function measureRenderedTextContrast(element: Locator): Promise<RenderedCo
   });
 }
 
-async function measureRenderedTextContrastAtSurface(element: Locator, pseudoElement?: '::placeholder'): Promise<RenderedTextContrast> {
+async function measureRenderedTextContrastAtSurface(element: Locator, pseudoElement?: '::placeholder', timeout = 0): Promise<RenderedTextContrast> {
   return element.evaluate((node, pseudo) => {
     type RGBA = readonly [number, number, number, number];
     const parse = (color: string): RGBA => {
@@ -129,7 +130,7 @@ async function measureRenderedTextContrastAtSurface(element: Locator, pseudoElem
       opacity: effectiveOpacity,
       disabled: 'disabled' in node && Boolean((node as HTMLInputElement).disabled),
     };
-  }, pseudoElement);
+  }, pseudoElement, {timeout});
 }
 
 async function measureCallDeviceRowAlignment(controls: Locator) {
@@ -4769,14 +4770,25 @@ test('contains group member, message, and rail lists across the required viewpor
       await touchContext.close();
     }
     await owner.setViewportSize({width: 1440, height: 900});
+    await owner.evaluate(() => window.localStorage.removeItem('zwei_selected_conversation'));
+    await owner.reload();
+    await waitForLiveConnection(owner);
+    const ownerGroup = owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'});
+    await expect(ownerGroup).toBeVisible();
+    await ownerGroup.click();
+    await expect(owner.locator('.chat-header h2')).toHaveText('Browser acceptance group renamed');
+    await expect(owner.getByText('Owner made Member 1 a member.', {exact: true})).toBeVisible();
     await setTheme(owner, 'dark');
     const manageGroup = owner.getByRole('button', {name: 'Manage group'});
     if (!(await owner.locator('.group-manager').isVisible())) await manageGroup.click();
     await expect(owner.locator('.group-manager')).toBeVisible();
+    await expect(owner.locator('.group-manager .group-members > li').filter({has: owner.locator('strong').filter({hasText: /^Member 1$/})}).locator('.member-identity small')).toHaveText('member');
     const groupSettingsPanel = owner.locator('.group-manager .group-settings-panel');
     const deleteButton = groupSettingsPanel.getByRole('button', {name: 'Delete group'});
     await expect(deleteButton).toBeVisible();
     await deleteButton.scrollIntoViewIfNeeded();
+    await expect(owner.locator('.group-manager')).toBeVisible();
+    await expect(deleteButton).toBeVisible();
     await expect(deleteButton).toBeInViewport();
     await owner.once('dialog', dialog => dialog.accept());
     const deleteResponse = owner.waitForResponse(response => response.url().endsWith(`/api/chat/groups/${groupID}`) && response.request().method() === 'DELETE');
