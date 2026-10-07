@@ -819,6 +819,12 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     expect(collisions.textCollisions, `${theme} ${viewport.width}px ${action.label} obscures member text: ${JSON.stringify({tooltip: tip, collisions})}`).toEqual([]);
   };
   const focusUsingKeyboard = async (button: typeof actionButtons[number]['button']): Promise<void> => {
+    await button.scrollIntoViewIfNeeded();
+    // Focus can scroll the nested list and settings panel. Finish that movement
+    // before testing tooltip recovery so the scroll-dismiss event cannot race it.
+    await memberScroller.evaluate(element => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
     await page.mouse.move(0, 0);
     await button.focus();
     await page.keyboard.press('Shift+Tab');
@@ -900,40 +906,49 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   await page.mouse.move(0, 0);
   await actionButtons[2].button.hover();
   await assertTooltipGeometry(actionButtons[2]);
-  const listScroll = await scrollMemberListAwayFromCurrentEdge();
-  expect(listScroll.targetScrollTop, JSON.stringify({theme, viewport, listScroll})).not.toBe(listScroll.before);
-  expect(listScroll.scrollEvents, JSON.stringify({theme, viewport, listScroll})).toBeGreaterThan(0);
-   if (listScroll.targetScrollTop === 0) expect(listScroll.scrollTop).toBe(0);
-   else expect(listScroll.scrollTop + listScroll.clientHeight).toBeGreaterThanOrEqual(listScroll.scrollHeight - 1);
-   await expect(removeTooltip, `${theme} ${viewport.width}px tooltip must clear when the member list scrolls`).not.toBeVisible();
-   await expect(visibleTooltips).toHaveCount(0);
+  for (let recoveryAttempt = 0; recoveryAttempt < 10; recoveryAttempt++) {
+    const listScroll = await scrollMemberListAwayFromCurrentEdge();
+    const context = `${theme} ${viewport.width}px recovery ${recoveryAttempt + 1}/10`;
+    expect(listScroll.targetScrollTop, JSON.stringify({context, listScroll})).not.toBe(listScroll.before);
+    expect(listScroll.scrollEvents, JSON.stringify({context, listScroll})).toBeGreaterThan(0);
+    if (listScroll.targetScrollTop === 0) expect(listScroll.scrollTop, context).toBe(0);
+    else expect(listScroll.scrollTop + listScroll.clientHeight, context).toBeGreaterThanOrEqual(listScroll.scrollHeight - 1);
+    await expect(removeTooltip, `${context} tooltip must clear when the member list scrolls`).not.toBeVisible();
+    await expect(visibleTooltips, context).toHaveCount(0);
+    await page.mouse.move(1, viewport.height / 2);
     await actionButtons[2].button.scrollIntoViewIfNeeded();
-    // Let the programmatic reposition finish before keyboard focus: its captured
+    // Let programmatic repositioning finish before keyboard focus. Its captured
     // scroll event must dismiss tooltips, not race the subsequent focus event.
     await memberScroller.evaluate(element => new Promise<void>(resolve => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     }));
-    await expect(actionButtons[2].button, `${theme} ${viewport.width}px list scroll should retain keyboard focus`).toBeFocused();
+    await expect(removeTooltip, `${context} repositioning alone must not resurrect the tooltip`).not.toBeVisible();
+    await expect(actionButtons[2].button, `${context} list scroll should retain keyboard focus`).toBeFocused();
     await page.keyboard.press('Shift+Tab');
     await page.keyboard.press('Tab');
-    await expect(actionButtons[2].button, `${theme} ${viewport.width}px keyboard focus should recover without pointer movement`).toBeFocused();
+    await expect(actionButtons[2].button, `${context} keyboard focus should recover without pointer movement`).toBeFocused();
     await assertTooltipGeometry(actionButtons[2]);
-   await expect(removeTooltip, `${theme} ${viewport.width}px keyboard focus should reopen after a list scroll`).toBeVisible();
-   await page.screenshot({path: testInfo.outputPath(`group-member-action-remove-keyboard-recovered-after-list-scroll-${theme}-${viewport.width}.png`), fullPage: false});
-   const dismissalScroll = await scrollMemberListAwayFromCurrentEdge();
-   expect(dismissalScroll.targetScrollTop, JSON.stringify({theme, viewport, dismissalScroll})).not.toBe(dismissalScroll.before);
-   expect(dismissalScroll.scrollEvents, JSON.stringify({theme, viewport, dismissalScroll})).toBeGreaterThan(0);
-   await expect(removeTooltip, `${theme} ${viewport.width}px a following scroll must dismiss the recovered tooltip`).not.toBeVisible();
-    await page.mouse.move(1, viewport.height / 2);
-    await expect(removeTooltip, `${theme} ${viewport.width}px pointer movement must not resurrect a dismissed tooltip`).not.toBeVisible();
-    await actionButtons[2].button.scrollIntoViewIfNeeded();
-    await memberScroller.evaluate(element => new Promise<void>(resolve => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    }));
-     await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
-     await actionButtons[2].button.hover();
-    await assertTooltipGeometry(actionButtons[2]);
-   await expect(removeTooltip).toBeVisible();
+    await expect(removeTooltip, `${context} keyboard focus should reopen after list scrolling`).toBeVisible();
+    if (recoveryAttempt === 0) {
+      await page.screenshot({path: testInfo.outputPath(`group-member-action-remove-keyboard-recovered-after-list-scroll-${theme}-${viewport.width}.png`), fullPage: false});
+    }
+  }
+  const dismissalScroll = await scrollMemberListAwayFromCurrentEdge();
+  expect(dismissalScroll.targetScrollTop, JSON.stringify({theme, viewport, dismissalScroll})).not.toBe(dismissalScroll.before);
+  expect(dismissalScroll.scrollEvents, JSON.stringify({theme, viewport, dismissalScroll})).toBeGreaterThan(0);
+  await expect(removeTooltip, `${theme} ${viewport.width}px a following scroll must dismiss the recovered tooltip`).not.toBeVisible();
+  await page.screenshot({path: testInfo.outputPath(`group-settings-${theme}-${viewport.width}-list-end-scrolled-away-no-tooltip.png`), fullPage: false});
+  await page.mouse.move(1, viewport.height / 2);
+  await expect(removeTooltip, `${theme} ${viewport.width}px pointer movement must not resurrect a dismissed tooltip`).not.toBeVisible();
+  await actionButtons[2].button.scrollIntoViewIfNeeded();
+  await memberScroller.evaluate(element => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
+  await page.mouse.move(1, viewport.height / 2);
+  await actionButtons[2].button.hover();
+  await assertTooltipGeometry(actionButtons[2]);
+  await expect(removeTooltip).toBeVisible();
   const settingsScroll = await panel.evaluate(element => {
     const settings = element as HTMLElement;
     settings.scrollTop = settings.scrollHeight;
