@@ -133,6 +133,84 @@ async function measureRenderedTextContrastAtSurface(element: Locator, pseudoElem
   }, pseudoElement, {timeout});
 }
 
+async function measureCallNotificationSurface(page: Page, cardSelector: string) {
+  return page.evaluate(selector => {
+    const panel = document.querySelector<HTMLElement>('.call-panel:not(.call-panel-full)');
+    const card = panel?.querySelector<HTMLElement>(selector);
+    const actions = card?.querySelector<HTMLElement>('.call-actions');
+    const profile = card?.querySelector<HTMLElement>('app-call-profile');
+    const panelStyle = panel ? getComputedStyle(panel) : undefined;
+    const panelBounds = panel?.getBoundingClientRect();
+    const rect = (element?: HTMLElement) => {
+      const bounds = element?.getBoundingClientRect();
+      return bounds ? {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height} : undefined;
+    };
+    return {
+      panel: rect(panel), card: rect(card), actions: rect(actions), profile: rect(profile),
+      contentLeft: panelBounds && panelStyle ? panelBounds.left + Number.parseFloat(panelStyle.paddingLeft) : undefined,
+      contentRight: panelBounds && panelStyle ? panelBounds.right - Number.parseFloat(panelStyle.paddingRight) : undefined,
+      buttons: Array.from(actions?.querySelectorAll<HTMLElement>('button') ?? []).flatMap(button => {
+        const bounds = rect(button);
+        return bounds ? [bounds] : [];
+      }),
+      profileCopy: Array.from(profile?.querySelectorAll<HTMLElement>('.call-presentation-copy strong, .call-presentation-copy span') ?? []).map(element => {
+        const style = getComputedStyle(element);
+        return {scrollWidth: element.scrollWidth, clientWidth: element.clientWidth, overflow: style.overflow, textOverflow: style.textOverflow, whiteSpace: style.whiteSpace};
+      }),
+      profileActionsOverlap: Boolean(profile && actions && profile.getBoundingClientRect().left < actions.getBoundingClientRect().right && profile.getBoundingClientRect().right > actions.getBoundingClientRect().left && profile.getBoundingClientRect().top < actions.getBoundingClientRect().bottom && profile.getBoundingClientRect().bottom > actions.getBoundingClientRect().top),
+      panelSurface: panel ? getComputedStyle(panel).backgroundColor : '',
+      cardSurface: card ? getComputedStyle(card).backgroundColor : '',
+      actionSurface: actions ? getComputedStyle(actions).backgroundColor : '',
+      panelText: panel ? getComputedStyle(panel).color : '',
+      actionText: actions ? getComputedStyle(actions).color : '',
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      panelScrollWidth: panel?.scrollWidth,
+      panelClientWidth: panel?.clientWidth,
+      cardScrollWidth: card?.scrollWidth,
+      cardClientWidth: card?.clientWidth,
+    };
+  }, cardSelector);
+}
+
+type CallNotificationSurface = Awaited<ReturnType<typeof measureCallNotificationSurface>>;
+
+function expectCallNotificationLayout(surface: CallNotificationSurface, context: string, viewport: {width: number; height: number}): void {
+  expect(surface.card?.left, context).toBeCloseTo(surface.contentLeft ?? 0, 0);
+  expect(surface.card?.right, context).toBeCloseTo(surface.contentRight ?? viewport.width, 0);
+  expect(surface.profile?.left, context).toBeCloseTo(surface.card?.left ?? 0, 0);
+  expect(surface.actions?.left, context).toBeGreaterThanOrEqual((surface.card?.left ?? 0) - 1);
+  expect(surface.actions?.right, context).toBeCloseTo(surface.card?.right ?? viewport.width, 0);
+  expect(surface.profileActionsOverlap, context).toBe(false);
+  if (viewport.width <= 760) expect(surface.profile?.bottom, context).toBeLessThanOrEqual((surface.actions?.top ?? 0) + 1);
+  expect(surface.documentWidth, context).toBeLessThanOrEqual(surface.viewportWidth + 1);
+  expect(surface.panelScrollWidth, context).toBeLessThanOrEqual((surface.panelClientWidth ?? 0) + 1);
+  expect(surface.cardScrollWidth, context).toBeLessThanOrEqual((surface.cardClientWidth ?? 0) + 1);
+  expect(surface.panel?.left, context).toBeGreaterThanOrEqual(0);
+  expect(surface.panel?.right, context).toBeLessThanOrEqual(viewport.width + 1);
+  expect(surface.actions?.top, context).toBeGreaterThanOrEqual((surface.panel?.top ?? 0) - 1);
+  expect(surface.actions?.bottom, context).toBeLessThanOrEqual((surface.panel?.bottom ?? viewport.height) + 1);
+  for (const [index, button] of surface.buttons.entries()) {
+    expect(button.left, context).toBeGreaterThanOrEqual((surface.actions?.left ?? 0) - 1);
+    expect(button.right, context).toBeLessThanOrEqual((surface.actions?.right ?? viewport.width) + 1);
+    expect(button.left, context).toBeGreaterThanOrEqual(0);
+    expect(button.right, context).toBeLessThanOrEqual(viewport.width + 1);
+    expect(button.top, context).toBeGreaterThanOrEqual(0);
+    expect(button.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+    if (index === surface.buttons.length - 1) expect(button.right, context).toBeCloseTo(surface.actions?.right ?? viewport.width, 0);
+  }
+}
+
+function expectLongCallProfileNameTruncated(surface: CallNotificationSurface, context: string): void {
+  expect(surface.profileCopy, context).toHaveLength(2);
+  for (const copy of surface.profileCopy) {
+    expect(copy.overflow, context).toBe('hidden');
+    expect(copy.textOverflow, context).toBe('ellipsis');
+    expect(copy.whiteSpace, context).toBe('nowrap');
+  }
+  expect(surface.profileCopy[0].scrollWidth, context).toBeGreaterThan(surface.profileCopy[0].clientWidth);
+}
+
 async function measureCallDeviceRowAlignment(controls: Locator) {
   return controls.evaluate(element => {
     const bounds = (target: Element | null | undefined) => {
@@ -2231,6 +2309,8 @@ test('register, create conversation, and deliver a message', async ({ browser },
   const aliceEmail = uniqueEmail('alice');
   const bobEmail = uniqueEmail('bob');
   const charlieEmail = uniqueEmail('charlie');
+  const aliceDisplayName = 'Alice With A Long Display Name For Responsive Calls';
+  const bobDisplayName = 'Bob With A Long Display Name For Responsive Calls';
   const desktop = { viewport: { width: 2560, height: 1440 } };
   const aliceContext = await browser.newContext(desktop);
   const bobContext = await browser.newContext(desktop);
@@ -2242,15 +2322,35 @@ test('register, create conversation, and deliver a message', async ({ browser },
   const charlie = await charlieContext.newPage();
 
   try {
-   await register(alice, aliceEmail, 'Alice');
-   await register(bob, bobEmail, 'Bob');
+   await register(alice, aliceEmail, aliceDisplayName);
+   await register(bob, bobEmail, bobDisplayName);
    await register(charlie, charlieEmail, 'Charlie');
    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob), waitForLiveConnection(charlie)]);
-  await expect(alice.getByRole('button', { name: 'Account menu' })).toBeVisible();
-  await expect(alice.locator('.conversation-rail')).toBeVisible();
-  await expect(alice.getByText(/is typing/)).not.toBeVisible();
+   await expect(alice.getByRole('button', { name: 'Account menu' })).toBeVisible();
+    await expect(alice.locator('.conversation-rail')).toBeVisible();
+    await expect(alice.getByText(/is typing/)).not.toBeVisible();
+    await expect(alice.locator('.call-panel')).toHaveCount(0);
+    await expect(alice.locator('.chat-empty')).toBeVisible();
+    // Idle/no-selected-conversation sanity matrix: both themes, desktop and mobile.
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(alice, theme);
+      for (const viewport of [{width: 2560, height: 1440}, {width: 390, height: 844}]) {
+        await alice.setViewportSize(viewport);
+        const context = `${theme}/${viewport.width}px idle Home without a selected conversation`;
+        await expect(alice.locator('.call-panel')).toHaveCount(0);
+        await expect(alice.locator('.conversation-rail')).toBeVisible();
+        await expect(alice.locator('.person-option')).toHaveCount(0);
+        if (viewport.width > 760) await expect(alice.locator('.chat-empty')).toBeVisible();
+        else await expect(alice.locator('.chat-panel')).not.toBeVisible();
+        const overflow = await alice.evaluate(() => ({documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth}));
+        expect(overflow.documentWidth, context).toBeLessThanOrEqual(overflow.viewportWidth + 1);
+        await alice.screenshot({path: testInfo.outputPath(`idle-empty-${theme}-${viewport.width}.png`), fullPage: false});
+      }
+    }
+    await alice.setViewportSize(desktop.viewport);
+    await setTheme(alice, 'dark');
 
-   const peopleSearch = alice.getByPlaceholder('Name or email');
+    const peopleSearch = alice.getByPlaceholder('Name or email');
    await peopleSearch.fill(bobEmail);
    const bobResult = alice.locator('.search-result').filter({hasText: bobEmail});
    await expect(bobResult).toBeVisible();
@@ -2363,97 +2463,99 @@ test('register, create conversation, and deliver a message', async ({ browser },
   await expect(bob.getByText('Online', { exact: true })).toBeVisible();
 
    await alice.getByPlaceholder('Write a message…').fill('typing');
-    await expect(bob.getByText('Alice is typing…')).toBeVisible();
-    await expect(bob.getByText('Alice is typing…')).not.toBeVisible({ timeout: 3_000 });
+    await expect(bob.getByText(new RegExp(`${aliceDisplayName} is typing…`))).toBeVisible();
+    await expect(bob.getByText(new RegExp(`${aliceDisplayName} is typing…`))).not.toBeVisible({ timeout: 3_000 });
 
    await bob.setViewportSize({width: 390, height: 844});
    await bob.getByRole('button', {name: 'Back to chats'}).click();
    await bob.setViewportSize(desktop.viewport);
 
       await expect(alice.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
-     await alice.getByRole('button', {name: 'Start audio call'}).click();
-     await expect(alice.getByText('Ringing...')).toBeVisible();
-     await expect(bob.getByText('Incoming audio call.')).toBeVisible();
-     for (const theme of ['light', 'dark'] as const) {
+      await alice.getByRole('button', {name: 'Start audio call'}).click();
+      await expect(alice.getByText('Ringing...')).toBeVisible();
+      await expect(bob.getByText('Incoming audio call.')).toBeVisible();
+      // Outgoing notification acceptance matrix: light/dark × 2560, 1440, 1024, and 390px.
+      for (const theme of ['light', 'dark'] as const) {
+        await setTheme(alice, theme);
+        for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+          await alice.setViewportSize(viewport);
+          const outgoingPanel = alice.locator('.call-panel:not(.call-panel-full)');
+          const outgoingCard = outgoingPanel.locator('.call-card');
+          await expect(outgoingCard).toBeVisible();
+          const outgoingSurface = await measureCallNotificationSurface(alice, '.call-card');
+          const context = `${theme}/${viewport.width}px outgoing-call notification: ${JSON.stringify(outgoingSurface)}`;
+          expectCallNotificationLayout(outgoingSurface, context, viewport);
+          expect(outgoingSurface.buttons, context).toHaveLength(1);
+          if (viewport.width === 390) expectLongCallProfileNameTruncated(outgoingSurface, context);
+          await expect(alice.locator('.message-history')).toBeVisible();
+          await expect(alice.getByLabel('Message composer')).toBeVisible();
+          await alice.screenshot({path: testInfo.outputPath(`outgoing-call-${theme}-${viewport.width}.png`), fullPage: false});
+        }
+      }
+      const outgoingCancel = alice.locator('.call-panel:not(.call-panel-full) .call-actions button');
+      await alice.getByRole('button', {name: 'Back to chats'}).focus();
+      await alice.keyboard.press('Tab');
+      await alice.keyboard.press('Tab');
+      await expect(outgoingCancel).toBeFocused();
+      expect(await outgoingCancel.evaluate(button => button.matches(':focus-visible'))).toBe(true);
+      for (const theme of ['light', 'dark'] as const) {
        await setTheme(bob, theme);
        for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
          await bob.setViewportSize(viewport);
          const incomingPanel = bob.locator('.call-panel:not(.call-panel-full)');
          const incomingCard = incomingPanel.locator('.call-card-incoming');
-         await expect(incomingCard).toBeVisible();
-         const accept = incomingCard.getByRole('button', {name: 'Accept'});
+          await expect(incomingCard).toBeVisible();
+          await expect(bob.locator('.message-history')).toBeVisible();
+          await expect(bob.getByLabel('Message composer')).toBeVisible();
+          const accept = incomingCard.getByRole('button', {name: 'Accept'});
          const decline = incomingCard.getByRole('button', {name: 'Decline'});
          await expect(accept).toBeVisible();
          await expect(decline).toBeVisible();
-         const incomingSurface = await bob.evaluate(() => {
-           const panel = document.querySelector<HTMLElement>('.call-panel:not(.call-panel-full)');
-           const card = panel?.querySelector<HTMLElement>('.call-card-incoming');
-           const actions = card?.querySelector<HTMLElement>('.call-actions');
-           const profile = card?.querySelector<HTMLElement>('app-call-profile');
-           const rect = (element?: HTMLElement) => {
-             const bounds = element?.getBoundingClientRect();
-             return bounds ? {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height} : undefined;
-           };
-           return {
-             panel: rect(panel), card: rect(card), actions: rect(actions), profile: rect(profile),
-             buttons: Array.from(actions?.querySelectorAll<HTMLElement>('button') ?? []).flatMap(button => {
-               const bounds = rect(button);
-               return bounds ? [bounds] : [];
-             }),
-             profileActionsOverlap: Boolean(profile && actions && profile.getBoundingClientRect().left < actions.getBoundingClientRect().right && profile.getBoundingClientRect().right > actions.getBoundingClientRect().left && profile.getBoundingClientRect().top < actions.getBoundingClientRect().bottom && profile.getBoundingClientRect().bottom > actions.getBoundingClientRect().top),
-             panelSurface: panel ? getComputedStyle(panel).backgroundColor : '',
-             cardSurface: card ? getComputedStyle(card).backgroundColor : '',
-             actionSurface: actions ? getComputedStyle(actions).backgroundColor : '',
-             panelText: panel ? getComputedStyle(panel).color : '',
-             actionText: actions ? getComputedStyle(actions).color : '',
-             documentWidth: document.documentElement.scrollWidth,
-             viewportWidth: document.documentElement.clientWidth,
-           };
-         });
+          const incomingSurface = await measureCallNotificationSurface(bob, '.call-card-incoming');
          const context = `${theme}/${viewport.width}px incoming-call notification: ${JSON.stringify(incomingSurface)}`;
-         expect(incomingSurface.panelSurface, context).toBe(theme === 'light' ? 'rgb(232, 241, 251)' : 'rgb(38, 57, 79)');
-         expect(incomingSurface.cardSurface, context).toBe(theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(32, 44, 59)');
-         expect(incomingSurface.actionSurface, context).toBe(incomingSurface.cardSurface);
-         expect(incomingSurface.panel?.left, context).toBeGreaterThanOrEqual(0);
-         expect(incomingSurface.panel?.right, context).toBeLessThanOrEqual(viewport.width + 1);
-         expect(incomingSurface.card?.left, context).toBeGreaterThanOrEqual((incomingSurface.panel?.left ?? 0) - 1);
-         expect(incomingSurface.card?.right, context).toBeLessThanOrEqual((incomingSurface.panel?.right ?? viewport.width) + 1);
-         expect(incomingSurface.actions?.left, context).toBeGreaterThanOrEqual((incomingSurface.card?.left ?? 0) - 1);
-         expect(incomingSurface.actions?.right, context).toBeLessThanOrEqual((incomingSurface.card?.right ?? viewport.width) + 1);
-         expect(incomingSurface.actions?.top, context).toBeGreaterThanOrEqual((incomingSurface.panel?.top ?? 0) - 1);
-         expect(incomingSurface.actions?.bottom, context).toBeLessThanOrEqual((incomingSurface.panel?.bottom ?? viewport.height) + 1);
-         expect(incomingSurface.profileActionsOverlap, context).toBe(false);
-         if (viewport.width <= 760) expect(incomingSurface.profile?.bottom, context).toBeLessThanOrEqual((incomingSurface.actions?.top ?? 0) + 1);
-         expect(incomingSurface.buttons, context).toHaveLength(2);
-         for (const button of incomingSurface.buttons) {
-           expect(button.left, context).toBeGreaterThanOrEqual((incomingSurface.actions?.left ?? 0) - 1);
-           expect(button.right, context).toBeLessThanOrEqual((incomingSurface.actions?.right ?? viewport.width) + 1);
-           expect(button.left, context).toBeGreaterThanOrEqual(0);
-           expect(button.right, context).toBeLessThanOrEqual(viewport.width + 1);
-           expect(button.top, context).toBeGreaterThanOrEqual(0);
-           expect(button.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
-         }
-         const nameContrast = await measureRenderedTextContrastAtSurface(incomingCard.locator('app-call-profile .call-presentation-copy strong'));
-         const statusContrast = await measureRenderedTextContrastAtSurface(incomingCard.locator('app-call-profile .call-presentation-copy span'));
-         const acceptContrast = await measureRenderedTextContrastAtSurface(accept);
-         const declineContrast = await measureRenderedTextContrastAtSurface(decline);
+          expect(incomingSurface.panelSurface, context).toBe(theme === 'light' ? 'rgb(232, 241, 251)' : 'rgb(38, 57, 79)');
+          expect(incomingSurface.cardSurface, context).toBe(theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(32, 44, 59)');
+          expect(incomingSurface.actionSurface, context).toBe(incomingSurface.cardSurface);
+          expectCallNotificationLayout(incomingSurface, context, viewport);
+          expect(incomingSurface.buttons, context).toHaveLength(2);
+          if (viewport.width === 390) expectLongCallProfileNameTruncated(incomingSurface, context);
+          const nameContrast = await measureRenderedTextContrastAtSurface(incomingCard.locator('app-call-profile .call-presentation-copy strong'));
+          const statusContrast = await measureRenderedTextContrastAtSurface(incomingCard.locator('app-call-profile .call-presentation-copy span'));
+          const acceptContrast = await measureRenderedTextContrastAtSurface(accept);
+          const declineContrast = await measureRenderedTextContrastAtSurface(decline);
          expect(nameContrast.ratio, `${context} caller-name contrast: ${JSON.stringify(nameContrast)}`).toBeGreaterThanOrEqual(4.5);
          expect(statusContrast.ratio, `${context} incoming status contrast: ${JSON.stringify(statusContrast)}`).toBeGreaterThanOrEqual(4.5);
          expect(acceptContrast.ratio, `${context} Accept contrast: ${JSON.stringify(acceptContrast)}`).toBeGreaterThanOrEqual(4.5);
-         expect(declineContrast.ratio, `${context} Decline contrast: ${JSON.stringify(declineContrast)}`).toBeGreaterThanOrEqual(4.5);
-         expect(incomingSurface.documentWidth, context).toBeLessThanOrEqual(incomingSurface.viewportWidth + 1);
-         await bob.screenshot({path: testInfo.outputPath(`incoming-call-${theme}-${viewport.width}.png`), fullPage: false});
-       }
-     }
-     expect(await alice.locator('.call-card-incoming').count()).toBe(0);
+          expect(declineContrast.ratio, `${context} Decline contrast: ${JSON.stringify(declineContrast)}`).toBeGreaterThanOrEqual(4.5);
+          await bob.screenshot({path: testInfo.outputPath(`incoming-call-${theme}-${viewport.width}.png`), fullPage: false});
+        }
+      }
+      const incomingAccept = bob.getByRole('button', {name: 'Accept'});
+      const incomingDecline = bob.getByRole('button', {name: 'Decline'});
+      await bob.getByRole('button', {name: 'Back to chats'}).focus();
+      await bob.keyboard.press('Tab');
+      await bob.keyboard.press('Tab');
+      await expect(incomingAccept).toBeFocused();
+      expect(await incomingAccept.evaluate(button => button.matches(':focus-visible'))).toBe(true);
+      await bob.keyboard.press('Tab');
+      await expect(incomingDecline).toBeFocused();
+      expect(await incomingDecline.evaluate(button => button.matches(':focus-visible'))).toBe(true);
+      expect(await alice.locator('.call-card-incoming').count()).toBe(0);
      await bob.setViewportSize({width: 2560, height: 1440});
      await setTheme(bob, 'dark');
      await expect(alice.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
        await expect(bob.locator('.call-panel:not(.call-panel-full) .call-collapse-button')).not.toBeVisible();
        expect(await bob.locator('.call-panel').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
-      await expect(bob.locator('.call-profile')).toContainText('Alice');
-      await expect(bob.locator('.person-option.selected')).toContainText('Alice');
-      await bob.getByRole('button', {name: 'Accept'}).click();
+       await expect(bob.locator('.call-profile')).toContainText('Alice');
+       await expect(bob.locator('.person-option.selected')).toContainText('Alice');
+       const ringingMessage = 'Message sent while the call is ringing';
+       await alice.getByPlaceholder('Write a message…').fill(ringingMessage);
+       await alice.getByRole('button', {name: 'Send message'}).click();
+       await expect(alice.getByText(ringingMessage, {exact: true})).toBeVisible();
+       await expect(bob.getByText(ringingMessage, {exact: true})).toBeVisible();
+       await expect(alice.locator('.call-panel:not(.call-panel-full)')).toBeVisible();
+       await expect(bob.locator('.call-panel:not(.call-panel-full)')).toBeVisible();
+       await bob.getByRole('button', {name: 'Accept'}).click();
         await expect(alice.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
        await expect(bob.getByText('Audio call connected.')).toBeVisible({timeout: 10_000});
       await expect(bob.locator('.call-panel-full')).toBeVisible();
@@ -2594,7 +2696,7 @@ test('register, create conversation, and deliver a message', async ({ browser },
         await alice.getByRole('button', {name: 'Share screen'}).click();
         await expect(alice.locator('.call-screen-stage')).toBeVisible();
         await expect(alice.locator('.call-sharing-indicator')).toContainText('Your screen is being shared with Bob');
-        await expect(bob.locator('.call-sharing-indicator')).toContainText('Alice is sharing their screen with you');
+        await expect(bob.locator('.call-sharing-indicator')).toContainText(`${aliceDisplayName} is sharing their screen with you`);
         await expect(alice.locator('.call-screen-main')).toBeVisible();
         await expect(alice.locator('.call-screen-main')).toHaveJSProperty('paused', false);
         await expect(bob.locator('.call-screen-stage')).toBeVisible({timeout: 10_000});

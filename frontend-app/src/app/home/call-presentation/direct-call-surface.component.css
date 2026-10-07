@@ -65,8 +65,9 @@
 :host-context(.light-theme) app-call-profile .call-presentation-copy span, :host-context(.light-theme) app-call-profile .call-presentation-copy small { color: #4c6077; }
 .call-card.call-card-incoming { background: var(--chat-surface); color: var(--chat-text); }
 .call-card.call-card-incoming .call-actions { border-top: 1px solid var(--chat-line); background: var(--chat-surface); color: var(--chat-text); }
-@media (min-width: 901px) { :host(:not(.call-panel-full)) .call-card { grid-template-columns: minmax(180px, 1fr) auto; } :host(:not(.call-panel-full)) .call-actions { grid-column: 2; grid-row: 1; } }
-@media (max-width: 900px) { .call-card { grid-template-columns: minmax(180px, 1fr) minmax(200px, 1fr); } .call-devices, .call-device-note { grid-column: 1 / -1; } .call-actions { justify-content: flex-start; } }
+:host(:not(.call-panel-full)) .call-card { box-sizing: border-box; width: 100%; max-width: none; margin: 0; }
+@media (min-width: 901px) { :host(:not(.call-panel-full)) .call-card { grid-template-columns: minmax(0, 1fr) auto; } :host(:not(.call-panel-full)) .call-actions { grid-column: 2; grid-row: 1; } }
+@media (max-width: 900px) { :host(:not(.call-panel-full)) .call-card { grid-template-columns: minmax(0, 1fr) auto; } :host(:not(.call-panel-full)) .call-actions { grid-column: 2; grid-row: 1; justify-content: flex-end; } .call-devices, .call-device-note { grid-column: 1 / -1; } }
 @media (max-width: 760px) {
     :host(.call-panel-full) { box-sizing: border-box; align-items: stretch; justify-content: flex-start; flex-direction: column; }
     :host(.call-panel-full) .call-card { width: 100%; height: auto; min-height: 0; flex: 1; padding: 24px 20px; }
@@ -80,8 +81,8 @@
     :host(.call-panel-full) .call-screen-stage { min-height: 120px; margin-top: 16px; }
     :host(.call-panel-full.call-screen-active) .call-devices { margin-top: 48px; }
     .call-screen-main { max-height: 180px; }
-    .call-card.call-card-incoming { grid-template-columns: minmax(0, 1fr); }
-    .call-card.call-card-incoming .call-actions { grid-column: 1; justify-content: flex-start; }
+    :host(:not(.call-panel-full)) .call-card { grid-template-columns: minmax(0, 1fr); }
+    :host(:not(.call-panel-full)) .call-actions { grid-column: 1; grid-row: auto; justify-content: flex-end; }
 }
 
 :host-context(.light-theme) .call-actions { background: #f6f8fc; }
