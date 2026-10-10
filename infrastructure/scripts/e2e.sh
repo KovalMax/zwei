@@ -12,7 +12,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 case "$TEST_SCRIPT" in
-  test|demo) ;;
+  test) ;;
   baseline)
     if [[ "$SPEC" != "tests/visual-baseline.spec.ts" || -n "$TEST_TITLE" ]]; then
       printf '%s\n' 'Baseline updates require SPEC=tests/visual-baseline.spec.ts and no TEST selector' >&2
@@ -122,9 +122,7 @@ run_args=(--rm -v "$ROOT_DIR/e2e/test-results:/e2e/test-results" -v "$baseline_m
 if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts ]]; then
   run_args=(-v "$ROOT_DIR/frontend-app/dist/messenger/browser:/production-app:ro" "${run_args[@]}")
 fi
-if [[ "$TEST_SCRIPT" == demo ]]; then
-  run_args=(--rm -v "$ROOT_DIR/e2e/test-results:/e2e/test-results" -v "$baseline_mount" e2e npm run demo)
-elif [[ "$TEST_SCRIPT" == baseline ]]; then
+if [[ "$TEST_SCRIPT" == baseline ]]; then
   run_args+=("$SPEC" --update-snapshots)
 elif [[ -n "$SPEC" && -n "$TEST_TITLE" ]]; then
   run_args+=("$SPEC" --grep "$escaped_test_title")

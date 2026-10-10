@@ -40,7 +40,8 @@ func main() {
 		panic(err)
 	}
 	conversations := postgres.NewConversationRepository(db, encryptionSecret)
-	handler := httptransport.NewHandler(messaging.NewSender(db, encryptionSecret), sharedauth.NewSessionValidator(db, []byte(secret)), conversations, postgres.NewHistoryRepository(db, encryptionSecret), application.NewGroups(conversations), limiter)
+	archive := application.NewArchive(conversations)
+	handler := httptransport.NewHandler(messaging.NewSender(db, encryptionSecret), sharedauth.NewSessionValidator(db, []byte(secret)), conversations, postgres.NewHistoryRepository(db, encryptionSecret), application.NewGroups(conversations), archive, limiter)
 	mux := runtime.NewHealthHandler("chat")
 	handler.Register(mux)
 	origins, err := runtime.ParseOrigins(getenv("ALLOWED_ORIGINS", "https://chat.localhost"))

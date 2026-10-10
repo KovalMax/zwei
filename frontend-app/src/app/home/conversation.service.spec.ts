@@ -215,6 +215,30 @@ describe('ConversationService group projection', () => {
         });
     });
 
+    it('uses archived query parameters for direct and group projections', () => {
+        service.listDirect(true).subscribe();
+        const direct = http.expectOne(item => item.urlWithParams.endsWith('/api/chat/conversations?archived=true'));
+        expect(direct.request.method).toBe('GET');
+        direct.flush([]);
+
+        service.listGroupPage(null, true).subscribe();
+        const groups = http.expectOne(item => item.urlWithParams.endsWith('/api/chat/groups?limit=25&archived=true'));
+        expect(groups.request.method).toBe('GET');
+        groups.flush({items: [], next_cursor: null});
+    });
+
+    it('uses the agreed archive and restore HTTP methods and paths', () => {
+        service.archiveConversation('chat/one').subscribe();
+        const archive = http.expectOne(item => item.url.endsWith('/api/chat/conversations/chat%2Fone/archive'));
+        expect(archive.request.method).toBe('PUT');
+        archive.flush(null);
+
+        service.restoreConversation('chat/one').subscribe();
+        const restore = http.expectOne(item => item.url.endsWith('/api/chat/conversations/chat%2Fone/archive'));
+        expect(restore.request.method).toBe('DELETE');
+        restore.flush(null);
+    });
+
     it.each([
         ['missing items', {next_cursor: null}],
         ['malformed cursor', {items: [], next_cursor: 'not a cursor'}],

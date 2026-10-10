@@ -67,7 +67,3 @@ frontend-build: ## - Run the Angular production build in an already-running fron
 .PHONY: frontend-test
 frontend-test: start ## - Run Angular headless tests with the frontend container dependencies
 	docker compose -p $(APP_NAME) exec -T frontend npm test -- --coverage
-
-.PHONY: demo
-demo: check_dist_files ## - Record the README Playwright journey against an isolated schema
-	@bash scripts/e2e.sh $(APP_NAME) demo

@@ -99,7 +99,11 @@ func (r *Repository) Create(ctx context.Context, userID, otherUserID uuid.UUID) 
 }
 
 func (r *Repository) List(ctx context.Context, userID uuid.UUID) ([]conversation.Conversation, error) {
-	rows, err := r.db.Query(ctx, `SELECT c.id, peer.id, peer.display_name, peer.email, c.created_at, COALESCE(c.last_message_at, c.created_at), COALESCE(rc.unread_count, 0) FROM conversation_members cm JOIN conversations c ON c.id = cm.conversation_id JOIN users peer ON peer.id = CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END LEFT JOIN user_read_cursors rc ON rc.user_id = $1 AND rc.conversation_id = c.id WHERE c.kind = 'direct' AND cm.user_id = $1 AND cm.active ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC`, userID)
+	return r.ListDirect(ctx, userID, false)
+}
+
+func (r *Repository) ListDirect(ctx context.Context, userID uuid.UUID, archived bool) ([]conversation.Conversation, error) {
+	rows, err := r.db.Query(ctx, `SELECT c.id, peer.id, peer.display_name, peer.email, c.created_at, COALESCE(c.last_message_at, c.created_at), COALESCE(rc.unread_count, 0) FROM conversation_members cm JOIN conversations c ON c.id = cm.conversation_id JOIN users peer ON peer.id = CASE WHEN c.user_low_id = $1 THEN c.user_high_id ELSE c.user_low_id END LEFT JOIN user_read_cursors rc ON rc.user_id = $1 AND rc.conversation_id = c.id WHERE c.kind = 'direct' AND cm.user_id = $1 AND cm.active AND (($2 AND EXISTS (SELECT 1 FROM conversation_archives ca WHERE ca.conversation_id = c.id AND ca.user_id = $1)) OR (NOT $2 AND NOT EXISTS (SELECT 1 FROM conversation_archives ca WHERE ca.conversation_id = c.id AND ca.user_id = $1))) ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC`, userID, archived)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +126,36 @@ func (r *Repository) Get(ctx context.Context, userID, conversationID uuid.UUID) 
 		return conversation.Conversation{}, ErrNotFound
 	}
 	return item, err
+}
+
+// SetArchived serializes archive changes with membership changes and deliberately
+// treats unknown, inactive, and inaccessible conversations identically.
+func (r *Repository) SetArchived(ctx context.Context, userID, conversationID uuid.UUID, archived bool) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var kind string
+	err = tx.QueryRow(ctx, `SELECT c.kind FROM conversations c JOIN conversation_members m ON m.conversation_id = c.id AND m.user_id = $1 AND m.active WHERE c.id = $2 FOR UPDATE OF c, m`, userID, conversationID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.ErrConversationNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if kind != "direct" && kind != "group" {
+		return application.ErrConversationNotFound
+	}
+	if archived {
+		_, err = tx.Exec(ctx, `INSERT INTO conversation_archives (conversation_id, user_id) VALUES ($1, $2) ON CONFLICT (conversation_id, user_id) DO NOTHING`, conversationID, userID)
+	} else {
+		_, err = tx.Exec(ctx, `DELETE FROM conversation_archives WHERE conversation_id = $1 AND user_id = $2`, conversationID, userID)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Repository) CreateGroup(ctx context.Context, ownerID uuid.UUID, name string, memberIDs []uuid.UUID) (conversation.Group, error) {
@@ -183,7 +217,7 @@ func (r *Repository) GetGroup(ctx context.Context, callerID, groupID uuid.UUID) 
 }
 
 // ListGroupsPage bounds authorized group IDs before assembling their member projections.
-func (r *Repository) ListGroupsPage(ctx context.Context, callerID uuid.UUID, limit int, cursor *application.GroupPageCursor) (application.GroupPage, error) {
+func (r *Repository) ListGroupsPage(ctx context.Context, callerID uuid.UUID, limit int, archived bool, cursor *application.GroupPageCursor) (application.GroupPage, error) {
 	var upperAt, afterAt any
 	var upperID, afterID any
 	if cursor != nil {
@@ -195,18 +229,18 @@ func (r *Repository) ListGroupsPage(ctx context.Context, callerID uuid.UUID, lim
 			SELECT c.id AS group_id, COALESCE(c.last_message_at, c.created_at) AS sort_at
 			FROM conversations c
 			JOIN conversation_members caller ON caller.conversation_id = c.id AND caller.user_id = $1 AND caller.active
-			WHERE c.kind = 'group' AND ($2::timestamptz IS NULL OR
-				(COALESCE(c.last_message_at, c.created_at), c.id) <= ($2::timestamptz, $3::uuid) AND
-				(COALESCE(c.last_message_at, c.created_at), c.id) < ($4::timestamptz, $5::uuid))
+			WHERE c.kind = 'group' AND (($2 AND EXISTS (SELECT 1 FROM conversation_archives ca WHERE ca.conversation_id = c.id AND ca.user_id = $1)) OR (NOT $2 AND NOT EXISTS (SELECT 1 FROM conversation_archives ca WHERE ca.conversation_id = c.id AND ca.user_id = $1))) AND ($3::timestamptz IS NULL OR
+				(COALESCE(c.last_message_at, c.created_at), c.id) <= ($3::timestamptz, $4::uuid) AND
+				(COALESCE(c.last_message_at, c.created_at), c.id) < ($5::timestamptz, $6::uuid))
 			ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
-			LIMIT $6
+			LIMIT $7
 		), page_keys AS MATERIALIZED (
 			SELECT group_id, sort_at
 			FROM candidates
 			ORDER BY sort_at DESC, group_id DESC
-			LIMIT $7
+			LIMIT $8
 		), page_state AS (
-			SELECT COUNT(*) > $7 AS has_more FROM candidates
+			SELECT COUNT(*) > $8 AS has_more FROM candidates
 		)
 		SELECT c.id, c.group_name, c.group_avatar_seed, c.owner_id, c.membership_revision,
 			c.created_at, COALESCE(c.last_message_at, c.created_at), pk.sort_at,
@@ -219,7 +253,7 @@ func (r *Repository) ListGroupsPage(ctx context.Context, callerID uuid.UUID, lim
 		JOIN conversation_members m ON m.conversation_id = c.id AND m.active
 		JOIN users u ON u.id = m.user_id
 		ORDER BY pk.sort_at DESC, pk.group_id DESC, m.joined_at, m.user_id`,
-		callerID, upperAt, upperID, afterAt, afterID, limit+1, limit)
+		callerID, archived, upperAt, upperID, afterAt, afterID, limit+1, limit)
 	if err != nil {
 		return application.GroupPage{}, err
 	}
@@ -254,7 +288,7 @@ func (r *Repository) ListGroupsPage(ctx context.Context, callerID uuid.UUID, lim
 		if cursor != nil {
 			upper = cursor.Upper
 		}
-		page.NextCursor = &application.GroupPageCursor{Upper: upper, After: keys[len(keys)-1]}
+		page.NextCursor = &application.GroupPageCursor{Upper: upper, After: keys[len(keys)-1], Archived: archived}
 	}
 	return page, nil
 }

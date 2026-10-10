@@ -33,20 +33,24 @@ export class InvalidUserSearchResponseError extends Error {
 export class ConversationService {
     constructor(private http: HttpClient) {}
 
-    public listHomeSnapshot(): Observable<{direct: Conversation[]; groups: GroupPage}> {
-        return forkJoin({direct: this.listDirect(), groups: this.listGroupPage()});
+    public listHomeSnapshot(archived = false): Observable<{direct: Conversation[]; groups: GroupPage}> {
+        return forkJoin({direct: this.listDirect(archived), groups: this.listGroupPage(null, archived)});
     }
 
-    public listDirect(): Observable<Conversation[]> {
-        return this.http.get<unknown>(`${backends.chat}/api/chat/conversations`).pipe(map(response => {
+    public listDirect(archived = false): Observable<Conversation[]> {
+        const query = archived ? '?archived=true' : '';
+        return this.http.get<unknown>(`${backends.chat}/api/chat/conversations${query}`).pipe(map(response => {
             const conversations = toConversationList(response);
             if (!conversations) throw new InvalidConversationProjectionError();
             return conversations;
         }));
     }
 
-    public listGroupPage(cursor: string | null = null): Observable<GroupPage> {
-        const query = cursor === null ? '?limit=25' : `?limit=25&cursor=${encodeURIComponent(cursor)}`;
+    public listGroupPage(cursor: string | null = null, archived = false): Observable<GroupPage> {
+        const params = new URLSearchParams({limit: '25'});
+        if (cursor !== null) params.set('cursor', cursor);
+        if (archived) params.set('archived', 'true');
+        const query = `?${params.toString()}`;
         return this.http.get<unknown>(`${backends.chat}/api/chat/groups${query}`).pipe(map(response => {
             const page = toGroupPage(response);
             if (!page) throw new InvalidGroupProjectionError();
@@ -88,6 +92,8 @@ export class ConversationService {
     public transferGroupOwnership(id: string, userID: string): Observable<GroupConversation> { return this.mapGroup(this.http.post<GroupWire>(`${backends.chat}/api/chat/groups/${id}/ownership`, {user_id: userID})); }
     public leaveGroup(id: string): Observable<void> { return this.http.post<void>(`${backends.chat}/api/chat/groups/${id}/leave`, {}); }
     public deleteGroup(id: string): Observable<void> { return this.http.delete<void>(`${backends.chat}/api/chat/groups/${id}`); }
+    public archiveConversation(id: string): Observable<void> { return this.http.put<void>(`${backends.chat}/api/chat/conversations/${encodeURIComponent(id)}/archive`, {}); }
+    public restoreConversation(id: string): Observable<void> { return this.http.delete<void>(`${backends.chat}/api/chat/conversations/${encodeURIComponent(id)}/archive`); }
 
     private mapGroup(source: Observable<GroupWire>): Observable<GroupConversation> {
         return source.pipe(map(group => {

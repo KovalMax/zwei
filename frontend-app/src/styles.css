@@ -9,12 +9,22 @@
 @import "@fontsource/manrope/latin-600.css";
 @import "@fontsource/manrope/latin-700.css";
 @import "./app/home/home-call-minimized.css";
+app-home .archive-mode-tabs { display: flex; gap: 4px; margin: 10px 8px 2px; padding: 3px; border-radius: 11px; background: var(--chat-surface-raised); }
+app-home .archive-mode-tabs button { flex: 1; min-height: 44px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-muted); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+app-home .archive-mode-tabs button.active { background: color-mix(in srgb, var(--chat-accent) 18%, var(--chat-surface)); box-shadow: inset 0 0 0 1px var(--chat-accent); color: var(--chat-text-strong); }
+app-home .archive-mode-tabs button:focus-visible, app-home .archive-chat-button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+app-home .conversation-row { display: flex; align-items: stretch; min-width: 0; }
+app-home .conversation-row .person-option { min-width: 0; flex: 1; }
+app-home .archive-chat-button { align-self: center; min-height: 44px; margin-right: 6px; padding: 0 8px; border: 1px solid var(--chat-line-strong); border-radius: 8px; background: var(--chat-surface-control); color: var(--chat-text); font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+app-home .archive-chat-button:hover:not(:disabled) { border-color: var(--chat-accent); background: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface-control)); }
+app-home .archive-chat-button:disabled { opacity: .65; }
+app-home .archive-action-error { margin: 5px 12px; color: var(--chat-danger-text); font-size: 12px; }
+@media (max-width: 700px) { app-home .archive-chat-button { margin-right: 4px; padding-inline: 7px; } }
 app-home .people-list .group-page-error { position: sticky; z-index: 1; bottom: 0; display: flex; width: calc(100% - 8px); min-width: 0; box-sizing: border-box; flex-wrap: wrap; align-items: center; gap: 2px 12px; margin: 8px 4px; padding: 4px 12px; border: 1px solid var(--chat-danger-text); border-radius: var(--zwei-radius-control); background: var(--chat-danger-surface); color: var(--chat-danger-text); font-size: 13px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .light-theme app-home .people-list .group-page-error { --chat-danger-surface: #fae9e7; --chat-danger-text: #6b2525; }
 app-home .people-list .group-page-error button { min-height: 44px; flex: 0 0 auto; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); background: var(--chat-surface-control); color: var(--chat-text-strong); font: 700 13px 'DM Sans', sans-serif; cursor: pointer; }
 app-home .people-list .group-page-error button:hover:not(:disabled) { border-color: var(--zwei-focus); background: color-mix(in srgb, var(--zwei-focus) 12%, var(--chat-surface-control)); }
 app-home .people-list .group-page-error button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
-app-home .people-list::after { content: ''; display: block; height: calc(var(--people-row-aligned-height, 70px) * 2 + var(--people-end-alignment-offset, 0px)); flex: 0 0 auto; }
 app-home .people-list .load-more-groups { position: sticky; z-index: 1; bottom: 0; box-sizing: border-box; min-height: 44px; margin: 8px 4px; padding: 0 14px; border: 1px solid var(--chat-line-strong); border-radius: var(--zwei-radius-control); color: var(--chat-text); background: var(--chat-surface-control); font: 700 13px/1 'DM Sans', sans-serif; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
 app-home .people-list .load-more-groups:hover:not(:disabled) { border-color: var(--chat-accent); background: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface-control)); }
 app-home .people-list .load-more-groups:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }

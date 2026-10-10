@@ -3450,7 +3450,7 @@ test('Home people search clears results, distinguishes empty and failed states, 
     await search.fill(errorQuery);
     await expect(resultOptions).toHaveCount(0);
     await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
-    await expect(page.locator('.conversation-rail [role="status"]')).toHaveCount(0);
+    await expect(searchStatus).toHaveCount(0);
 
     // The stale request is deliberately held while a newer query completes. Releasing it
     // afterward proves that an obsolete completion cannot overwrite the current options.
@@ -4251,7 +4251,7 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await owner.getByRole('button', {name: 'Cancel'}).click();
     await expect(owner.locator('.conversation-rail')).toBeVisible();
     await owner.setViewportSize({width: 2560, height: 1440});
-    await owner.getByRole('button', {name: /Browser acceptance group/}).click();
+    await owner.getByRole('button', {name: 'Browser acceptance group', exact: true}).click();
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toBeVisible();
     await owner.screenshot({path: testInfo.outputPath('group-manager-light-desktop.png'), fullPage: false});
     const firstGroupMessage = `group-message-${Date.now()}`;

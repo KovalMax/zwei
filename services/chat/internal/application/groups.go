@@ -32,8 +32,9 @@ type GroupSortKey struct {
 
 // GroupPageCursor bounds traversal without granting access to any group.
 type GroupPageCursor struct {
-	Upper GroupSortKey
-	After GroupSortKey
+	Upper    GroupSortKey
+	After    GroupSortKey
+	Archived bool
 }
 
 type GroupPage struct {
@@ -44,7 +45,7 @@ type GroupPage struct {
 // GroupStore is the persistence port consumed by group use cases.
 type GroupStore interface {
 	CreateGroup(context.Context, uuid.UUID, string, []uuid.UUID) (conversation.Group, error)
-	ListGroupsPage(context.Context, uuid.UUID, int, *GroupPageCursor) (GroupPage, error)
+	ListGroupsPage(context.Context, uuid.UUID, int, bool, *GroupPageCursor) (GroupPage, error)
 	GetGroup(context.Context, uuid.UUID, uuid.UUID) (conversation.Group, error)
 	AddMember(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Group, error)
 	RemoveMember(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Group, error)
@@ -90,14 +91,17 @@ func (g *Groups) Get(ctx context.Context, callerID, groupID uuid.UUID) (conversa
 	return g.store.GetGroup(ctx, callerID, groupID)
 }
 
-func (g *Groups) ListPage(ctx context.Context, callerID uuid.UUID, limit int, cursor *GroupPageCursor) (GroupPage, error) {
+func (g *Groups) ListPage(ctx context.Context, callerID uuid.UUID, limit int, archived bool, cursor *GroupPageCursor) (GroupPage, error) {
 	if callerID == uuid.Nil || limit < 1 || limit > MaxGroupPageLimit {
 		return GroupPage{}, ErrInvalidGroupPage
 	}
 	if err := ValidateGroupPageCursor(cursor); err != nil {
 		return GroupPage{}, ErrInvalidGroupPage
 	}
-	return g.store.ListGroupsPage(ctx, callerID, limit, cursor)
+	if cursor != nil && cursor.Archived != archived {
+		return GroupPage{}, ErrInvalidGroupPage
+	}
+	return g.store.ListGroupsPage(ctx, callerID, limit, archived, cursor)
 }
 
 func ValidateGroupPageCursor(cursor *GroupPageCursor) error {

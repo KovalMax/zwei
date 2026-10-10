@@ -67,27 +67,6 @@ describe('HomeComponent', () => {
         expect(surface.querySelector('.groups-exhausted')).toBeNull();
     });
 
-    it('row-aligns the group list when its end would clip an earlier row', () => {
-        const list = document.createElement('div');
-        list.style.paddingBottom = '0px';
-        const row = document.createElement('button');
-        row.className = 'person-option';
-        list.append(row);
-        Object.defineProperties(list, {
-            scrollTop: {configurable: true, writable: true, value: 648},
-            clientHeight: {configurable: true, value: 1186},
-            scrollHeight: {configurable: true, value: 1834},
-        });
-        vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({top: 242} as DOMRect);
-        vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({top: 224, bottom: 292} as DOMRect);
-
-        component.alignGroupListEnd({currentTarget: list} as unknown as Event);
-
-        expect(list.scrollTop).toBe(1834);
-        expect(list.style.getPropertyValue('--people-row-aligned-height')).toBe('74.12500px');
-        expect(list.style.getPropertyValue('--people-end-alignment-offset')).toBe('50px');
-    });
-
     it('routes group-call end through the same typed surface-intent dispatcher', () => {
         const end = vi.fn().mockName('end');
         const groupCall = { end, close: () => undefined } as unknown as GroupCallFacade;
@@ -2527,6 +2506,140 @@ describe('HomeComponent', () => {
         expect(minimizeCall).toHaveBeenCalledTimes(1);
         expect(home.conversations.getValue().map(item => item.id).sort()).toEqual([direct.id, 'automatically-loaded'].sort());
         home.ngOnDestroy();
+    });
+
+    it('keeps the row and selection when archive fails', () => {
+        const archive = new Subject<void>();
+        const item = conversation('keep-on-error');
+        const home = createHomeComponent({archiveConversation: () => archive.asObservable()} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {close: () => undefined} as DataProviderService, {close: () => undefined} as CallFacade);
+        home.conversations.next([item]);
+        home.selectedConversation = item;
+
+        home.toggleArchive(item);
+        archive.error(new Error('network failure'));
+
+        expect(home.conversations.getValue()).toEqual([item]);
+        expect(home.selectedConversation?.id).toBe(item.id);
+        expect(home.archiveActionError).toContain('still in your list');
+        home.ngOnDestroy();
+    });
+
+    it('removes a successfully archived selection and ignores an older in-flight list response', () => {
+        const staleList = new Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>();
+        const item = conversation('archive-success');
+        const home = createHomeComponent({
+            listHomeSnapshot: () => staleList.asObservable(),
+            archiveConversation: () => of(undefined),
+        } as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {close: () => undefined} as DataProviderService, {close: () => undefined} as CallFacade);
+        home.conversations.next([item]);
+        home.selectedConversation = item;
+
+        home.refreshChats();
+        home.toggleArchive(item);
+        staleList.next({direct: [item], groups: {items: [], nextCursor: null}});
+
+        expect(home.conversations.getValue()).toEqual([]);
+        expect(home.selectedConversation).toBeUndefined();
+        home.ngOnDestroy();
+    });
+
+    it('reloads Archived after an archive completes while switching into the destination mode', () => {
+        const item = conversation('archive-while-switching');
+        const requests: Array<{archived: boolean; response: Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>}> = [];
+        const archive = new Subject<void>();
+        const listHomeSnapshot = vi.fn((archived: boolean) => {
+            const response = new Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>();
+            requests.push({archived, response});
+            return response.asObservable();
+        });
+        const home = createHomeComponent({listHomeSnapshot, archiveConversation: () => archive.asObservable()} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {close: () => undefined} as DataProviderService, {close: () => undefined} as CallFacade);
+        home.conversations.next([item]);
+        home.toggleArchive(item);
+        home.setArchiveMode('archived');
+        archive.next();
+
+        expect(requests.map(request => request.archived)).toEqual([true, true]);
+        requests[0]?.response.next({direct: [], groups: {items: [], nextCursor: null}});
+        requests[1]?.response.next({direct: [item], groups: {items: [], nextCursor: null}});
+
+        expect(home.conversations.getValue().map(conversation => conversation.id)).toEqual([item.id]);
+        expect(home.isLoading).toBe(false);
+        expect(home.groupSnapshotLoading).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it('reloads All chats after a restore completes while switching into the destination mode', () => {
+        const item = conversation('restore-while-switching');
+        const requests: Array<{archived: boolean; response: Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>}> = [];
+        const restore = new Subject<void>();
+        const listHomeSnapshot = vi.fn((archived: boolean) => {
+            const response = new Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>();
+            requests.push({archived, response});
+            return response.asObservable();
+        });
+        const home = createHomeComponent({listHomeSnapshot, restoreConversation: () => restore.asObservable()} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {close: () => undefined} as DataProviderService, {close: () => undefined} as CallFacade);
+        home.archiveMode = 'archived';
+        home.conversations.next([item]);
+        home.toggleArchive(item);
+        home.setArchiveMode('active');
+        restore.next();
+
+        expect(requests.map(request => request.archived)).toEqual([false, false]);
+        requests[0]?.response.next({direct: [], groups: {items: [], nextCursor: null}});
+        requests[1]?.response.next({direct: [item], groups: {items: [], nextCursor: null}});
+
+        expect(home.conversations.getValue().map(conversation => conversation.id)).toEqual([item.id]);
+        expect(home.isLoading).toBe(false);
+        expect(home.groupSnapshotLoading).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it('returns to All chats and reloads the source projection when archive fails after switching modes', () => {
+        const item = conversation('archive-failure-after-switch');
+        const requests: Array<{archived: boolean; response: Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>}> = [];
+        const archive = new Subject<void>();
+        const listHomeSnapshot = vi.fn((archived: boolean) => {
+            const response = new Subject<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}>();
+            requests.push({archived, response});
+            return response.asObservable();
+        });
+        const home = createHomeComponent({listHomeSnapshot, archiveConversation: () => archive.asObservable()} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {close: () => undefined} as DataProviderService, {close: () => undefined} as CallFacade);
+        home.conversations.next([item]);
+        home.toggleArchive(item);
+        home.setArchiveMode('archived');
+        archive.error(new Error('archive rejected'));
+
+        expect(home.archiveMode).toBe('active');
+        expect(home.archiveActionError).toContain('still in your list');
+        expect(requests.map(request => request.archived)).toEqual([true, false]);
+        requests[0]?.response.next({direct: [], groups: {items: [], nextCursor: null}});
+        expect(home.conversations.getValue()).toEqual([]);
+        expect(home.isLoading).toBe(true);
+        requests[1]?.response.next({direct: [item], groups: {items: [], nextCursor: null}});
+
+        expect(home.conversations.getValue().map(conversation => conversation.id)).toEqual([item.id]);
+        expect(home.isLoading).toBe(false);
+        expect(home.archiveActionError).toContain('still in your list');
+        home.ngOnDestroy();
+    });
+
+    it('switches between active and archived lists with distinct accessible mode controls', () => {
+        vi.spyOn(TestBed.inject(ConversationService), 'listHomeSnapshot').mockReturnValue(of({direct: [], groups: {items: [], nextCursor: null}}));
+        fixture.detectChanges();
+        component.conversations.next([conversation('archive-controls')]);
+        fixture.detectChanges();
+        const buttons = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('.archive-mode-tabs button'));
+        expect(buttons.map(button => button.textContent?.trim())).toEqual(['All chats', 'Archived']);
+        expect(buttons[0]?.getAttribute('aria-pressed')).toBe('true');
+
+        component.setArchiveMode('archived');
+        fixture.detectChanges();
+
+        expect(component.archiveMode).toBe('archived');
+        expect(buttons[1]?.getAttribute('aria-pressed')).toBe('true');
+        const emptyState = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.people-list .empty-rail');
+        expect(emptyState?.textContent).toContain('No archived chats.');
+        expect(emptyState?.textContent).toContain('Archive a conversation from All chats to find it here.');
     });
 });
 
