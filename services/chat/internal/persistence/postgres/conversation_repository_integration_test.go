@@ -159,6 +159,258 @@ func TestRepositoryConcurrentDirectCreateAndListWithSingleConnection(t *testing.
 	}
 }
 
+func TestRepositoryArchiveIsPerUserIdempotentAndFiltersDirectAndGroups(t *testing.T) {
+	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, peer := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{owner, peer} {
+		if _, err := db.Exec(ctx, `INSERT INTO users (id,email,password_hash,display_name,kyc_status,email_verified_at) VALUES ($1,$2,'integration','Archive',1,now())`, id, id.String()+"@integration.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		_, _ = db.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{owner, peer})
+	}()
+	repo := NewConversationRepository(db, "archive-integration-key")
+	direct, err := repo.Create(ctx, owner, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := repo.CreateGroup(ctx, owner, "Archive group", []uuid.UUID{peer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		id       uuid.UUID
+		archived bool
+	}{{direct.ID, true}, {group.ID, true}, {direct.ID, true}} {
+		if err := repo.SetArchived(ctx, owner, item.id, item.archived); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activeDirect, err := repo.ListDirect(ctx, owner, false)
+	if err != nil || len(activeDirect) != 0 {
+		t.Fatalf("active direct=%+v err=%v", activeDirect, err)
+	}
+	archivedDirect, err := repo.ListDirect(ctx, owner, true)
+	if err != nil || len(archivedDirect) != 1 || archivedDirect[0].ID != direct.ID {
+		t.Fatalf("archived direct=%+v err=%v", archivedDirect, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE conversations SET last_message_at = now() + interval '1 second' WHERE id = $1`, direct.ID); err != nil {
+		t.Fatal(err)
+	}
+	activeDirect, err = repo.ListDirect(ctx, owner, false)
+	if err != nil || len(activeDirect) != 0 {
+		t.Fatalf("new activity restored archived direct: %+v err=%v", activeDirect, err)
+	}
+	peerDirect, err := repo.ListDirect(ctx, peer, false)
+	if err != nil || len(peerDirect) != 1 || peerDirect[0].ID != direct.ID {
+		t.Fatalf("other user's direct list=%+v err=%v", peerDirect, err)
+	}
+	activeGroups, err := repo.ListGroupsPage(ctx, owner, 25, false, nil)
+	if err != nil || len(activeGroups.Items) != 0 {
+		t.Fatalf("active groups=%+v err=%v", activeGroups, err)
+	}
+	archivedGroups, err := repo.ListGroupsPage(ctx, owner, 25, true, nil)
+	if err != nil || len(archivedGroups.Items) != 1 || archivedGroups.Items[0].ID != group.ID {
+		t.Fatalf("archived groups=%+v err=%v", archivedGroups, err)
+	}
+	peerGroups, err := repo.ListGroupsPage(ctx, peer, 25, false, nil)
+	if err != nil || len(peerGroups.Items) != 1 || peerGroups.Items[0].ID != group.ID {
+		t.Fatalf("other user's group list=%+v err=%v", peerGroups, err)
+	}
+	if err := repo.SetArchived(ctx, owner, group.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetArchived(ctx, owner, group.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	activeGroups, err = repo.ListGroupsPage(ctx, owner, 25, false, nil)
+	if err != nil || len(activeGroups.Items) != 1 {
+		t.Fatalf("restored groups=%+v err=%v", activeGroups, err)
+	}
+	if err := repo.SetArchived(ctx, uuid.New(), group.ID, true); !errors.Is(err, application.ErrConversationNotFound) {
+		t.Fatalf("inaccessible archive error=%v, want not found", err)
+	}
+}
+
+func TestRepositoryArchivedGroupPagesFilterBeforeLimitAndContinueExactlyOnce(t *testing.T) {
+	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner := uuid.New()
+	if _, err := db.Exec(ctx, `INSERT INTO users (id,email,password_hash,display_name,kyc_status,email_verified_at) VALUES ($1,$2,'integration','Paged archive',1,now())`, owner, owner.String()+"@integration.test"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = db.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, owner) }()
+	repo := NewConversationRepository(db, "archive-pagination-key")
+	const groupCount = 32
+	archivedIDs := make(map[uuid.UUID]struct{}, 28)
+	for i := range groupCount {
+		group, err := repo.CreateGroup(ctx, owner, fmt.Sprintf("Archive page %02d", i), nil)
+		if err != nil {
+			t.Fatalf("create group %d: %v", i, err)
+		}
+		if _, err := db.Exec(ctx, `UPDATE conversations SET last_message_at = now() + ($2 * interval '1 second') WHERE id = $1`, group.ID, i); err != nil {
+			t.Fatalf("set group activity %d: %v", i, err)
+		}
+		// Leave four active groups interleaved through the activity ordering.
+		if i != 3 && i != 10 && i != 20 && i != 31 {
+			if err := repo.SetArchived(ctx, owner, group.ID, true); err != nil {
+				t.Fatalf("archive group %d: %v", i, err)
+			}
+			archivedIDs[group.ID] = struct{}{}
+		}
+	}
+	active, err := repo.ListGroupsPage(ctx, owner, 25, false, nil)
+	if err != nil || len(active.Items) != 4 {
+		t.Fatalf("active groups count=%d err=%v, want 4", len(active.Items), err)
+	}
+	page, err := repo.ListGroupsPage(ctx, owner, 25, true, nil)
+	if err != nil {
+		t.Fatalf("list first archived page: %v", err)
+	}
+	if len(page.Items) != 25 || page.NextCursor == nil {
+		t.Fatalf("first archived page length=%d cursor=%v, want 25 and continuation", len(page.Items), page.NextCursor)
+	}
+	seen := make(map[uuid.UUID]struct{}, len(archivedIDs))
+	for _, group := range page.Items {
+		if _, ok := archivedIDs[group.ID]; !ok {
+			t.Fatalf("active/unexpected group %s entered archived page", group.ID)
+		}
+		seen[group.ID] = struct{}{}
+	}
+	cursor := page.NextCursor
+	for cursor != nil {
+		page, err = repo.ListGroupsPage(ctx, owner, 25, true, cursor)
+		if err != nil {
+			t.Fatalf("continue archived page: %v", err)
+		}
+		for _, group := range page.Items {
+			if _, ok := archivedIDs[group.ID]; !ok {
+				t.Fatalf("active/unexpected group %s entered archived continuation", group.ID)
+			}
+			if _, duplicate := seen[group.ID]; duplicate {
+				t.Fatalf("archived group %s appeared on multiple pages", group.ID)
+			}
+			seen[group.ID] = struct{}{}
+		}
+		cursor = page.NextCursor
+	}
+	if len(seen) != len(archivedIDs) {
+		t.Fatalf("walked %d unique archived groups, want %d", len(seen), len(archivedIDs))
+	}
+}
+
+func TestArchiveRacingGroupLeaveCannotPersistPreferenceForInactiveMember(t *testing.T) {
+	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, member := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{owner, member} {
+		if _, err := db.Exec(ctx, `INSERT INTO users (id,email,password_hash,display_name,kyc_status,email_verified_at) VALUES ($1,$2,'integration','Archive race',1,now())`, id, id.String()+"@integration.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		_, _ = db.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{owner, member})
+	}()
+	repo := NewConversationRepository(db, "archive-race-key")
+	group, err := repo.CreateGroup(ctx, owner, "Archive leave race", []uuid.UUID{member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(context.Background())
+	var lockedID uuid.UUID
+	if err := blocker.QueryRow(ctx, `SELECT id FROM conversations WHERE id = $1 FOR UPDATE`, group.ID).Scan(&lockedID); err != nil {
+		t.Fatal(err)
+	}
+	leaveResult := make(chan error, 1)
+	go func() { leaveResult <- repo.LeaveGroup(ctx, member, group.ID) }()
+	if err := waitForLockWait(ctx, db, "SELECT m.role, c.owner_id, c.next_sequence"); err != nil {
+		t.Fatalf("wait for leave transaction to queue on group lock: %v", err)
+	}
+	archiveResult := make(chan error, 1)
+	go func() { archiveResult <- repo.SetArchived(ctx, member, group.ID, true) }()
+	if err := waitForLockWait(ctx, db, "SELECT c.kind FROM conversations c JOIN conversation_members m"); err != nil {
+		t.Fatalf("wait for archive transaction to queue behind leave: %v", err)
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-leaveResult:
+		if err != nil {
+			t.Fatalf("leave group: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("leave did not finish: %v", ctx.Err())
+	}
+	select {
+	case err := <-archiveResult:
+		if !errors.Is(err, application.ErrConversationNotFound) {
+			t.Fatalf("archive result=%v, want inaccessible conversation", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("archive did not finish: %v", ctx.Err())
+	}
+	var active, preferenceExists bool
+	if err := db.QueryRow(ctx, `SELECT m.active, EXISTS (SELECT 1 FROM conversation_archives WHERE conversation_id = $1 AND user_id = $2) FROM conversation_members m WHERE m.conversation_id = $1 AND m.user_id = $2`, group.ID, member).Scan(&active, &preferenceExists); err != nil {
+		t.Fatal(err)
+	}
+	if active || preferenceExists {
+		t.Fatalf("after leave/archive race active=%t archive preference=%t, want false/false", active, preferenceExists)
+	}
+}
+
+func waitForLockWait(ctx context.Context, db *pgxpool.Pool, queryFragment string) error {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND position($1 in query) > 0)`, queryFragment).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestRepositoryGroupMembershipMutationsRemainConsistentUnderConcurrency(t *testing.T) {
 	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -435,7 +687,7 @@ func TestRepositoryGroupReadsUseActiveMembershipSnapshotAndSelfTransferIsReadOnl
 		}
 	}
 
-	groupPage, err := repository.ListGroupsPage(ctx, ownerID, 25, nil)
+	groupPage, err := repository.ListGroupsPage(ctx, ownerID, 25, false, nil)
 	groups := groupPage.Items
 	if err != nil {
 		t.Fatalf("list groups: %v", err)
@@ -479,7 +731,7 @@ func TestRepositoryGroupReadsUseActiveMembershipSnapshotAndSelfTransferIsReadOnl
 	if _, err := db.Exec(ctx, `UPDATE conversation_members SET active = false, left_at = now() WHERE conversation_id = $1 AND user_id = $2`, secondGroup.ID, ownerID); err != nil {
 		t.Fatalf("deactivate caller membership: %v", err)
 	}
-	groupPage, err = repository.ListGroupsPage(ctx, ownerID, 25, nil)
+	groupPage, err = repository.ListGroupsPage(ctx, ownerID, 25, false, nil)
 	groups = groupPage.Items
 	if err != nil {
 		t.Fatalf("list groups after membership removal: %v", err)
@@ -545,7 +797,7 @@ func TestRepositoryGroupPagesBoundAndTraverseAuthorizedProjections(t *testing.T)
 		t.Fatalf("deactivate caller membership: %v", err)
 	}
 
-	first, err := repository.ListGroupsPage(ctx, ownerID, 25, nil)
+	first, err := repository.ListGroupsPage(ctx, ownerID, 25, false, nil)
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -570,7 +822,7 @@ func TestRepositoryGroupPagesBoundAndTraverseAuthorizedProjections(t *testing.T)
 			t.Fatalf("active member projection = %+v", group.Members)
 		}
 	}
-	second, err := repository.ListGroupsPage(ctx, ownerID, 25, first.NextCursor)
+	second, err := repository.ListGroupsPage(ctx, ownerID, 25, false, first.NextCursor)
 	if err != nil {
 		t.Fatalf("second page: %v", err)
 	}
@@ -589,7 +841,7 @@ func TestRepositoryGroupPagesBoundAndTraverseAuthorizedProjections(t *testing.T)
 	if second.NextCursor.Upper != first.NextCursor.Upper || second.NextCursor.After.GroupID != second.Items[len(second.Items)-1].ID {
 		t.Fatalf("second cursor = %+v, want preserved upper and last emitted key", second.NextCursor)
 	}
-	third, err := repository.ListGroupsPage(ctx, ownerID, 25, second.NextCursor)
+	third, err := repository.ListGroupsPage(ctx, ownerID, 25, false, second.NextCursor)
 	if err != nil {
 		t.Fatalf("third page: %v", err)
 	}
@@ -608,7 +860,7 @@ func TestRepositoryGroupPagesBoundAndTraverseAuthorizedProjections(t *testing.T)
 	if len(seen) != 53 {
 		t.Fatalf("unique groups across pages = %d, want 53", len(seen))
 	}
-	empty, err := repository.ListGroupsPage(ctx, uuid.New(), 25, nil)
+	empty, err := repository.ListGroupsPage(ctx, uuid.New(), 25, false, nil)
 	if err != nil {
 		t.Fatalf("empty page: %v", err)
 	}

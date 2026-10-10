@@ -17,9 +17,10 @@ import (
 const maxGroupCursorLength = 512
 
 type groupCursorWire struct {
-	Version int              `json:"v"`
-	Upper   groupSortKeyWire `json:"upper"`
-	After   groupSortKeyWire `json:"after"`
+	Version  int              `json:"v"`
+	Archived bool             `json:"archived,omitempty"`
+	Upper    groupSortKeyWire `json:"upper"`
+	After    groupSortKeyWire `json:"after"`
 }
 
 type groupSortKeyWire struct {
@@ -27,41 +28,59 @@ type groupSortKeyWire struct {
 	GroupID string `json:"group_id"`
 }
 
-func parseGroupPageQuery(rawQuery string) (int, *application.GroupPageCursor, error) {
+func parseGroupPageQuery(rawQuery string) (int, bool, *application.GroupPageCursor, error) {
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return 0, nil, application.ErrInvalidGroupPage
+		return 0, false, nil, application.ErrInvalidGroupPage
+	}
+	archived, err := parseArchivedValue(values)
+	if err != nil {
+		return 0, false, nil, application.ErrInvalidGroupPage
 	}
 	limit := application.DefaultGroupPageLimit
 	if raw, present := values["limit"]; present {
 		if len(raw) != 1 || raw[0] == "" {
-			return 0, nil, application.ErrInvalidGroupPage
+			return 0, false, nil, application.ErrInvalidGroupPage
 		}
 		limit = 0
 		for _, digit := range raw[0] {
 			if digit < '0' || digit > '9' {
-				return 0, nil, application.ErrInvalidGroupPage
+				return 0, false, nil, application.ErrInvalidGroupPage
 			}
 			limit = limit*10 + int(digit-'0')
 			if limit > application.MaxGroupPageLimit {
-				return 0, nil, application.ErrInvalidGroupPage
+				return 0, false, nil, application.ErrInvalidGroupPage
 			}
 		}
 		if limit == 0 {
-			return 0, nil, application.ErrInvalidGroupPage
+			return 0, false, nil, application.ErrInvalidGroupPage
 		}
 	}
 	var cursor *application.GroupPageCursor
 	if raw, present := values["cursor"]; present {
 		if len(raw) != 1 || raw[0] == "" || len(raw[0]) > maxGroupCursorLength {
-			return 0, nil, application.ErrInvalidGroupPage
+			return 0, false, nil, application.ErrInvalidGroupPage
 		}
 		cursor, err = decodeGroupCursor(raw[0])
 		if err != nil {
-			return 0, nil, application.ErrInvalidGroupPage
+			return 0, false, nil, application.ErrInvalidGroupPage
 		}
 	}
-	return limit, cursor, nil
+	if cursor != nil && cursor.Archived != archived {
+		return 0, false, nil, application.ErrInvalidGroupPage
+	}
+	return limit, archived, cursor, nil
+}
+
+func parseArchivedValue(values url.Values) (bool, error) {
+	raw, present := values["archived"]
+	if !present {
+		return false, nil
+	}
+	if len(raw) != 1 || (raw[0] != "true" && raw[0] != "false") {
+		return false, errors.New("invalid archive scope")
+	}
+	return raw[0] == "true", nil
 }
 
 func decodeGroupCursor(value string) (*application.GroupPageCursor, error) {
@@ -78,8 +97,11 @@ func decodeGroupCursor(value string) (*application.GroupPageCursor, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("trailing cursor data")
 	}
-	if wire.Version != 1 {
+	if wire.Version != 1 && wire.Version != 2 {
 		return nil, errors.New("unsupported cursor version")
+	}
+	if wire.Version == 1 && wire.Archived {
+		return nil, errors.New("invalid v1 cursor scope")
 	}
 	upper, err := decodeGroupSortKey(wire.Upper)
 	if err != nil {
@@ -89,11 +111,11 @@ func decodeGroupCursor(value string) (*application.GroupPageCursor, error) {
 	if err != nil {
 		return nil, err
 	}
-	cursor := &application.GroupPageCursor{Upper: upper, After: after}
+	cursor := &application.GroupPageCursor{Upper: upper, After: after, Archived: wire.Version == 2 && wire.Archived}
 	if err := application.ValidateGroupPageCursor(cursor); err != nil {
 		return nil, err
 	}
-	canonical, err := json.Marshal(groupCursorWire{Version: 1, Upper: encodeGroupSortKey(upper), After: encodeGroupSortKey(after)})
+	canonical, err := json.Marshal(wire)
 	if err != nil || !bytes.Equal(canonical, data) {
 		return nil, errors.New("non-canonical cursor")
 	}
@@ -114,6 +136,10 @@ func decodeGroupSortKey(wire groupSortKeyWire) (application.GroupSortKey, error)
 
 func encodeGroupCursor(cursor application.GroupPageCursor) (string, error) {
 	wire := groupCursorWire{Version: 1, Upper: encodeGroupSortKey(cursor.Upper), After: encodeGroupSortKey(cursor.After)}
+	if cursor.Archived {
+		wire.Version = 2
+		wire.Archived = true
+	}
 	data, err := json.Marshal(wire)
 	if err != nil {
 		return "", err

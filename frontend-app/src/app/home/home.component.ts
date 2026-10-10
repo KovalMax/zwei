@@ -32,6 +32,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     private readonly selectedConversationKey = 'zwei_selected_conversation';
     public conversations = new BehaviorSubject<Conversation[]>([]);
     public isLoading = true;
+    public conversationsError = false;
+    public archiveMode: 'active' | 'archived' = 'active';
+    public archiveActionError = '';
+    public readonly archiveActionsPending = new Set<string>();
     public groupPageLoading = false;
     public groupPageError = false;
     public groupPageLoaded = false;
@@ -108,6 +112,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     private recoveryGeneration = 0;
     private navigationIntentVersion = 0;
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
+    @ViewChild('archiveModeControl') private archiveModeControl?: ElementRef<HTMLButtonElement>;
     @ViewChild(GroupMemberListComponent) private groupMemberList?: GroupMemberListComponent;
 
     constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade) {
@@ -294,37 +299,6 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     public trackConversation(_index: number, conversation: Conversation): string { return conversation.id; }
 
-    public alignGroupListEnd(event: Event): void {
-        const list = event.currentTarget;
-        if (!(list instanceof HTMLElement) || list.scrollTop + list.clientHeight < list.scrollHeight - 70) return;
-
-        const footer = list.querySelector<HTMLElement>('.group-page-error, .load-more-groups');
-        const footerStyle = footer ? getComputedStyle(footer) : undefined;
-        const footerExtent = footer && footerStyle
-            ? footer.getBoundingClientRect().height + (Number.parseFloat(footerStyle.marginTop) || 0) + (Number.parseFloat(footerStyle.marginBottom) || 0)
-            : 0;
-        const listStyle = getComputedStyle(list);
-        const bottomPadding = Number.parseFloat(listStyle.paddingBottom) || 0;
-        const rowsExtent = Math.max(1, list.clientHeight - footerExtent - bottomPadding);
-        const visibleRows = Math.max(1, Math.floor(rowsExtent / 70));
-        const rowHeight = `${(Math.floor((rowsExtent / visibleRows) * 64) / 64).toFixed(5)}px`;
-        if (list.style.getPropertyValue('--people-row-aligned-height') !== rowHeight) {
-            list.style.setProperty('--people-row-aligned-height', rowHeight);
-            list.style.setProperty('--people-end-alignment-offset', '0px');
-            list.scrollTop = list.scrollHeight;
-        }
-
-        const listTop = list.getBoundingClientRect().top;
-        const clippedRow = Array.from(list.querySelectorAll<HTMLElement>('.person-option')).find(row => {
-            const bounds = row.getBoundingClientRect();
-            return bounds.top < listTop && bounds.bottom > listTop;
-        });
-        if (!clippedRow) return;
-
-        const clippedPixels = clippedRow.getBoundingClientRect().bottom - listTop;
-        list.style.setProperty('--people-end-alignment-offset', `${clippedPixels}px`);
-        list.scrollTop = list.scrollHeight;
-    }
     public trackUserResult(_index: number, user: UserSearchResult): string { return user.id; }
     public trackGroupMember(_index: number, member: GroupConversation['members'][number]): string { return member.userId; }
     public trackGroupPeer(_index: number, peer: GroupCallPeer): string { return `${peer.userID}:${peer.deviceID}`; }
@@ -1091,6 +1065,12 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.refreshConversations();
     }
 
+    public retryConversationList(): void {
+        this.isLoading = true;
+        this.conversationsError = false;
+        this.refreshConversations();
+    }
+
     public canLoadMoreGroups(): boolean { return this.groupNextCursor !== null; }
     public get groupsExhausted(): boolean { return this.groupPageLoaded && this.groupNextCursor === null && this.conversations.getValue().some(item => item.kind === 'group'); }
 
@@ -1149,6 +1129,7 @@ export class HomeComponent implements OnInit, OnDestroy {
                 this.initialConversationLoadState = 'ready';
                 this.completeInitialRecovery();
                 this.isLoading = false;
+                this.conversationsError = false;
                 this.changeDetector.markForCheck();
             },
             error: () => {
@@ -1163,6 +1144,7 @@ export class HomeComponent implements OnInit, OnDestroy {
                 this.initialConversationLoadState = 'failed';
                 this.completeInitialRecovery();
                 this.isLoading = false;
+                this.conversationsError = true;
                 this.changeDetector.markForCheck();
             },
         });
@@ -1192,8 +1174,10 @@ export class HomeComponent implements OnInit, OnDestroy {
                 }
                 this.groupNextCursor = snapshot.groups.nextCursor;
                 this.groupSnapshotLoading = false;
+                this.isLoading = false;
                 this.groupPageError = false;
                 this.groupPageLoaded = true;
+                this.conversationsError = false;
                 const projectedConversations = this.mergeConversationSnapshot(conversations, true);
                 this.conversations.next(projectedConversations);
                 this.restoreSelectedConversation(projectedConversations);
@@ -1307,8 +1291,10 @@ export class HomeComponent implements OnInit, OnDestroy {
                 }
                 this.groupNextCursor = snapshot.groups.nextCursor;
                 this.groupSnapshotLoading = false;
+                this.isLoading = false;
                 this.groupPageError = false;
                 this.groupPageLoaded = true;
+                this.conversationsError = false;
                 const projectedConversations = this.mergeConversationSnapshot(conversations, true);
                 this.conversations.next(projectedConversations);
                 const selected = this.selectedConversation;
@@ -1349,6 +1335,8 @@ export class HomeComponent implements OnInit, OnDestroy {
                 if (generation !== this.conversationRefreshGeneration) return;
                 if (retriesRemaining === 0) {
                     this.groupSnapshotLoading = false;
+                    this.isLoading = false;
+                    this.conversationsError = true;
                     this.changeDetector.markForCheck();
                     return;
                 }
@@ -1386,7 +1374,72 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     private homeSnapshot(): Observable<{direct: Conversation[]; groups: {items: GroupConversation[]; nextCursor: string | null}}> {
-        return this.conversationService.listHomeSnapshot();
+        return this.conversationService.listHomeSnapshot(this.archiveMode === 'archived');
+    }
+
+    public setArchiveMode(mode: 'active' | 'archived'): void {
+        if (this.archiveMode === mode) return;
+        this.changeArchiveMode(mode, true);
+    }
+
+    private changeArchiveMode(mode: 'active' | 'archived', clearActionError: boolean): void {
+        if (this.archiveMode === mode) return;
+        this.archiveMode = mode;
+        if (clearActionError) this.archiveActionError = '';
+        this.closeConversation();
+        this.showGroupManager = false;
+        this.conversations.next([]);
+        this.groupNextCursor = null;
+        this.groupPageLoaded = false;
+        this.groupPageError = false;
+        this.groupPageLoading = false;
+        this.isLoading = true;
+        this.conversationsError = false;
+        this.cancelGroupPageRequest();
+        this.groupSnapshotLoading = false;
+        this.loadInitialConversations(++this.conversationRefreshGeneration, 0);
+        this.changeDetector.markForCheck();
+    }
+
+    public toggleArchive(conversation: Conversation): void {
+        if (this.archiveActionsPending.has(conversation.id)) return;
+        const sourceMode = this.archiveMode;
+        const archiving = sourceMode === 'active';
+        const destinationMode = archiving ? 'archived' : 'active';
+        this.archiveActionError = '';
+        this.archiveActionsPending.add(conversation.id);
+        this.changeDetector.markForCheck();
+        const mutation = archiving ? this.conversationService.archiveConversation(conversation.id) : this.conversationService.restoreConversation(conversation.id);
+        const subscription = mutation.pipe(finalize(() => {
+            this.archiveActionsPending.delete(conversation.id);
+            this.changeDetector.markForCheck();
+        })).subscribe({
+            next: () => {
+                if (this.selectedConversation?.id === conversation.id) this.closeConversation();
+                this.archiveModeControl?.nativeElement.focus();
+                if (this.archiveMode === destinationMode) {
+                    // A destination-mode snapshot may have completed before the mutation did.
+                    // Supersede it and fetch the now-authoritative destination projection.
+                    this.refreshConversations();
+                } else if (this.archiveMode === sourceMode) {
+                    // Stay in source mode: remove locally and settle any list state invalidated
+                    // by the generation bump so the UI cannot remain stuck loading.
+                    ++this.conversationRefreshGeneration;
+                    this.cancelGroupPageRequest();
+                    this.conversations.next(this.conversations.getValue().filter(item => item.id !== conversation.id));
+                    this.groupPageLoading = false;
+                    this.groupSnapshotLoading = false;
+                    this.isLoading = false;
+                    this.changeDetector.markForCheck();
+                }
+            },
+            error: () => {
+                this.archiveActionError = archiving ? 'Could not archive this chat. It is still in your list.' : 'Could not restore this chat. It is still in your list.';
+                if (this.archiveMode !== sourceMode) this.changeArchiveMode(sourceMode, false);
+                this.changeDetector.markForCheck();
+            },
+        });
+        this.listRequests.add(subscription);
     }
 
     private groupVerificationPlaceholder(groupID: string): GroupConversation {
@@ -1415,7 +1468,10 @@ export class HomeComponent implements OnInit, OnDestroy {
         const generation = this.conversationRefreshGeneration;
         const cursor = this.groupNextCursor;
         const projectionGeneration = this.groupAccess.projectionGeneration;
-        const request = this.conversationService.listGroupPage(cursor).pipe(finalize(() => {
+        const pageRequest = this.archiveMode === 'archived'
+            ? this.conversationService.listGroupPage(cursor, true)
+            : this.conversationService.listGroupPage(cursor);
+        const request = pageRequest.pipe(finalize(() => {
             this.groupPageLoading = false;
             this.groupPageRequest = undefined;
         })).subscribe({

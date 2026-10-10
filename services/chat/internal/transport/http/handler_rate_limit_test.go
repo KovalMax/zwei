@@ -156,7 +156,7 @@ type rateLimitGroupStore struct {
 	getCalls  int
 }
 
-func (s *rateLimitGroupStore) ListGroupsPage(context.Context, uuid.UUID, int, *application.GroupPageCursor) (application.GroupPage, error) {
+func (s *rateLimitGroupStore) ListGroupsPage(context.Context, uuid.UUID, int, bool, *application.GroupPageCursor) (application.GroupPage, error) {
 	s.listCalls++
 	return application.GroupPage{}, nil
 }

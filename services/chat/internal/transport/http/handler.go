@@ -25,6 +25,7 @@ type Handler struct {
 	conversations *postgres.Repository
 	history       historyStore
 	groups        *application.Groups
+	archive       archiveService
 	limiter       application.RequestLimiter
 }
 
@@ -32,13 +33,19 @@ type historyStore interface {
 	List(context.Context, uuid.UUID, uuid.UUID, int64, int) ([]conversation.Message, string, error)
 }
 
-func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history historyStore, groups *application.Groups, limiter application.RequestLimiter) *Handler {
-	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history, groups: groups, limiter: limiter}
+type archiveService interface {
+	Set(context.Context, uuid.UUID, uuid.UUID, bool) error
+}
+
+func NewHandler(sender *messaging.Sender, sessions *sharedauth.SessionValidator, conversations *postgres.Repository, history historyStore, groups *application.Groups, archive archiveService, limiter application.RequestLimiter) *Handler {
+	return &Handler{sender: sender, sessions: sessions, conversations: conversations, history: history, groups: groups, archive: archive, limiter: limiter}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/chat/conversations", h.createConversation)
 	mux.HandleFunc("GET /api/chat/conversations", h.listConversations)
+	mux.HandleFunc("PUT /api/chat/conversations/{id}/archive", h.archiveConversation)
+	mux.HandleFunc("DELETE /api/chat/conversations/{id}/archive", h.restoreConversation)
 	mux.HandleFunc("GET /api/chat/users/search", h.searchUsers)
 	mux.HandleFunc("GET /api/chat/conversations/{id}", h.getConversation)
 	mux.HandleFunc("POST /api/chat/conversations/{id}/messages", h.sendMessage)
@@ -60,7 +67,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, cursor, err := parseGroupPageQuery(r.URL.RawQuery)
+	limit, archived, cursor, err := parseGroupPageQuery(r.URL.RawQuery)
 	if err != nil {
 		errorJSON(w, http.StatusBadRequest, "invalid group page")
 		return
@@ -68,7 +75,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 	if !h.allow(w, r, userID, application.RateBucketGroupList) {
 		return
 	}
-	page, err := h.groups.ListPage(r.Context(), userID, limit, cursor)
+	page, err := h.groups.ListPage(r.Context(), userID, limit, archived, cursor)
 	if err != nil {
 		if errors.Is(err, application.ErrInvalidGroupPage) {
 			errorJSON(w, http.StatusBadRequest, "invalid group page")
@@ -379,12 +386,52 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	if !h.allow(w, r, userID, application.RateBucketConversationList) {
 		return
 	}
-	items, err := h.conversations.List(r.Context(), userID)
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid archive filter")
+		return
+	}
+	archived, err := parseArchivedValue(query)
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid archive filter")
+		return
+	}
+	items, err := h.conversations.ListDirect(r.Context(), userID, archived)
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "could not load conversations")
 		return
 	}
 	runtime.WriteJSON(w, http.StatusOK, items)
+}
+
+func (h *Handler) archiveConversation(w http.ResponseWriter, r *http.Request) {
+	h.setConversationArchived(w, r, true)
+}
+func (h *Handler) restoreConversation(w http.ResponseWriter, r *http.Request) {
+	h.setConversationArchived(w, r, false)
+}
+
+func (h *Handler) setConversationArchived(w http.ResponseWriter, r *http.Request, archived bool) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	if !h.allowGroupMutation(w, r, userID) {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid conversation id")
+		return
+	}
+	if err := h.archive.Set(r.Context(), userID, id, archived); errors.Is(err, application.ErrConversationNotFound) {
+		errorJSON(w, http.StatusNotFound, "conversation not found")
+		return
+	} else if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not update conversation archive")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {

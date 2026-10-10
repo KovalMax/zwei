@@ -64,10 +64,6 @@ e2e-one: ## - Run one Playwright test in a spec through isolated setup (SPEC=tes
 e2e-baseline: ## - Update reviewed visual snapshots (SPEC=tests/visual-baseline.spec.ts)
 	$(MAKE) -C infrastructure e2e-baseline
 
-.PHONY: demo
-demo: ## - Record the README browser journey in Docker
-	make -C infrastructure demo
-
 .PHONY: trust-local-ca
 trust-local-ca: ## - Trust the Docker-generated local CA on macOS
 	make -C infrastructure trust-local-ca

@@ -253,12 +253,15 @@ test('stable authenticated Home, search, and group-create visual baselines', asy
         await selectBaselineTheme(page, theme);
         if (viewport.width <= 760) {
           const rail = page.locator('.conversation-rail');
-          await expect(rail.getByText('All chats')).toBeVisible();
+          const activeChatsTab = rail.getByRole('button', {name: 'All chats', exact: true});
+          await expect(activeChatsTab).toBeVisible();
+          await expect(activeChatsTab).toHaveAttribute('aria-pressed', 'true');
           await expect(rail.locator('.people-list')).toBeVisible();
           await expect(rail.locator('.people-list .person-option')).toHaveCount(0);
         } else {
           await expect(page.getByRole('heading', {name: 'Your messages, your space'})).toBeVisible();
         }
+        await expect(page.locator('.conversation-rail .people-list .empty-rail > span')).toHaveText('No conversations yet.');
         await saveAndCompare('home-empty', theme, viewport);
 
         const search = page.getByPlaceholder('Name or email');

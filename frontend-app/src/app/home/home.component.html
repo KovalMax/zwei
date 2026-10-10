@@ -27,19 +27,27 @@
             </button>
         </div>
 
-        <div class="rail-label"><span>All chats</span><span class="count">{{ (conversations | async)?.length || 0 }}</span></div>
-        <div class="people-list" *ngIf="conversations | async as items; else loadingPeople" (scroll)="alignGroupListEnd($event)">
-            <button class="person-option" *ngFor="let conversation of items; trackBy: trackConversation" type="button" [attr.data-conversation-id]="conversation.id" [class.selected]="selectedConversation?.id === conversation.id" [attr.aria-label]="conversationName(conversation)" (click)="selectConversation(conversation)">
+        <div class="archive-mode-tabs" role="group" aria-label="Chat list">
+            <button #archiveModeControl type="button" [class.active]="archiveMode === 'active'" [attr.aria-pressed]="archiveMode === 'active'" (click)="setArchiveMode('active')">All chats</button>
+            <button type="button" [class.active]="archiveMode === 'archived'" [attr.aria-pressed]="archiveMode === 'archived'" (click)="setArchiveMode('archived')">Archived</button>
+        </div>
+        <div class="rail-label"><span>{{ archiveMode === 'active' ? 'All chats' : 'Archived chats' }}</span><span class="count">{{ (conversations | async)?.length || 0 }}</span></div>
+        <p class="archive-action-error" *ngIf="archiveActionError" role="alert">{{ archiveActionError }}</p>
+        <div class="people-list" *ngIf="!conversationsError && (conversations | async) as items">
+            <div class="conversation-row" *ngFor="let conversation of items; trackBy: trackConversation">
+            <button class="person-option" type="button" [attr.data-conversation-id]="conversation.id" [class.selected]="selectedConversation?.id === conversation.id" [attr.aria-label]="conversationName(conversation)" (click)="selectConversation(conversation)">
                 <span class="person-avatar" aria-hidden="true">{{ conversation.kind === 'group' && conversation.accessNeedsVerification ? '?' : initials(conversation) }}</span>
                 <span class="conversation-copy"><strong>{{ conversationName(conversation) }}</strong><small>{{ conversationSubtitle(conversation) }}</small></span><span class="conversation-time" *ngIf="conversation.kind !== 'group' || !conversation.accessNeedsVerification">{{ conversationTime(conversation) }}</span><span class="unread-count" *ngIf="(conversation.kind !== 'group' || !conversation.accessNeedsVerification) && conversation.unreadCount" [attr.aria-label]="conversation.unreadCount + ' unread messages'">{{ conversation.unreadCount }}</span>
             </button>
+            <button class="archive-chat-button" type="button" [disabled]="archiveActionsPending.has(conversation.id)" [attr.aria-label]="(archiveMode === 'active' ? 'Archive ' : 'Restore ') + conversationName(conversation)" (click)="toggleArchive(conversation)">{{ archiveActionsPending.has(conversation.id) ? 'Saving…' : archiveMode === 'active' ? 'Archive' : 'Restore' }}</button>
+            </div>
+            <div class="empty-rail" *ngIf="items.length === 0 && !isLoading" role="status"><zwei-icon name="forum"></zwei-icon><span>{{ archiveMode === 'active' ? 'No conversations yet.' : 'No archived chats.' }}</span><small *ngIf="archiveMode === 'archived'">Archive a conversation from All chats to find it here.</small></div>
             <div class="group-page-error" *ngIf="groupPageError" role="alert">Could not load more groups. <button type="button" [disabled]="groupSnapshotLoading" (click)="loadMoreGroups()">Retry</button></div>
             <button class="load-more-groups" *ngIf="canLoadMoreGroups() && !groupPageError" type="button" [disabled]="groupPageLoading || groupSnapshotLoading" (click)="loadMoreGroups()" [attr.aria-busy]="groupPageLoading || groupSnapshotLoading">{{ groupSnapshotLoading ? 'Refreshing groups…' : groupPageLoading ? 'Loading groups…' : 'Load more groups' }}</button>
             <span class="visually-hidden" *ngIf="groupsExhausted" role="status">All groups loaded.</span>
         </div>
-        <ng-template #loadingPeople>
-            <div class="empty-rail"><zwei-icon [name]="isLoading ? 'hourglass_top' : 'forum'"></zwei-icon><span>{{ isLoading ? 'Loading conversations…' : 'No conversations yet.' }}</span></div>
-        </ng-template>
+        <div class="empty-rail" *ngIf="isLoading" role="status" aria-live="polite"><zwei-icon name="hourglass_top"></zwei-icon><span>Loading {{ archiveMode === 'active' ? 'conversations' : 'archived chats' }}…</span></div>
+        <div class="empty-rail conversation-list-error" *ngIf="conversationsError" role="alert"><span>Could not load {{ archiveMode === 'active' ? 'chats' : 'archived chats' }}.</span><button type="button" (click)="retryConversationList()">Retry</button></div>
     </aside>
 
     <main class="chat-panel">

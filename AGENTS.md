@@ -2,7 +2,7 @@
 
 ## Local runtime and command execution
 
-The local Zwei development and browser-test environment runs in **Docker Compose**. Do not assume the host has Node/npm, Angular CLI, PostgreSQL, Redis, or the Playwright browser dependencies installed. Run application commands inside the existing containers whenever a repository Make target exists.
+The local Zwei development and browser-test environment runs in **Docker Compose only**. Do not assume the host has Go, Node/npm, Angular CLI, PostgreSQL, Redis, or Playwright browser dependencies installed. Run local application, build, and test commands through the repository's Docker-backed Make targets or service containers; direct host commands belong to GitHub-hosted workflow runners, not local setup.
 
 Run commands from the repository root unless noted. The root `Makefile` delegates infrastructure operations to `infrastructure/Makefile`; use these as the normal interface:
 
@@ -18,7 +18,6 @@ Run commands from the repository root unless noted. The root `Makefile` delegate
 | Run the production Angular build in the already-running frontend container | `make frontend-build` |
 | Run full isolated Playwright suite | `make e2e` |
 | Run one Playwright test through isolated setup/teardown | `make e2e-one SPEC=tests/chat-flow.spec.ts TEST='direct call offers and answers connect in the browser UI'` |
-| Record README demo | `make demo` |
 | Run service command in a container | `make exec <service> <command...>` |
 
 Use a fast feedback loop during implementation. These focused frontend commands use the **already-running** frontend container and do not start or recreate the Compose stack; run `make start` once if it is not up. `frontend-test` remains available for the full Angular suite, but its dependency starts/recreates the stack, so prefer `frontend-spec` while iterating:
@@ -72,3 +71,9 @@ Do not stop or remove the user's existing development stack unless the requested
 - Keep Go domain/application boundaries infrastructure- and transport-independent. Keep Angular transport behind typed services/facades and use component outputs for presentation intents.
 - Preserve protocol, persistence, permissions, secrets, media ownership, cancellation, and resource cleanup. Add regression tests for behavior changes.
 - Run focused tests first, then full package/workspace gates appropriate to the change. Do not change tests, thresholds, or budgets merely to hide a failure.
+
+## Product and operational source of truth
+
+- Zwei supports direct and small-group messaging and audio calls. It is server-mediated and is not end-to-end encrypted.
+- Local development/testing uses the Docker Compose stack and Make targets. GitHub Actions runs CI/security checks on hosted runners; keep local commands distinct from CI commands.
+- Production deployment is triggered by a published GitHub Release and uses the separate `infrastructure/production/` Compose setup, GHCR images, and strict-host-key SSH to the VM. Keep deployment secrets on GitHub's `production` environment or the VM, never in the repository. Use the workflows and production Compose files as the source of truth.

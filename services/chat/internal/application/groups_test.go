@@ -27,7 +27,7 @@ func (f *groupStoreFake) CreateGroup(_ context.Context, _ uuid.UUID, _ string, m
 func (f *groupStoreFake) GetGroup(context.Context, uuid.UUID, uuid.UUID) (conversation.Group, error) {
 	return conversation.Group{}, nil
 }
-func (f *groupStoreFake) ListGroupsPage(_ context.Context, _ uuid.UUID, limit int, cursor *GroupPageCursor) (GroupPage, error) {
+func (f *groupStoreFake) ListGroupsPage(_ context.Context, _ uuid.UUID, limit int, _ bool, cursor *GroupPageCursor) (GroupPage, error) {
 	f.pageCalls++
 	f.pageLimit, f.pageCursor = limit, cursor
 	return GroupPage{Items: f.groups}, nil
@@ -88,7 +88,7 @@ func TestChangeRoleRejectsOwnerAndUnknownRolesBeforePersistence(t *testing.T) {
 
 func TestListPageReturnsAuthorizedStoreProjection(t *testing.T) {
 	want := []conversation.Group{{ID: uuid.New()}}
-	groups, err := NewGroups(&groupStoreFake{groups: want}).ListPage(context.Background(), uuid.New(), 25, nil)
+	groups, err := NewGroups(&groupStoreFake{groups: want}).ListPage(context.Background(), uuid.New(), 25, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,10 +112,27 @@ func TestListPageRejectsInvalidBoundsAndCursorBeforeStore(t *testing.T) {
 		{name: "after is newer than upper", limit: 25, cursor: &GroupPageCursor{Upper: valid, After: GroupSortKey{SortAt: valid.SortAt.Add(time.Second), GroupID: valid.GroupID}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := groups.ListPage(context.Background(), uuid.New(), test.limit, test.cursor); err != ErrInvalidGroupPage {
+			if _, err := groups.ListPage(context.Background(), uuid.New(), test.limit, false, test.cursor); err != ErrInvalidGroupPage {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidGroupPage)
 			}
 		})
+	}
+	if store.pageCalls != 0 {
+		t.Fatalf("store calls = %d, want 0", store.pageCalls)
+	}
+}
+
+func TestListPageRejectsCursorFromOtherArchiveScope(t *testing.T) {
+	store := &groupStoreFake{}
+	key := GroupSortKey{SortAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), GroupID: uuid.New()}
+	for _, test := range []struct {
+		archived       bool
+		cursorArchived bool
+	}{{false, true}, {true, false}} {
+		cursor := &GroupPageCursor{Upper: key, After: key, Archived: test.cursorArchived}
+		if _, err := NewGroups(store).ListPage(context.Background(), uuid.New(), 25, test.archived, cursor); err != ErrInvalidGroupPage {
+			t.Fatalf("request archived=%t cursor archived=%t error = %v, want %v", test.archived, test.cursorArchived, err, ErrInvalidGroupPage)
+		}
 	}
 	if store.pageCalls != 0 {
 		t.Fatalf("store calls = %d, want 0", store.pageCalls)
