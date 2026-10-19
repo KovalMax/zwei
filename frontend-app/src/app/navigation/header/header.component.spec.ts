@@ -23,6 +23,17 @@ describe('HeaderComponent', () => {
         expect(component).toBeTruthy();
     });
 
+    it('uses the chat-bubble brand icon instead of a lettermark', () => {
+        fixture.detectChanges();
+
+        const brand = fixture.nativeElement.querySelector('.brand') as HTMLAnchorElement;
+        const icon = brand.querySelector('.brand-mark') as HTMLImageElement;
+
+        expect(icon.getAttribute('src')).toBe('assets/zwei-brand-mark.svg');
+        expect(icon.getAttribute('alt')).toBe('');
+        expect(brand.textContent?.trim()).toBe('zwei');
+    });
+
     it('leaves account menu placement to the Material trigger in mobile and desktop viewports', () => {
         const overlay = document.createElement('div');
         overlay.className = 'cdk-overlay-container';
