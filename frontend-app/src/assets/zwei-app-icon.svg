@@ -1,5 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
-  <title id="title">Zwei</title>
+  <title id="title">Zwei chat bubbles</title>
   <rect width="512" height="512" rx="112" fill="#111827"/>
-  <path fill="#f1b46b" d="M132 125h248v66L232 325h151v66H126v-63l149-137H132z"/>
+  <path fill="#77cdbb" d="M100 112h278a54 54 0 0 1 54 54v115a54 54 0 0 1-54 54H226l-89 65 19-65h-56a54 54 0 0 1-54-54V166a54 54 0 0 1 54-54z"/>
+  <path fill="#f1b46b" d="M176 202h238a52 52 0 0 1 52 52v103a52 52 0 0 1-52 52h-31l15 53-72-53H176a52 52 0 0 1-52-52V254a52 52 0 0 1 52-52z"/>
+  <circle cx="220" cy="305" r="15" fill="#111827"/>
+  <circle cx="294" cy="305" r="15" fill="#111827"/>
+  <circle cx="368" cy="305" r="15" fill="#111827"/>
 </svg>
