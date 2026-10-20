@@ -2841,15 +2841,15 @@ test('register, create conversation, and deliver a message', async ({ browser },
          const field = rail?.querySelector<HTMLElement>('.search-field');
          const input = field?.querySelector<HTMLInputElement>('input');
          const result = results.querySelector<HTMLElement>('.search-result');
-         const label = rail?.querySelector<HTMLElement>('.rail-label');
+         const modeTabs = rail?.querySelector<HTMLElement>('.archive-mode-tabs');
          const outline = field?.querySelector<HTMLElement>('.mdc-notched-outline__trailing');
-         if (!rail || !field || !input || !result || !label || !outline) throw new Error('Open people search is incomplete');
+         if (!rail || !field || !input || !result || !modeTabs || !outline) throw new Error('Open people search is incomplete');
          const rect = (element: Element) => {
            const box = element.getBoundingClientRect();
            return {left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height};
          };
          return {
-           input: rect(input), field: rect(field), results: rect(results), result: rect(result), label: rect(label), rail: rect(rail),
+           input: rect(input), field: rect(field), results: rect(results), result: rect(result), modeTabs: rect(modeTabs), rail: rect(rail),
            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
            resultsWidth: results.scrollWidth, resultsClientWidth: results.clientWidth,
            resultWidth: result.scrollWidth, resultClientWidth: result.clientWidth,
@@ -2869,7 +2869,7 @@ test('register, create conversation, and deliver a message', async ({ browser },
        expect(geometry.field.bottom, context).toBeLessThanOrEqual(geometry.results.top + 5);
        expect(geometry.result.top, context).toBeGreaterThanOrEqual(geometry.results.top - 1);
        expect(geometry.result.bottom, context).toBeLessThanOrEqual(geometry.results.bottom + 1);
-       expect(geometry.results.bottom, context).toBeLessThanOrEqual(geometry.label.top + 1);
+       expect(geometry.results.bottom, context).toBeLessThanOrEqual(geometry.modeTabs.top + 1);
        expect(geometry.results.left, context).toBeGreaterThanOrEqual(geometry.rail.left - 1);
         expect(geometry.results.right, context).toBeLessThanOrEqual(geometry.rail.right + 1);
         expect(geometry.result.left, context).toBeGreaterThanOrEqual(geometry.results.left - 1);
@@ -4418,7 +4418,7 @@ test('measures visible Home rail and composer text contrast in light and dark th
   try {
     await register(page, uniqueEmail('mobile-text-contrast'), 'Contrast');
     await waitForLiveConnection(page);
-    const allChats = page.locator('.rail-label > span').first();
+    const allChats = page.getByRole('button', {name: 'All chats', exact: true});
     const searchInput = page.locator('.search-field input');
     const searchLabel = page.locator('.search-field .mdc-floating-label');
     const composer = page.locator('.composer textarea');
@@ -5731,14 +5731,14 @@ test('keeps long People search scrollable and keyboard-accessible across themes 
           const heading = rail?.querySelector<HTMLElement>('.rail-heading');
           const input = rail?.querySelector<HTMLElement>('.search-field');
           const status = rail?.querySelector<HTMLElement>('.group-search-status');
-          const chatLabel = rail?.querySelector<HTMLElement>('.rail-label');
+          const modeTabs = rail?.querySelector<HTMLElement>('.archive-mode-tabs');
           const firstConversation = rail?.querySelector<HTMLElement>('.people-list .person-option');
           const rect = (element?: HTMLElement) => {
             const bounds = element?.getBoundingClientRect();
             return bounds && {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height};
           };
           return {
-            results: rect(results), heading: rect(heading), input: rect(input), status: rect(status), chatLabel: rect(chatLabel), firstConversation: rect(firstConversation),
+            results: rect(results), heading: rect(heading), input: rect(input), status: rect(status), modeTabs: rect(modeTabs), firstConversation: rect(firstConversation),
             scrollTop: results.scrollTop, scrollHeight: results.scrollHeight, clientHeight: results.clientHeight,
             scrollWidth: results.scrollWidth, clientWidth: results.clientWidth,
             firstResult: rect(results.querySelector<HTMLElement>('.search-result') ?? undefined),
@@ -5763,8 +5763,8 @@ test('keeps long People search scrollable and keyboard-accessible across themes 
         expect(searchGeometry.lastResult?.bottom, context).toBeGreaterThan((searchGeometry.results?.bottom ?? 0) + 1);
         expect(searchGeometry.heading?.bottom, context).toBeLessThanOrEqual((searchGeometry.results?.top ?? 0) + 1);
         expect(searchGeometry.input?.bottom, context).toBeLessThanOrEqual((searchGeometry.results?.top ?? 0) + 1);
-        expect(searchGeometry.chatLabel?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
-        expect(searchGeometry.chatLabel?.top, context).toBeGreaterThanOrEqual(0);
+        expect(searchGeometry.modeTabs?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        expect(searchGeometry.modeTabs?.top, context).toBeGreaterThanOrEqual(0);
         expect(searchGeometry.firstConversation?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
         expect(searchGeometry.firstConversation?.top, context).toBeGreaterThanOrEqual(0);
         expect(searchGeometry.scrollWidth, context).toBeLessThanOrEqual(searchGeometry.clientWidth + 1);
