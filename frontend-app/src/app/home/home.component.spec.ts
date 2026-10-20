@@ -2745,6 +2745,7 @@ describe('HomeComponent', () => {
         const buttons = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('.archive-mode-tabs button'));
         expect(buttons.map(button => button.textContent?.trim())).toEqual(['All chats', 'Archived']);
         expect(buttons[0]?.getAttribute('aria-pressed')).toBe('true');
+        expect((fixture.nativeElement as HTMLElement).querySelector('.rail-label')).toBeNull();
 
         component.setArchiveMode('archived');
         fixture.detectChanges();
