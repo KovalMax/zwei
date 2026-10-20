@@ -85,8 +85,8 @@ export class HeaderComponent implements OnInit, OnDestroy {
         void this.pwa.install();
     }
 
-    public applyUpdate(): void {
-        void this.pwa.applyUpdate();
+    public refreshApp(): void {
+        void this.pwa.refreshApp();
     }
 
     private applyTheme(): void {

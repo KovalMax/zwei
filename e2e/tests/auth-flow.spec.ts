@@ -711,6 +711,7 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
 
   await page.getByRole('button', {name: 'Account menu'}).click();
   await expect(page.getByRole('menuitem', {name: 'Profile'})).toBeVisible();
+  await expect(page.getByRole('menuitem', {name: 'Refresh app'})).toBeVisible();
   await expect(page.getByRole('menuitem', {name: 'Install Zwei'})).toBeVisible();
   await page.getByRole('menuitem', {name: 'Install Zwei'}).click();
   await expect.poll(() => page.evaluate(() => (window as Window & {__installPromptCalls?: number}).__installPromptCalls)).toBe(1);

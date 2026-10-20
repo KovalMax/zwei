@@ -26,7 +26,6 @@
             <button #archiveModeControl type="button" [class.active]="archiveMode === 'active'" [attr.aria-pressed]="archiveMode === 'active'" (click)="setArchiveMode('active')">All chats</button>
             <button type="button" [class.active]="archiveMode === 'archived'" [attr.aria-pressed]="archiveMode === 'archived'" (click)="setArchiveMode('archived')">Archived</button>
         </div>
-        <div class="rail-label"><span>{{ archiveMode === 'active' ? 'All chats' : 'Archived chats' }}</span><span class="count">{{ (conversations | async)?.length || 0 }}</span></div>
         <p class="archive-action-error" *ngIf="archiveActionError" role="alert">{{ archiveActionError }}</p>
         <div class="people-list" [class.has-conversations]="items.length > 0" *ngIf="!conversationsError && (conversations | async) as items">
             <div class="conversation-row" *ngFor="let conversation of items; trackBy: trackConversation">
