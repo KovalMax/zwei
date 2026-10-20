@@ -191,6 +191,7 @@ test('archive and explicitly restore direct and group chats per user; inbound me
     const bobID = await userID(alice, aliceToken, bobEmail);
 
     await expect(alice.getByRole('status').filter({hasText: 'No conversations yet.'})).toBeVisible();
+    await expect(alice.locator('.rail-label')).toHaveCount(0);
     for (const theme of ['light', 'dark'] as const) {
       await setTheme(alice, theme);
       for (const viewport of viewports) {
@@ -482,20 +483,17 @@ test('archive and explicitly restore direct and group chats per user; inbound me
               const targetRect = target.getBoundingClientRect();
               return tooltipRect.left < targetRect.right && tooltipRect.right > targetRect.left && tooltipRect.top < targetRect.bottom && tooltipRect.bottom > targetRect.top;
             };
-            const countHeader = document.querySelector('.rail-label');
+            const modeTabs = document.querySelector('.archive-mode-tabs');
             const topRow = document.querySelector('.people-list .conversation-row');
             const rowContent = topRow ? Array.from(topRow.querySelectorAll<HTMLElement>('.person-avatar, .conversation-copy, .conversation-time, .unread-count')) : [];
             return {
-              hasCountHeader: !!countHeader,
+              hasModeTabs: !!modeTabs,
               hasTopRow: !!topRow,
-              countHeader: intersects(countHeader),
-              countHeaderBounds: countHeader?.getBoundingClientRect().toJSON(),
               rowContent: rowContent.map(target => ({className: target.className, overlaps: intersects(target), bounds: target.getBoundingClientRect().toJSON()})),
             };
           });
-          expect(tooltipOverlap.hasCountHeader, `${state}: rail count or heading should be present for overlap check`).toBe(true);
+          expect(tooltipOverlap.hasModeTabs, `${state}: chat mode tabs should be present for overlap check`).toBe(true);
           expect(tooltipOverlap.hasTopRow, `${state}: first conversation row should be present for overlap check`).toBe(true);
-          expect(tooltipOverlap.countHeader, `${state}: tooltip must not obscure rail count or heading ${JSON.stringify(tooltipOverlap)}`).toBe(false);
           expect(tooltipOverlap.rowContent.length, `${state}: first conversation row should have visible content to check`).toBeGreaterThan(0);
           expect(tooltipOverlap.rowContent.filter(target => target.overlaps), `${state}: tooltip must not obscure visible first-row content ${JSON.stringify(tooltipOverlap.rowContent)}`).toHaveLength(0);
           expect(tooltipBounds!.x, `${state}: tooltip must stay inside viewport`).toBeGreaterThanOrEqual(0);

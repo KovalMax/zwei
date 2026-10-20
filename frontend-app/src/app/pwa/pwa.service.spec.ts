@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { DOCUMENT } from '@angular/common';
 import { SwUpdate } from '@angular/service-worker';
 import { Subject } from 'rxjs';
 
@@ -9,6 +10,7 @@ describe('PwaService', () => {
     const updates = {
         isEnabled: false,
         versionUpdates,
+        checkForUpdate: vi.fn().mockName('checkForUpdate').mockResolvedValue(false),
         activateUpdate: vi.fn().mockName('activateUpdate').mockResolvedValue(true),
     };
 
@@ -16,6 +18,7 @@ describe('PwaService', () => {
         TestBed.configureTestingModule({ providers: [{ provide: SwUpdate, useValue: updates }] });
         sessionStorage.clear();
         updates.isEnabled = false;
+        updates.checkForUpdate.mockReset().mockResolvedValue(false);
         updates.activateUpdate.mockClear();
     });
 
@@ -54,6 +57,34 @@ describe('PwaService', () => {
         service.setAuthenticated(true);
         await service.applyUpdate();
         expect(updates.activateUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('checks for an update and reloads the app when refresh is selected', async () => {
+        updates.isEnabled = true;
+        const reload = vi.fn();
+        TestBed.overrideProvider(DOCUMENT, {useValue: {defaultView: {location: {reload}}}});
+        const service = TestBed.inject(PwaService);
+        service.setAuthenticated(true);
+
+        await service.refreshApp();
+
+        expect(updates.checkForUpdate).toHaveBeenCalledTimes(1);
+        expect(updates.activateUpdate).not.toHaveBeenCalled();
+        expect(reload).toHaveBeenCalledTimes(1);
+    });
+
+    it('activates a discovered update before reloading', async () => {
+        updates.isEnabled = true;
+        updates.checkForUpdate.mockResolvedValue(true);
+        const reload = vi.fn();
+        TestBed.overrideProvider(DOCUMENT, {useValue: {defaultView: {location: {reload}}}});
+        const service = TestBed.inject(PwaService);
+        service.setAuthenticated(true);
+
+        await service.refreshApp();
+
+        expect(updates.activateUpdate).toHaveBeenCalledTimes(1);
+        expect(reload).toHaveBeenCalledTimes(1);
     });
 
     it('clears a live offline transition when the browser reports online', () => {

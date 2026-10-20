@@ -1,4 +1,5 @@
-import {Injectable, NgZone, OnDestroy} from '@angular/core';
+import {Injectable, NgZone, OnDestroy, Inject} from '@angular/core';
+import {DOCUMENT} from '@angular/common';
 import {SwUpdate} from '@angular/service-worker';
 import {BehaviorSubject, Subscription} from 'rxjs';
 
@@ -31,7 +32,7 @@ export class PwaService implements OnDestroy {
     private readonly onlineListener: () => void;
     private readonly installListener: (event: Event) => void;
 
-    public constructor(private readonly updates: SwUpdate, private readonly zone: NgZone) {
+    public constructor(private readonly updates: SwUpdate, private readonly zone: NgZone, @Inject(DOCUMENT) private readonly document: Document) {
         this.offlineListener = () => this.zone.run(() => {
             this.observedOfflineEvent = true;
             sessionStorage.setItem(offlineSessionKey, 'true');
@@ -88,6 +89,19 @@ export class PwaService implements OnDestroy {
     public async applyUpdate(): Promise<void> {
         if (!this.authenticated || !this.updateAvailable || !this.updates.isEnabled) return;
         if (await this.updates.activateUpdate()) window.location.reload();
+    }
+
+    public async refreshApp(): Promise<void> {
+        if (!this.authenticated) return;
+        if (this.updates.isEnabled) {
+            try {
+                const updateFound = await this.updates.checkForUpdate();
+                if (updateFound || this.updateAvailable) await this.updates.activateUpdate();
+            } catch {
+                // Still reload so the browser can request the latest app shell.
+            }
+        }
+        this.document.defaultView?.location.reload();
     }
 
     private captureInstallPrompt(event: Event): void {
