@@ -8,7 +8,7 @@ import { BrowserNotificationPermission, BrowserNotificationService } from '../no
 describe('HomeNotificationService', () => {
     let events: Subject<MessageSocketEvent>;
     let callState: BehaviorSubject<CallState>;
-    let notifications: Pick<MockedObject<BrowserNotificationService>, 'playMessageSound' | 'showMessageNotification' | 'startCallRingtone' | 'showCallNotification' | 'stopCallRingtone' | 'notificationsSupported' | 'notificationPermission' | 'areSoundsEnabled' | 'permissionChanges'>;
+    let notifications: Pick<MockedObject<BrowserNotificationService>, 'setMode' | 'playMessageSound' | 'showMessageNotification' | 'startCallRingtone' | 'showCallNotification' | 'stopCallRingtone' | 'notificationsSupported' | 'notificationPermission' | 'areSoundsEnabled' | 'permissionChanges'>;
     let documentStub: Document & {
         background: boolean;
     };
@@ -20,6 +20,7 @@ describe('HomeNotificationService', () => {
         callState = new BehaviorSubject<CallState>({ phase: 'idle', muted: false, screenShareQuality: '720p', screenShareAudioEnabled: false, screenShareAudioActive: false, screenShareTransition: false, statusLabel: 'No active call.' });
         permissionChanges = new Subject<BrowserNotificationPermission>();
         notifications = {
+            setMode: vi.fn().mockName("notifications.setMode"),
             playMessageSound: vi.fn().mockName("notifications.playMessageSound"),
             showMessageNotification: vi.fn().mockName("notifications.showMessageNotification"),
             startCallRingtone: vi.fn().mockName("notifications.startCallRingtone"),
@@ -37,6 +38,11 @@ describe('HomeNotificationService', () => {
     });
 
     afterEach(() => service.ngOnDestroy());
+
+    it('applies the account preference loaded by Home to local alert behavior', () => {
+        service.setAlertMode('notifications');
+        expect(notifications.setMode).toHaveBeenCalledWith('notifications');
+    });
 
     it('suppresses foreground selected and own messages but alerts for other/background messages', () => {
         events.next(message('conversation-selected', 'user-peer'));

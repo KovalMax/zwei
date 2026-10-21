@@ -3,7 +3,7 @@ import {Login} from '../login/login';
 import {Token} from './token';
 import {backends} from '../../environments/environment';
 import {Injectable} from '@angular/core';
-import {Profile} from './profile.model';
+import {Profile, ProfileUpdate} from './profile.model';
 import {BehaviorSubject, Observable, of, throwError} from 'rxjs';
 import {catchError, shareReplay, tap} from 'rxjs/operators';
 import {HostService} from './host.service';
@@ -58,6 +58,10 @@ export class AuthService {
     }
 
     public profile(): Observable<Profile> { return this.http.get<Profile>(this.host.authEndpoint('profile')); }
+
+    public updateProfile(update: ProfileUpdate): Observable<Profile> {
+        return this.http.patch<Profile>(this.host.authEndpoint('profile'), update);
+    }
 
     public activate(token: string): Observable<{status: string}> {
         return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});

@@ -28,6 +28,34 @@ func TestLoginDoesNotRequireDisplayName(t *testing.T) {
 	}
 }
 
+func TestUpdateProfileAcceptsAlertModeAndLeavesOmittedFieldsUntouched(t *testing.T) {
+	repository := &fakeRepository{profile: user.Profile{AlertMode: "sounds"}}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	mode := "notifications"
+	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode)
+	if err != nil {
+		t.Fatalf("UpdateProfile() error = %v", err)
+	}
+	if profile.AlertMode != "sounds" {
+		t.Fatalf("profile alert mode = %q", profile.AlertMode)
+	}
+	if repository.profileDisplayName != nil || repository.profileRetention != nil || repository.profileAlertMode != &mode {
+		t.Fatalf("updated fields = display %v, retention %v, alert %v", repository.profileDisplayName, repository.profileRetention, repository.profileAlertMode)
+	}
+}
+
+func TestUpdateProfileRejectsUnsupportedAlertMode(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	mode := "all"
+	if _, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("UpdateProfile() error = %v, want ErrInvalidInput", err)
+	}
+	if repository.profileAlertMode != nil {
+		t.Fatal("repository updated for invalid alert mode")
+	}
+}
+
 func TestTokensUseAPIFieldNames(t *testing.T) {
 	tokens := Tokens{AccessToken: "access", TokenType: "Bearer", ExpiresIn: 900, RefreshToken: "refresh"}
 	payload, err := json.Marshal(tokens)
@@ -184,6 +212,10 @@ func TestCreateInvitationSendsAccountCreationEmail(t *testing.T) {
 }
 
 type fakeRepository struct {
+	profile            user.Profile
+	profileDisplayName *string
+	profileRetention   *string
+	profileAlertMode   *string
 	account            user.User
 	deviceID           uuid.UUID
 	userID             uuid.UUID
@@ -217,9 +249,10 @@ func (f *fakeRepository) RotateRefreshToken(context.Context, []byte) (user.Sessi
 }
 func (f *fakeRepository) RevokeAllSessions(context.Context, uuid.UUID) error { return nil }
 func (f *fakeRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
-	return user.Profile{}, errors.New("not implemented")
+	return f.profile, nil
 }
-func (f *fakeRepository) UpdateProfile(context.Context, uuid.UUID, *string, *string) error {
+func (f *fakeRepository) UpdateProfile(_ context.Context, _ uuid.UUID, displayName, retention, alertMode *string) error {
+	f.profileDisplayName, f.profileRetention, f.profileAlertMode = displayName, retention, alertMode
 	return nil
 }
 func (f *fakeRepository) IsAdmin(context.Context, uuid.UUID) (bool, error)              { return f.isAdmin, nil }
