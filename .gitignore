@@ -4,3 +4,11 @@
 node_modules/
 e2e/test-results/
 infrastructure/e2e/test-results/
+
+# Keep project agent roles and skill guidance versioned despite global OpenCode ignores.
+!.opencode/
+.opencode/*
+!.opencode/agents/
+!.opencode/agents/**
+!.opencode/skills/
+!.opencode/skills/**
