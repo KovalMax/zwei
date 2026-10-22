@@ -2864,6 +2864,15 @@ test('sends Unicode emoji and standalone stickers in direct and group conversati
     const restoredDirectSticker = directHistory.locator('.message-sticker img').last();
     await expect(restoredDirectSticker).toHaveAttribute('src', 'assets/stickers/cat.svg');
     await expect(restoredDirectSticker).toHaveAttribute('alt', 'Cat');
+
+    for (const sticker of [{name: 'Thanks', asset: 'thanks.svg'}, {name: 'Yes', asset: 'yes.svg'}]) {
+      await sender.getByRole('button', {name: 'Open sticker picker'}).click();
+      await sender.getByRole('button', {name: `Send ${sticker.name} sticker`}).click();
+      const receivedSticker = recipient.locator('.message-history .message-sticker img').last();
+      await expect(receivedSticker).toHaveAttribute('src', `assets/stickers/${sticker.asset}`);
+      await expect(receivedSticker).toHaveAttribute('alt', sticker.name);
+    }
+    await expect(sender.locator('.message-history .message-pending-label')).toHaveCount(0);
     await sender.screenshot({path: testInfo.outputPath('sticker-rendered-direct-dark-2560.png'), fullPage: false});
 
     // Create a real group through the authenticated API, then exercise the same visible composer flow.
