@@ -11,7 +11,7 @@ import {parseGiphyMedia} from './giphy-media';
         <ng-container *ngIf="enabled && item.kind === 'image'">
             <button *ngIf="!loaded && !autoLoad" type="button" (click)="load()">Load GIPHY media</button>
             <p *ngIf="!loaded && !autoLoad">Your browser will contact GIPHY, which may receive your IP address and request timing.</p>
-            <img *ngIf="loaded && item.kind === 'image'" [src]="item.source" alt="GIPHY media" loading="lazy" crossorigin="anonymous" referrerpolicy="no-referrer" (error)="failed = true" [hidden]="failed">
+            <img *ngIf="loaded && item.kind === 'image' && !failed" [src]="item.source" alt="GIPHY media" loading="lazy" crossorigin="anonymous" referrerpolicy="no-referrer" (error)="failed = true">
             <p *ngIf="failed" role="status">Media could not be loaded. Use the original link above.</p>
         </ng-container>
     </div>`,

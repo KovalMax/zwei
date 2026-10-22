@@ -2789,13 +2789,15 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
   const bob = await bobContext.newPage();
   const mediaRequests: string[] = [];
   const credentialedProviderRequests: string[] = [];
+  const suppliedRendition = 'https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExcmNlZHQwd2hybXFhOTN6Y3hndms1Z2pyZjkzeGo2Z2libTFhbm9sNCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/gh6gFVh35jyzNvHegl/giphy.gif';
+  let failSuppliedRendition = false;
   let restoreGiphySource: (() => Promise<void>) | undefined;
   const gif = Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64');
   const mockProvider = async (route: import('@playwright/test').Route): Promise<void> => {
     mediaRequests.push(route.request().url());
     if (route.request().headers().cookie || route.request().headers().authorization) credentialedProviderRequests.push(route.request().url());
-    if (route.request().url().includes('fixture=failed')) {
-      await route.abort('failed');
+    if (failSuppliedRendition && route.request().url().split('?')[0] === suppliedRendition) {
+      await route.fulfill({status: 504, contentType: 'text/html', body: '<!doctype html><title>Gateway timeout</title><h1>504 Gateway Timeout</h1>'});
       return;
     }
     await route.fulfill({status: 200, contentType: 'image/gif', headers: {'Access-Control-Allow-Origin': '*'}, body: gif});
@@ -2823,7 +2825,7 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
     await bob.locator('.person-option').filter({hasText: 'GIPHY Alice'}).click();
 
-    const direct = 'https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExcmNlZHQwd2hybXFhOTN6Y3hndms1Z2pyZjkzeGo2Z2libTFhbm9sNCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/gh6gFVh35jyzNvHegl/giphy.gif?fixture=one';
+    const direct = `${suppliedRendition}?fixture=one`;
     await alice.getByPlaceholder('Write a message…').fill(direct);
     await alice.getByRole('button', {name: 'Send message'}).click();
     const directMedia = bob.locator('app-inline-giphy').nth(0);
@@ -2899,22 +2901,60 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     await alice.setViewportSize({width: 390, height: 844});
     await alice.screenshot({path: testInfo.outputPath('giphy-auto-loaded-mobile.png')});
 
-    const failed = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?fixture=failed';
+    const failed = suppliedRendition;
+    failSuppliedRendition = true;
     await bob.getByPlaceholder('Write a message…').fill(failed);
     await bob.getByRole('button', {name: 'Send message'}).click();
     // The opted-in account auto-loads this image; its failed request must leave the source link visible.
-    const failedInlineMedia = alice.locator('app-inline-giphy').filter({has: alice.locator('a[href*="fixture=failed"]')});
+    const failedInlineMedia = alice.locator('app-inline-giphy').filter({has: alice.locator(`a[href="${failed}"]`)});
     const failedLoadButton = failedInlineMedia.getByRole('button', {name: 'Load GIPHY media'});
     if (await failedLoadButton.isVisible()) await failedLoadButton.click();
     await expect(alice.getByText('Media could not be loaded. Use the original link above.')).toBeVisible();
     await expect(alice.getByRole('link', {name: 'Open original GIPHY link'}).last()).toHaveAttribute('href', failed);
+    await expect(failedInlineMedia.locator('img')).toHaveCount(0);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(alice, theme);
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+        await alice.setViewportSize(viewport);
+        const fallback = failedInlineMedia.getByRole('status');
+        await expect(fallback).toBeVisible();
+        await fallback.scrollIntoViewIfNeeded();
+        const geometry = await failedInlineMedia.evaluate(container => {
+          const fallback = container.querySelector<HTMLElement>('[role="status"]');
+          const link = container.querySelector<HTMLAnchorElement>('a');
+          const fallbackRect = fallback?.getBoundingClientRect();
+          const linkRect = link?.getBoundingClientRect();
+          return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+            fallback: fallbackRect ? {left: fallbackRect.left, right: fallbackRect.right, top: fallbackRect.top, bottom: fallbackRect.bottom} : null,
+            link: linkRect ? {left: linkRect.left, right: linkRect.right, top: linkRect.top, bottom: linkRect.bottom} : null};
+        });
+        const context = `${theme}/${viewport.width}x${viewport.height} GIPHY timeout fallback ${JSON.stringify(geometry)}`;
+        expect(geometry.documentWidth, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+        expect(geometry.fallback, context).not.toBeNull();
+        expect(geometry.link, context).not.toBeNull();
+        if (geometry.fallback && geometry.link) {
+          expect(geometry.fallback.left, context).toBeGreaterThanOrEqual(0);
+          expect(geometry.fallback.right, context).toBeLessThanOrEqual(viewport.width + 1);
+          expect(geometry.fallback.top, context).toBeGreaterThanOrEqual(0);
+          expect(geometry.fallback.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+          expect(geometry.link.left, context).toBeGreaterThanOrEqual(0);
+          expect(geometry.link.right, context).toBeLessThanOrEqual(viewport.width + 1);
+          expect(geometry.link.top, context).toBeGreaterThanOrEqual(0);
+          expect(geometry.link.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        }
+        if ((theme === 'light' && viewport.width === 1440) || (theme === 'dark' && viewport.width === 390)) {
+          await alice.screenshot({path: testInfo.outputPath(`giphy-504-fallback-${theme}-${viewport.width}.png`), fullPage: false});
+        }
+      }
+    }
 
     for (let index = 0; index < 4; index++) {
       await bob.getByPlaceholder('Write a message…').fill(`https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?auto-bound=${index}`);
       await bob.getByRole('button', {name: 'Send message'}).click();
       await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled();
     }
-    await expect(alice.locator('app-inline-giphy img')).toHaveCount(3);
+    // The failed media is removed from the DOM, so only the two successful auto-loads remain.
+    await expect(alice.locator('app-inline-giphy img')).toHaveCount(2);
     await expect(alice.getByRole('button', {name: 'Load GIPHY media'}).last()).toBeVisible();
 
     const adminToken = await authenticatedToken(aliceContext, adminEmail, 'inline-media-admin');
