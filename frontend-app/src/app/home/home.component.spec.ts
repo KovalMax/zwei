@@ -22,6 +22,7 @@ import { UserSearchResult } from './user.model';
 import { HomeGroupAccessFacade } from './home-group-access-facade.service';
 import { HomeNotificationService } from './home-notification.service';
 import { GroupProjectionNotFoundError } from './conversation.service';
+import { PwaService } from '../pwa/pwa.service';
 
 describe('HomeComponent', () => {
     let component: HomeComponent;
@@ -41,6 +42,14 @@ describe('HomeComponent', () => {
 
     it('should create', () => {
         expect(component).toBeTruthy();
+    });
+
+    it('forwards the aggregate conversation unread count to the PWA facade', () => {
+        const pwa = TestBed.inject(PwaService);
+        const setUnreadCount = vi.spyOn(pwa, 'setUnreadCount');
+        component.conversations.next([conversation('one'), {...conversation('two'), unreadCount: 4}, {...groupConversation('three'), unreadCount: 2}]);
+        expect(setUnreadCount).toHaveBeenLastCalledWith(6);
+        component.ngOnDestroy();
     });
 
     it('keeps GIPHY disabled when the media-policy request fails', () => {
