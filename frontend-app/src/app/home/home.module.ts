@@ -18,12 +18,14 @@ import {GroupCallSurfaceComponent} from './call-presentation/group-call-surface.
 import {GroupMemberListComponent} from './group-member-list.component';
 import {GroupRemoteAudioDirective} from './group-remote-audio.directive';
 import {HomeComponent} from './home.component';
+import {InlineGiphyComponent} from './inline-giphy.component';
 
 const routes: Routes = [{path: '', component: HomeComponent}];
 
 @NgModule({
     declarations: [
         HomeComponent,
+        InlineGiphyComponent,
         CallProfileComponent,
         CallParticipantsComponent,
         CallTerminalNoticeComponent,

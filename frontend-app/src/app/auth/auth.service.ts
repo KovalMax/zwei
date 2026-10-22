@@ -59,6 +59,14 @@ export class AuthService {
 
     public profile(): Observable<Profile> { return this.http.get<Profile>(this.host.authEndpoint('profile')); }
 
+    public updateProfile(update: Partial<Pick<Profile, 'display_name' | 'retention_period' | 'auto_load_approved_media'>>): Observable<Profile> {
+        return this.http.patch<Profile>(this.host.authEndpoint('profile'), update);
+    }
+
+    public mediaPolicy(): Observable<{giphy_enabled: boolean}> {
+        return this.http.get<{giphy_enabled: boolean}>(this.host.authEndpoint('media-policy'));
+    }
+
     public activate(token: string): Observable<{status: string}> {
         return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});
     }

@@ -49,6 +49,20 @@ func (s *AdminService) IsAdmin(ctx context.Context, userID uuid.UUID) (bool, err
 	return s.repository.IsAdmin(ctx, userID)
 }
 
+func (s *AdminService) GiphyEnabled(ctx context.Context, adminID uuid.UUID) (bool, error) {
+	if err := s.requireAdmin(ctx, adminID); err != nil {
+		return false, err
+	}
+	return s.repository.GiphyEnabled(ctx)
+}
+
+func (s *AdminService) SetGiphyEnabled(ctx context.Context, adminID uuid.UUID, enabled bool) (bool, error) {
+	if err := s.requireAdmin(ctx, adminID); err != nil {
+		return false, err
+	}
+	return s.repository.SetGiphyEnabled(ctx, enabled)
+}
+
 func (s *AdminService) ListUsers(ctx context.Context, adminID uuid.UUID) ([]user.AdminUser, error) {
 	if err := s.requireAdmin(ctx, adminID); err != nil {
 		return nil, err

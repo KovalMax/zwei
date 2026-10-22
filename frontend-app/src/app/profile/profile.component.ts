@@ -14,6 +14,8 @@ import {AlertMode, BrowserNotificationService} from '../notifications/notificati
 export class ProfileComponent implements OnInit {
     public profile?: Profile;
     public error = false;
+    public mediaSaving = false;
+    public mediaSaveError = false;
     public readonly backRoute: string;
     public readonly backLabel: string;
 
@@ -27,6 +29,22 @@ export class ProfileComponent implements OnInit {
         else if (mode === 'sounds') await this.notifications.enableSounds();
         else await this.notifications.enable();
         this.changeDetector.markForCheck();
+    }
+
+    public setMediaAutoLoad(enabled: boolean): void {
+        if (!this.profile || this.mediaSaving) return;
+        const previous = this.profile.auto_load_approved_media;
+        this.profile = {...this.profile, auto_load_approved_media: enabled};
+        this.mediaSaving = true;
+        this.mediaSaveError = false;
+        this.authService.updateProfile({auto_load_approved_media: enabled}).subscribe({
+            next: profile => { this.profile = profile; this.mediaSaving = false; this.changeDetector.markForCheck(); },
+            error: () => { if (this.profile) this.profile = {...this.profile, auto_load_approved_media: previous}; this.mediaSaving = false; this.mediaSaveError = true; this.changeDetector.markForCheck(); },
+        });
+    }
+
+    public readChecked(event: Event): boolean {
+        return event.target instanceof HTMLInputElement && event.target.checked;
     }
 
     public ngOnInit(): void {

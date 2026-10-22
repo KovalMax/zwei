@@ -1,5 +1,5 @@
 import {ChangeDetectorRef, Component, OnInit} from '@angular/core';
-import {AdminService, AdminUser, Invitation, KYCStatus} from '../auth/admin.service';
+import {AdminService, AdminUser, GiphyMediaSource, Invitation, KYCStatus} from '../auth/admin.service';
 import {MatSnackBar} from '@angular/material/snack-bar';
 import {FormControl, Validators} from '@angular/forms';
 import {finalize} from 'rxjs/operators';
@@ -11,7 +11,11 @@ import {finalize} from 'rxjs/operators';
     styleUrls: ['./admin.component.css'],
 })
 export class AdminComponent implements OnInit {
-    public activeView: 'accounts' | 'invitations' = 'accounts';
+    public activeView: 'accounts' | 'invitations' | 'media' = 'accounts';
+    public giphyMediaSource?: GiphyMediaSource;
+    public mediaLoading = false;
+    public mediaSaving = false;
+    public mediaError = '';
     public users: AdminUser[] = [];
     public invitations: Invitation[] = [];
     public invitationEmail = new FormControl('', {nonNullable: true, validators: [Validators.required, Validators.email]});
@@ -28,8 +32,33 @@ export class AdminComponent implements OnInit {
         this.reload();
     }
 
-    public selectView(view: 'accounts' | 'invitations'): void {
+    public selectView(view: 'accounts' | 'invitations' | 'media'): void {
         this.activeView = view;
+    }
+
+    public readChecked(event: Event): boolean {
+        return event.target instanceof HTMLInputElement && event.target.checked;
+    }
+
+    public selectMediaView(): void {
+        this.activeView = 'media';
+        if (this.giphyMediaSource || this.mediaLoading) return;
+        this.mediaLoading = true;
+        this.admins.giphyMediaSource().pipe(finalize(() => { this.mediaLoading = false; this.changeDetector.markForCheck(); })).subscribe({
+            next: source => { this.giphyMediaSource = source; this.mediaError = ''; },
+            error: () => { this.mediaError = 'Could not load media source settings.'; },
+        });
+    }
+
+    public setGiphyEnabled(enabled: boolean): void {
+        if (!this.giphyMediaSource || this.mediaSaving) return;
+        const previous = this.giphyMediaSource.enabled;
+        this.mediaSaving = true;
+        this.mediaError = '';
+        this.admins.updateGiphyMediaSource(enabled).pipe(finalize(() => { this.mediaSaving = false; this.changeDetector.markForCheck(); })).subscribe({
+            next: source => { this.giphyMediaSource = source; },
+            error: () => { if (this.giphyMediaSource) this.giphyMediaSource = {...this.giphyMediaSource, enabled: previous}; this.mediaError = 'Could not save media source settings.'; },
+        });
     }
 
     public reload(): void {

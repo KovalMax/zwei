@@ -20,6 +20,7 @@ import {GroupMemberListComponent} from './group-member-list.component';
 import {ZweiIconName} from '../shared/zwei-icon/zwei-icon.component';
 import {DirectCallSurfaceIntent} from './call-presentation/direct-call-surface.component';
 import {GroupCallSurfaceIntent} from './call-presentation/group-call-surface.component';
+import {parseGiphyMedia} from './giphy-media';
 
 export const STICKERS = [
     {id: 'hello', label: 'Hello', asset: 'assets/stickers/hello.svg'}, {id: 'heart', label: 'Heart', asset: 'assets/stickers/heart.svg'},
@@ -46,6 +47,7 @@ export const COMPOSER_EMOJIS = [
     providers: [DataProviderService, CallFacade, GroupCallFacade, HomeNotificationService, HomeGroupAccessFacade],
 })
 export class HomeComponent implements OnInit, OnDestroy {
+    public giphyEnabled = false;
     private readonly selectedConversationKey = 'zwei_selected_conversation';
     public conversations = new BehaviorSubject<Conversation[]>([]);
     public isLoading = true;
@@ -154,6 +156,10 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.notifications?.setUserID?.(profile.id);
             this.changeDetector.markForCheck();
         }});
+        if (typeof this.authService.mediaPolicy === 'function') this.authService.mediaPolicy().subscribe({next: policy => {
+            this.giphyEnabled = policy.giphy_enabled === true;
+            this.changeDetector.markForCheck();
+        }, error: () => { this.giphyEnabled = false; this.changeDetector.markForCheck(); }});
         this.loadInitialConversations(++this.conversationRefreshGeneration, 2);
         this.dataProvider.getObservable().subscribe({
             next: event => this.handleSocketEvent(event),
@@ -650,6 +656,16 @@ export class HomeComponent implements OnInit, OnDestroy {
     public messageDateLabel(message: Message): string { return messageDateLabel(message.createdAt); }
     public messageDateTimeLabel(message: Message): string { return messageDateTimeLabel(message.createdAt); }
     public messageSegments(message: Message) { return messageTextSegments(message.body, message.mentions); }
+    public isGiphyMessage(message: Message): boolean { return message.contentType !== 'sticker' && parseGiphyMedia(message.body) !== null; }
+    public shouldAutoLoadGiphy(message: Message): boolean {
+        if (!this.giphyEnabled || this.profile?.auto_load_approved_media !== true) return false;
+        let approvedMediaCount = 0;
+        for (const candidate of this.messages) {
+            if (candidate.contentType !== 'sticker' && parseGiphyMedia(candidate.body)?.kind === 'image') approvedMediaCount++;
+            if (candidate.id === message.id) return approvedMediaCount <= 3;
+        }
+        return false;
+    }
     public draftMentionNames(): string[] {
         const members = this.selectedConversation?.kind === 'group' ? this.selectedConversation.members : this.selectedConversation?.kind === 'direct' ? [{userId: this.selectedConversation.otherUserId, displayName: this.selectedConversation.otherDisplayName}] : [];
         return this.draftMentions.map(mention => members.find(member => member.userId === mention.userId)?.displayName).filter((name): name is string => Boolean(name));

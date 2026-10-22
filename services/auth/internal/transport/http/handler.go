@@ -34,8 +34,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/activate", h.activate)
 	mux.HandleFunc("GET /api/auth/me", h.me)
 	mux.HandleFunc("PATCH /api/auth/me", h.updateMe)
+	mux.HandleFunc("GET /api/auth/media-policy", h.mediaPolicy)
 	mux.HandleFunc("GET /api/admin/users", h.adminUsers)
 	mux.HandleFunc("GET /api/admin/me", h.adminMe)
+	mux.HandleFunc("GET /api/admin/media-sources/giphy", h.adminGiphy)
+	mux.HandleFunc("PUT /api/admin/media-sources/giphy", h.updateAdminGiphy)
 	mux.HandleFunc("POST /api/admin/users/{id}/activate", h.activateUser)
 	mux.HandleFunc("POST /api/admin/users/{id}/resend-activation", h.resendActivation)
 	mux.HandleFunc("POST /api/admin/users/{id}/block", h.blockUser)
@@ -53,8 +56,9 @@ type credentialsRequest struct {
 	InvitationCode string `json:"invitation_code"`
 }
 type profileUpdateRequest struct {
-	DisplayName     *string `json:"display_name"`
-	RetentionPeriod *string `json:"retention_period"`
+	DisplayName           *string `json:"display_name"`
+	RetentionPeriod       *string `json:"retention_period"`
+	AutoLoadApprovedMedia *bool   `json:"auto_load_approved_media"`
 }
 
 func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
@@ -244,7 +248,7 @@ func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "profile update is empty")
 		return
 	}
-	profile, err := h.auth.UpdateProfile(r.Context(), userID, request.DisplayName, request.RetentionPeriod)
+	profile, err := h.auth.UpdateProfile(r.Context(), userID, request.DisplayName, request.RetentionPeriod, request.AutoLoadApprovedMedia)
 	if errors.Is(err, application.ErrInvalidInput) {
 		errorJSON(w, http.StatusBadRequest, "invalid profile update")
 		return
@@ -254,6 +258,54 @@ func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runtime.WriteJSON(w, http.StatusOK, profile)
+}
+
+func (h *Handler) mediaPolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.authHostAllowed(w, r) {
+		return
+	}
+	if _, ok := h.userID(w, r); !ok {
+		return
+	}
+	enabled, err := h.auth.MediaPolicy(r.Context())
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not load media policy")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"giphy_enabled": enabled})
+}
+
+func (h *Handler) adminGiphy(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := h.adminID(w, r)
+	if !ok {
+		return
+	}
+	enabled, err := h.admins.GiphyEnabled(r.Context(), adminID)
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not load media source")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"enabled": enabled})
+}
+
+func (h *Handler) updateAdminGiphy(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := h.adminID(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &request) || request.Enabled == nil {
+		errorJSON(w, http.StatusBadRequest, "invalid media source setting")
+		return
+	}
+	enabled, err := h.admins.SetGiphyEnabled(r.Context(), adminID, *request.Enabled)
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not update media source")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"enabled": enabled})
 }
 func (h *Handler) userID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))

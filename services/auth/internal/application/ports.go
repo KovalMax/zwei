@@ -18,7 +18,9 @@ type Repository interface {
 	RotateRefreshToken(context.Context, []byte) (user.Session, error)
 	RevokeAllSessions(context.Context, uuid.UUID) error
 	Profile(context.Context, uuid.UUID) (user.Profile, error)
-	UpdateProfile(context.Context, uuid.UUID, *string, *string) error
+	UpdateProfile(context.Context, uuid.UUID, *string, *string, *bool) error
+	GiphyEnabled(context.Context) (bool, error)
+	SetGiphyEnabled(context.Context, bool) (bool, error)
 	IsAdmin(context.Context, uuid.UUID) (bool, error)
 	ListAdminUsers(context.Context) ([]user.AdminUser, error)
 	SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus) error

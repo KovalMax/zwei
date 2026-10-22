@@ -5,6 +5,9 @@
 
 :host-context(.dark-theme) .profile-page { background: radial-gradient(circle at 75% 15%, rgba(196, 93, 63, .16) 0, transparent 28%), #182330; }
 :host-context(.dark-theme) .profile-card { border-color: #30465e; background: #202c3b; box-shadow: 0 20px 60px rgba(0, 0, 0, .22); }
+.media-preference { display:flex; align-items:flex-start; gap:10px; color:#172033; font-size:14px; font-weight:700; }
+.media-preference input { width:18px; height:18px; accent-color:var(--zwei-focus); }
+:host-context(.dark-theme) .media-preference { color:#edf2fa; }
 :host-context(.dark-theme) .back-link { color: #efaa8d; }
 :host-context(.dark-theme) .eyebrow { color: #efaa8d; }
 :host-context(.dark-theme) .profile-card h1, :host-context(.dark-theme) .profile-details dd { color: #edf2fa; }

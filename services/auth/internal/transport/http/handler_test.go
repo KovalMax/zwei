@@ -127,3 +127,24 @@ func TestAdminEndpointRejectsUnallowlistedForwardedAddress(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
 	}
 }
+
+func TestGiphyAdminRoutesRejectSourceIPBeforeAuthentication(t *testing.T) {
+	allowlist, err := NewIPAllowlist("203.0.113.10/32", "172.20.0.4/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(nil, nil, nil, allowlist, nil)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		t.Run(method, func(t *testing.T) {
+			request := httptest.NewRequest(method, "/api/admin/media-sources/giphy", nil)
+			request.RemoteAddr = "198.51.100.20:4444"
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+			}
+		})
+	}
+}

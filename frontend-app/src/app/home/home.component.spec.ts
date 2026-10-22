@@ -43,6 +43,20 @@ describe('HomeComponent', () => {
         expect(component).toBeTruthy();
     });
 
+    it('keeps GIPHY disabled when the media-policy request fails', () => {
+        const auth = TestBed.inject(AuthService) as unknown as {mediaPolicy: () => Observable<never>};
+        auth.mediaPolicy = () => throwError(() => new Error('policy unavailable'));
+        fixture.detectChanges();
+        component.profile = {id: 'test-user', auto_load_approved_media: true} as Profile;
+        component.messages = [{
+            id: 'giphy-policy-failure', conversationId: 'policy-failure', senderId: 'peer', clientMessageId: 'client', sequence: 1,
+            body: 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', createdAt: '2026-01-01T00:00:00Z',
+        }];
+        expect(component.giphyEnabled).toBe(false);
+        expect(component.shouldAutoLoadGiphy(component.messages[0])).toBe(false);
+        component.ngOnDestroy();
+    });
+
     it('offers only other members in the selected chat and creates an ID-backed keyboard mention', () => {
         component.profile = {id: 'user-1'} as Profile;
         component.selectedConversation = {...groupConversation('group-mention'), members: [
@@ -158,6 +172,24 @@ describe('HomeComponent', () => {
         component.ngOnDestroy();
     });
 
+    it('limits automatic GIPHY loading to three approved messages in the current history', () => {
+        component.giphyEnabled = true;
+        component.profile = {id: 'user-1', auto_load_approved_media: true} as Profile;
+        component.messages = Array.from({length: 5}, (_, index) => ({
+            id: `giphy-${index}`,
+            conversationId: 'giphy-history',
+            senderId: 'peer',
+            clientMessageId: `client-${index}`,
+            sequence: index + 1,
+            body: `https://media1.giphy.com/media/asset${index}/200.gif`,
+            createdAt: '2026-01-01T00:00:00Z',
+        }));
+        expect(component.messages.map(message => component.shouldAutoLoadGiphy(message))).toEqual([true, true, true, false, false]);
+        component.giphyEnabled = false;
+        expect(component.shouldAutoLoadGiphy(component.messages[0])).toBe(false);
+        component.ngOnDestroy();
+    });
+
     it('inserts Unicode emoji at the caret, preserves mention offsets and draft, and does not send', async () => {
         const send = vi.fn().mockName('send').mockReturnValue(true);
         const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn().mockName('markForCheck')} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
@@ -183,6 +215,7 @@ describe('HomeComponent', () => {
         expect(vi.mocked(send).mock.calls.map(([event]) => event).filter(event => event.type === 'message.send')).toEqual([]);
         home.ngOnDestroy();
     });
+
 
     it('replaces preserved mention ranges when selecting a second member', () => {
         const send = vi.fn().mockName('send').mockReturnValue(true);

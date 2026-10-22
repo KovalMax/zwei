@@ -85,13 +85,25 @@ func (r *Repository) RevokeAllSessions(ctx context.Context, userID uuid.UUID) er
 
 func (r *Repository) Profile(ctx context.Context, userID uuid.UUID) (user.Profile, error) {
 	var profile user.Profile
-	err := r.db.QueryRow(ctx, `SELECT id, email, display_name, retention_period FROM users WHERE id = $1`, userID).Scan(&profile.ID, &profile.Email, &profile.DisplayName, &profile.RetentionPeriod)
+	err := r.db.QueryRow(ctx, `SELECT id, email, display_name, retention_period, auto_load_approved_media FROM users WHERE id = $1`, userID).Scan(&profile.ID, &profile.Email, &profile.DisplayName, &profile.RetentionPeriod, &profile.AutoLoadApprovedMedia)
 	return profile, err
 }
 
-func (r *Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string) error {
-	_, err := r.db.Exec(ctx, `UPDATE users SET display_name = COALESCE($1, display_name), retention_period = COALESCE($2, retention_period), updated_at = now() WHERE id = $3`, displayName, retention, userID)
+func (r *Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string, autoLoadApprovedMedia *bool) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET display_name = COALESCE($1, display_name), retention_period = COALESCE($2, retention_period), auto_load_approved_media = COALESCE($3, auto_load_approved_media), updated_at = now() WHERE id = $4`, displayName, retention, autoLoadApprovedMedia, userID)
 	return err
+}
+
+func (r *Repository) GiphyEnabled(ctx context.Context) (bool, error) {
+	var enabled bool
+	err := r.db.QueryRow(ctx, `SELECT enabled FROM media_source_settings WHERE source = 'giphy'`).Scan(&enabled)
+	return enabled, err
+}
+
+func (r *Repository) SetGiphyEnabled(ctx context.Context, enabled bool) (bool, error) {
+	var persisted bool
+	err := r.db.QueryRow(ctx, `UPDATE media_source_settings SET enabled = $1, updated_at = now() WHERE source = 'giphy' RETURNING enabled`, enabled).Scan(&persisted)
+	return persisted, err
 }
 
 func (r *Repository) IsAdmin(ctx context.Context, userID uuid.UUID) (bool, error) {

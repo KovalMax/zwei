@@ -126,8 +126,8 @@ func (s *Service) Profile(ctx context.Context, userID uuid.UUID) (user.Profile, 
 	return s.repository.Profile(ctx, userID)
 }
 
-func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string) (user.Profile, error) {
-	if displayName == nil && retention == nil {
+func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string, autoLoadApprovedMedia *bool) (user.Profile, error) {
+	if displayName == nil && retention == nil && autoLoadApprovedMedia == nil {
 		return user.Profile{}, ErrInvalidInput
 	}
 	if displayName != nil {
@@ -140,10 +140,14 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayNa
 	if retention != nil && !user.ValidRetention(*retention) {
 		return user.Profile{}, ErrInvalidInput
 	}
-	if err := s.repository.UpdateProfile(ctx, userID, displayName, retention); err != nil {
+	if err := s.repository.UpdateProfile(ctx, userID, displayName, retention, autoLoadApprovedMedia); err != nil {
 		return user.Profile{}, err
 	}
 	return s.repository.Profile(ctx, userID)
+}
+
+func (s *Service) MediaPolicy(ctx context.Context) (bool, error) {
+	return s.repository.GiphyEnabled(ctx)
 }
 
 func (s *Service) WebSocketTicket(identity sharedauth.Identity) (string, error) {

@@ -12,6 +12,7 @@
         <nav class="admin-nav" aria-label="Administration views">
             <button type="button" [class.active]="activeView === 'accounts'" [attr.aria-current]="activeView === 'accounts' ? 'page' : null" (click)="selectView('accounts')">Accounts</button>
             <button type="button" [class.active]="activeView === 'invitations'" [attr.aria-current]="activeView === 'invitations' ? 'page' : null" (click)="selectView('invitations')">Invitations</button>
+            <button type="button" [class.active]="activeView === 'media'" [attr.aria-current]="activeView === 'media' ? 'page' : null" (click)="selectView('media'); selectMediaView()">Media sources</button>
         </nav>
 
         <div *ngIf="isLoading" class="admin-loading"><app-loading-spinner></app-loading-spinner></div>
@@ -52,6 +53,14 @@
                     </tbody>
                 </table>
             </div>
+        </section>
+        <section *ngIf="activeView === 'media'" class="media-source-section" aria-labelledby="media-sources-title">
+            <h2 id="media-sources-title">Reviewed media sources</h2>
+            <p>Only reviewed provider sources can render inline. Disabling GIPHY suppresses future inline media after clients refresh policy; requests already started cannot be recalled.</p>
+            <p *ngIf="mediaLoading" role="status">Loading media source settings…</p>
+            <p *ngIf="mediaError" role="alert">{{ mediaError }}</p>
+            <label *ngIf="giphyMediaSource" class="media-source-toggle"><input type="checkbox" [checked]="giphyMediaSource.enabled" [disabled]="mediaSaving" (change)="setGiphyEnabled(readChecked($event))"> Enable reviewed GIPHY source</label>
+            <p *ngIf="mediaSaving" role="status">Saving media source setting…</p>
         </section>
     </section>
 </main>

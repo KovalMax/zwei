@@ -55,6 +55,65 @@ async function adminLogin(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/admin$/);
 }
 
+test('admin media source settings use enabled contract and deny anonymous reads', async ({browser, request}, testInfo) => {
+  const anonymous = await request.get(`${adminBase}/api/admin/media-sources/giphy`);
+  expect(anonymous.status()).toBe(401);
+  const anonymousUpdate = await request.put(`${adminBase}/api/admin/media-sources/giphy`, {data: {enabled: false}});
+  expect(anonymousUpdate.status()).toBe(401);
+  const context = await browser.newContext({viewport: {width: 390, height: 844}, httpCredentials: {username: basicAuthUser, password: basicAuthPassword}});
+  const page = await context.newPage();
+  let initialEnabled: boolean | undefined;
+  try {
+    await adminLogin(page);
+    await page.getByRole('button', {name: 'Media sources'}).click();
+    const checkbox = page.getByRole('checkbox', {name: 'Enable reviewed GIPHY source'});
+    await expect(checkbox).toBeVisible();
+    const initial = await checkbox.isChecked();
+    initialEnabled = initial;
+    const write = page.waitForResponse(response => response.url().endsWith('/api/admin/media-sources/giphy') && response.request().method() === 'PUT');
+    await checkbox.setChecked(!initial);
+    const response = await write;
+    expect(response.status()).toBe(200);
+    expect(response.request().postDataJSON()).toEqual({enabled: !initial});
+    expect(await response.json()).toEqual({enabled: !initial});
+    await expect(checkbox).toBeChecked({checked: !initial});
+    const geometry = await page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('.media-source-toggle input');
+      const rect = input?.getBoundingClientRect();
+      return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+        left: rect?.left ?? -1, right: rect?.right ?? Number.MAX_SAFE_INTEGER, height: rect?.height ?? 0};
+    });
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    expect(geometry.left).toBeGreaterThanOrEqual(0);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    expect(geometry.height).toBeGreaterThan(0);
+    await page.screenshot({path: testInfo.outputPath('admin-media-sources-mobile.png')});
+    await page.evaluate(() => {
+      document.documentElement.classList.add('dark-theme');
+      document.body.classList.add('dark-theme');
+    });
+    const darkSurface = await page.locator('.admin-card').evaluate(element => ({
+      background: getComputedStyle(element).backgroundColor,
+      text: getComputedStyle(element.querySelector('h2') as HTMLElement).color,
+      width: element.getBoundingClientRect().width,
+    }));
+    expect(darkSurface.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(darkSurface.text).not.toBe('');
+    expect(darkSurface.width).toBeLessThanOrEqual(390);
+    await expect(checkbox).toBeVisible();
+    await page.screenshot({path: testInfo.outputPath('admin-media-sources-dark-mobile.png')});
+  } finally {
+    if (initialEnabled !== undefined) {
+      const tokenResponse = await context.request.post(`${adminBase}/api/auth/login`, {data: {email: adminEmail, password, device_id: `restore-giphy-${Date.now()}`, device_name: 'E2E'}});
+      if (tokenResponse.ok()) {
+        const token = await tokenResponse.json() as {access_token: string; token_type: string};
+        await context.request.put(`${adminBase}/api/admin/media-sources/giphy`, {headers: {Authorization: `${token.token_type} ${token.access_token}`}, data: {enabled: initialEnabled}});
+      }
+    }
+    await context.close();
+  }
+});
+
 async function reloadAdmin(page: Page): Promise<void> {
   const refresh = page.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
   await page.reload();

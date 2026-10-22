@@ -8,7 +8,7 @@ import { AdminComponent } from './admin.component';
 import {AdminModule} from './admin.module';
 
 describe('AdminComponent', () => {
-    let admins: Pick<MockedObject<AdminService>, 'resendActivationLink' | 'users' | 'invitations'>;
+    let admins: Pick<MockedObject<AdminService>, 'resendActivationLink' | 'users' | 'invitations' | 'giphyMediaSource' | 'updateGiphyMediaSource'>;
     let snack: Pick<MockedObject<MatSnackBar>, 'open'>;
     let changeDetector: Pick<MockedObject<ChangeDetectorRef>, 'markForCheck'>;
     let component: AdminComponent;
@@ -26,7 +26,9 @@ describe('AdminComponent', () => {
         admins = {
             resendActivationLink: vi.fn().mockName("AdminService.resendActivationLink"),
             users: vi.fn().mockName("AdminService.users"),
-            invitations: vi.fn().mockName("AdminService.invitations")
+            invitations: vi.fn().mockName("AdminService.invitations"),
+            giphyMediaSource: vi.fn().mockName('AdminService.giphyMediaSource'),
+            updateGiphyMediaSource: vi.fn().mockName('AdminService.updateGiphyMediaSource')
         };
         snack = {
             open: vi.fn().mockName("MatSnackBar.open")
@@ -63,5 +65,25 @@ describe('AdminComponent', () => {
         expect(snack.open).not.toHaveBeenCalled();
         expect(admins.users).not.toHaveBeenCalled();
         expect(component.isResendingActivation(user)).toBe(false);
+    });
+
+    it('loads and persists the GIPHY source setting using the enabled contract', () => {
+        admins.giphyMediaSource.mockReturnValue(of({enabled: true}));
+        admins.updateGiphyMediaSource.mockReturnValue(of({enabled: false}));
+        component.selectMediaView();
+        expect(component.giphyMediaSource).toEqual({enabled: true});
+        component.setGiphyEnabled(false);
+        expect(admins.updateGiphyMediaSource).toHaveBeenCalledWith(false);
+        expect(component.giphyMediaSource).toEqual({enabled: false});
+        expect(component.mediaError).toBe('');
+    });
+
+    it('restores the persisted setting and reports a failed update', () => {
+        admins.giphyMediaSource.mockReturnValue(of({enabled: true}));
+        admins.updateGiphyMediaSource.mockReturnValue(throwError(() => new Error('offline')));
+        component.selectMediaView();
+        component.setGiphyEnabled(false);
+        expect(component.giphyMediaSource).toEqual({enabled: true});
+        expect(component.mediaError).toBe('Could not save media source settings.');
     });
 });
