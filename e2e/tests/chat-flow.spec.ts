@@ -2802,7 +2802,11 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
   };
   await Promise.all([aliceContext.addCookies([{name: 'provider-session', value: 'must-not-leak', domain: 'giphy.com', path: '/', secure: true, sameSite: 'None'}]),
     bobContext.addCookies([{name: 'provider-session', value: 'must-not-leak', domain: 'giphy.com', path: '/', secure: true, sameSite: 'None'}])]);
-  await Promise.all([alice.route('https://media1.giphy.com/**', mockProvider), bob.route('https://media1.giphy.com/**', mockProvider)]);
+  await Promise.all([
+    alice.route('https://media1.giphy.com/**', mockProvider), bob.route('https://media1.giphy.com/**', mockProvider),
+    alice.route('https://media4.giphy.com/**', mockProvider), bob.route('https://media4.giphy.com/**', mockProvider),
+    alice.route('https://media.giphy.com/**', mockProvider), bob.route('https://media.giphy.com/**', mockProvider),
+  ]);
 
   try {
     await register(alice, aliceEmail, 'GIPHY Alice');
@@ -2818,7 +2822,7 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
     await bob.locator('.person-option').filter({hasText: 'GIPHY Alice'}).click();
 
-    const direct = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?fixture=one';
+    const direct = 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif?fixture=one';
     await alice.getByPlaceholder('Write a message…').fill(direct);
     await alice.getByRole('button', {name: 'Send message'}).click();
     const directMedia = bob.locator('app-inline-giphy').nth(0);
@@ -2855,7 +2859,10 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     expect(await bob.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
     await sourceButton.click();
     await expect.poll(() => mediaRequests.length).toBe(1);
-    await expect(directMedia.locator('img')).toBeVisible();
+    const loadedImage = directMedia.locator('img');
+    await expect(loadedImage).toBeVisible();
+    await expect.poll(() => loadedImage.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+    await bob.screenshot({path: testInfo.outputPath('giphy-canonical-host-loaded-mobile.png')});
     expect(credentialedProviderRequests).toHaveLength(0);
 
     const share = 'https://giphy.com/gifs/dancing-cat-YsTs5ltWtEhnq';
