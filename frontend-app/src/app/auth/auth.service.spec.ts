@@ -39,6 +39,16 @@ describe('AuthService', () => {
         expect(service.token.value?.expires_in).toBeGreaterThan(Date.now());
     });
 
+    it('updates account profile fields through the authenticated profile endpoint', () => {
+        let updatedProfile: unknown;
+        service.updateProfile({alert_mode: 'sounds'}).subscribe(profile => updatedProfile = profile);
+        const request = http.expectOne(`${backends.auth}/api/auth/me`);
+        expect(request.request.method).toBe('PATCH');
+        expect(request.request.body).toEqual({alert_mode: 'sounds'});
+        request.flush({id: 'user-1', email: 'person@example.test', display_name: 'Person', retention_period: '30 days', alert_mode: 'sounds'});
+        expect(updatedProfile).toEqual(expect.objectContaining({alert_mode: 'sounds'}));
+    });
+
     it('routes activation verification through the configured auth service in every build', () => {
         expect(backends.activation).toBe(`${backends.auth}/api/auth/activate`);
         expect(productionBackends.activation).toBe(`${productionBackends.auth}/api/auth/activate`);

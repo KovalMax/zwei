@@ -85,12 +85,12 @@ func (r *Repository) RevokeAllSessions(ctx context.Context, userID uuid.UUID) er
 
 func (r *Repository) Profile(ctx context.Context, userID uuid.UUID) (user.Profile, error) {
 	var profile user.Profile
-	err := r.db.QueryRow(ctx, `SELECT id, email, display_name, retention_period FROM users WHERE id = $1`, userID).Scan(&profile.ID, &profile.Email, &profile.DisplayName, &profile.RetentionPeriod)
+	err := r.db.QueryRow(ctx, `SELECT id, email, display_name, retention_period, alert_mode FROM users WHERE id = $1`, userID).Scan(&profile.ID, &profile.Email, &profile.DisplayName, &profile.RetentionPeriod, &profile.AlertMode)
 	return profile, err
 }
 
-func (r *Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string) error {
-	_, err := r.db.Exec(ctx, `UPDATE users SET display_name = COALESCE($1, display_name), retention_period = COALESCE($2, retention_period), updated_at = now() WHERE id = $3`, displayName, retention, userID)
+func (r *Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention, alertMode *string) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET display_name = COALESCE($1, display_name), retention_period = COALESCE($2, retention_period), alert_mode = COALESCE($3, alert_mode), updated_at = now() WHERE id = $4`, displayName, retention, alertMode, userID)
 	return err
 }
 

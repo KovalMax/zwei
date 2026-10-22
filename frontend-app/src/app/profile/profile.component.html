@@ -6,19 +6,21 @@
         <p class="profile-description">Your identity and message-retention preference for this private space.</p>
         <div class="profile-loading" *ngIf="!profile && !error">Loading profile…</div>
         <p class="profile-error" *ngIf="error">We could not load your profile. Refresh and try again.</p>
-        <dl *ngIf="profile" class="profile-details">
-            <div><dt>Display name</dt><dd>{{ profile.display_name }}</dd></div>
-            <div><dt>Email address</dt><dd>{{ profile.email }}</dd></div>
-            <div><dt>Message retention</dt><dd>{{ profile.retention_period }}</dd></div>
+        <dl *ngIf="profile as loadedProfile" class="profile-details">
+            <div><dt>Display name</dt><dd>{{ loadedProfile.display_name }}</dd></div>
+            <div><dt>Email address</dt><dd>{{ loadedProfile.email }}</dd></div>
+            <div><dt>Message retention</dt><dd>{{ loadedProfile.retention_period }}</dd></div>
         </dl>
         <section *ngIf="profile" class="alert-settings" aria-labelledby="alert-settings-title">
             <h2 id="alert-settings-title">Alerts</h2>
-            <p>Choose how Zwei alerts you in this browser.</p>
-            <div class="alert-options" role="radiogroup" aria-label="Alert preference">
-                <button type="button" role="radio" [attr.aria-checked]="notifications.mode === 'off'" [class.selected]="notifications.mode === 'off'" (click)="setAlertMode('off')"><span class="radio-dot"></span><span><strong>Off</strong><small>No notification or sound alerts.</small></span></button>
-                <button type="button" role="radio" [attr.aria-checked]="notifications.mode === 'sounds'" [class.selected]="notifications.mode === 'sounds'" (click)="setAlertMode('sounds')"><span class="radio-dot"></span><span><strong>Sounds only</strong><small>Play call and message sounds.</small></span></button>
-                <button type="button" role="radio" [attr.aria-checked]="notifications.mode === 'notifications'" [class.selected]="notifications.mode === 'notifications'" (click)="setAlertMode('notifications')"><span class="radio-dot"></span><span><strong>Notifications and sounds</strong><small>{{ notifications.notificationPermission === 'denied' ? 'Browser notifications are blocked.' : 'Show alerts when the browser supports them.' }}</small></span></button>
+            <p>Choose your account-wide alert preference. Browser permission and sound unlock apply only to this browser.</p>
+            <div class="alert-options" role="radiogroup" aria-label="Alert preference" [attr.aria-busy]="alertSaving">
+                <button type="button" role="radio" [disabled]="alertSaving" [attr.aria-checked]="alertMode === 'off'" [class.selected]="alertMode === 'off'" (click)="setAlertMode('off')"><span class="radio-dot"></span><span><strong>Off</strong><small>No notification or sound alerts.</small></span></button>
+                <button type="button" role="radio" [disabled]="alertSaving" [attr.aria-checked]="alertMode === 'sounds'" [class.selected]="alertMode === 'sounds'" (click)="setAlertMode('sounds')"><span class="radio-dot"></span><span><strong>Sounds only</strong><small>Play call and message sounds.</small></span></button>
+                <button type="button" role="radio" [disabled]="alertSaving" [attr.aria-checked]="alertMode === 'notifications'" [class.selected]="alertMode === 'notifications'" (click)="setAlertMode('notifications')"><span class="radio-dot"></span><span><strong>Notifications and sounds</strong><small>{{ notifications.notificationPermission === 'denied' ? 'Browser notifications are blocked on this browser; your account preference remains saved.' : !notifications.notificationsSupported ? 'Browser notifications are unsupported here; your account preference remains saved.' : 'Show alerts when browser permission is granted.' }}</small></span></button>
             </div>
+            <p *ngIf="alertSaving" role="status">Saving alert preference…</p>
+            <p *ngIf="alertSaveError" class="profile-error" role="alert">Could not save your alert preference. Your previous preference is still selected.</p>
         </section>
     </section>
 </main>

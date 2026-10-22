@@ -670,7 +670,7 @@ test('keeps registration keyboard-accessible on a reduced-motion mobile viewport
   await context.close();
 });
 
-test('registers, rejects duplicate and invalid login, then exposes profile and sign out', async ({page}, testInfo) => {
+test('registers, rejects duplicate and invalid login, then exposes profile and sign out', async ({page, browser}, testInfo) => {
   const email = uniqueEmail('account');
   await register(page, email, 'Account User');
 
@@ -844,7 +844,75 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await expect(page.locator('.profile-card').getByText(email)).toBeVisible();
   await expect(page.getByRole('radio', {name: /Notifications and sounds/})).toBeVisible();
+  await expect(page.getByRole('radio', {name: /Off/})).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByRole('link', {name: 'Back to chats'})).toBeVisible();
+  const soundsOnly = page.getByRole('radio', {name: /Sounds only/});
+  await soundsOnly.click();
+  await expect(soundsOnly).toHaveAttribute('aria-checked', 'true');
+  await page.reload();
+  await expect(page.getByRole('radio', {name: /Sounds only/})).toHaveAttribute('aria-checked', 'true');
+  const separateBrowser = await browser.newContext();
+  try {
+    const otherPage = await separateBrowser.newPage();
+    await login(otherPage, email);
+    await expect(otherPage).toHaveURL(/\/home$/);
+    await otherPage.goto('/profile');
+    await expect(otherPage.getByRole('heading', {name: 'Profile'})).toBeVisible();
+    await expect(otherPage.getByRole('radio', {name: /Sounds only/})).toHaveAttribute('aria-checked', 'true');
+    expect(await otherPage.evaluate(() => window.localStorage.getItem('zwei_alert_mode'))).toBeNull();
+  } finally {
+    await separateBrowser.close();
+  }
+  for (const theme of ['light', 'dark'] as const) {
+    await page.evaluate(value => window.localStorage.setItem('zwei_theme', value), theme);
+    await page.reload();
+    await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
+    for (const viewport of [
+      {width: 2560, height: 1440},
+      {width: 1440, height: 900},
+      {width: 1024, height: 900},
+      {width: 390, height: 844},
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.evaluate(() => { const surface = document.querySelector<HTMLElement>('.profile-page'); if (surface) surface.scrollTop = 0; });
+      const topGeometry = await page.evaluate(() => {
+        const surface = document.querySelector<HTMLElement>('.profile-page');
+        const card = document.querySelector<HTMLElement>('.profile-card');
+        const firstRadio = document.querySelector<HTMLElement>('.alert-options [role="radio"]');
+        return {
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+          surfaceWidth: surface?.scrollWidth,
+          surfaceClientWidth: surface?.clientWidth,
+          card: card?.getBoundingClientRect().toJSON(),
+          firstRadio: firstRadio?.getBoundingClientRect().toJSON(),
+          cardSurface: card ? getComputedStyle(card).backgroundColor : '',
+          headingColor: document.querySelector('h1') ? getComputedStyle(document.querySelector('h1') as HTMLElement).color : '',
+        };
+      });
+      expect(topGeometry.documentWidth, `${theme} ${viewport.width}px document overflow`).toBeLessThanOrEqual(topGeometry.viewportWidth);
+      expect(topGeometry.surfaceWidth).toBeLessThanOrEqual(topGeometry.surfaceClientWidth);
+      expect(topGeometry.card?.left).toBeGreaterThanOrEqual(0);
+      expect(topGeometry.card?.right).toBeLessThanOrEqual(viewport.width + 1);
+      expect(topGeometry.firstRadio?.top, `${theme} ${viewport.width}px first alert option is visible at the top`).toBeGreaterThanOrEqual(0);
+      expect(topGeometry.firstRadio?.bottom, `${theme} ${viewport.width}px first alert option fits in the viewport`).toBeLessThanOrEqual(viewport.height + 1);
+      expect(topGeometry.cardSurface).not.toBe('rgba(0, 0, 0, 0)');
+      expect(topGeometry.headingColor).not.toBe(topGeometry.cardSurface);
+      await page.screenshot({path: testInfo.outputPath(`profile-alert-${theme}-${viewport.width}-top.png`)});
+      const endGeometry = await page.evaluate(() => {
+        const surface = document.querySelector<HTMLElement>('.profile-page');
+        const last = document.querySelectorAll<HTMLElement>('.alert-options [role="radio"]');
+        if (surface) surface.scrollTop = surface.scrollHeight;
+        return {
+          last: last.item(last.length - 1)?.getBoundingClientRect().toJSON(),
+        };
+      });
+      expect(endGeometry.last?.top).toBeGreaterThanOrEqual(0);
+      expect(endGeometry.last?.bottom).toBeLessThanOrEqual(viewport.height + 1);
+      await page.screenshot({path: testInfo.outputPath(`profile-alert-${theme}-${viewport.width}-end.png`)});
+    }
+  }
+  await page.setViewportSize({width: 1280, height: 720});
 
   await page.getByRole('button', {name: 'Account menu'}).click();
   await page.getByRole('menuitem', {name: 'Sign out'}).click();

@@ -1,8 +1,9 @@
 import {Inject, Injectable, InjectionToken} from '@angular/core';
 import {BehaviorSubject, Observable} from 'rxjs';
+import {AlertMode} from '../auth/profile.model';
 
 export type BrowserNotificationPermission = NotificationPermission | 'unsupported';
-export type AlertMode = 'off' | 'sounds' | 'notifications';
+export type {AlertMode} from '../auth/profile.model';
 
 export interface BrowserNotificationPort {
     readonly supported: boolean;
@@ -127,12 +128,18 @@ export const SOUND_PORT = new InjectionToken<SoundPort>('ZWEI_SOUND_PORT', {
 
 @Injectable({providedIn: 'root'})
 export class BrowserNotificationService {
-    private readonly storageKey = 'zwei_alert_mode';
     private readonly permissionSubject: BehaviorSubject<BrowserNotificationPermission>;
     private alertMode: AlertMode = 'off';
+    private unlockListenerRegistered = false;
     public readonly permissionChanges: Observable<BrowserNotificationPermission>;
     private readonly unlockOnGesture = (): void => {
-        if (this.areSoundsEnabled) void this.sound.unlock();
+        this.unlockListenerRegistered = false;
+        if (this.areSoundsEnabled) {
+            void this.unlockSounds().then(unlocked => {
+                if (unlocked) this.removeUnlockListener();
+                else if (this.areSoundsEnabled) this.registerUnlockListener();
+            });
+        }
     };
 
     public constructor(
@@ -141,8 +148,6 @@ export class BrowserNotificationService {
     ) {
         this.permissionSubject = new BehaviorSubject<BrowserNotificationPermission>(browser.permission);
         this.permissionChanges = this.permissionSubject.asObservable();
-        this.alertMode = this.readStoredMode();
-        if (this.alertMode !== 'off') window.addEventListener('pointerdown', this.unlockOnGesture, {once: true});
     }
 
     public get notificationPermission(): BrowserNotificationPermission { return this.permissionSubject.value; }
@@ -150,30 +155,34 @@ export class BrowserNotificationService {
     public get areSoundsEnabled(): boolean { return this.alertMode !== 'off'; }
     public get mode(): AlertMode { return this.alertMode; }
 
-    public async enable(): Promise<BrowserNotificationPermission> {
+    public async prepareCapabilities(mode: AlertMode): Promise<BrowserNotificationPermission> {
         // Start both browser capabilities in the original click task. Browsers may
         // consume transient user activation while displaying the permission prompt.
-        const soundsPromise = this.unlockSounds();
+        if (mode !== 'off') void this.unlockSounds();
         let permission = this.browser.permission;
-        if (permission === 'default') {
+        if (mode === 'notifications' && this.browser.supported && permission === 'default') {
             try {
                 permission = await this.browser.requestPermission();
             } catch {
                 permission = this.browser.permission;
             }
         }
-        this.setMode(await soundsPromise ? permission === 'granted' ? 'notifications' : 'sounds' : 'off');
         this.permissionSubject.next(permission);
         return permission;
     }
 
-    public async enableSounds(): Promise<void> {
-        this.setMode(await this.unlockSounds() ? 'sounds' : 'off');
+    public async unlockAudio(): Promise<boolean> {
+        return this.unlockSounds();
     }
 
-    public disable(): void {
-        this.setMode('off');
-        this.stopCallRingtone();
+    public setMode(mode: AlertMode): void {
+        this.alertMode = mode;
+        if (mode === 'off') {
+            this.stopCallRingtone();
+            this.removeUnlockListener();
+        } else {
+            this.registerUnlockListener();
+        }
     }
 
     public showMessageNotification(conversationID: string): void {
@@ -207,13 +216,16 @@ export class BrowserNotificationService {
         }
     }
 
-    private setMode(mode: AlertMode): void {
-        this.alertMode = mode;
-        window.localStorage.setItem(this.storageKey, mode);
+    private registerUnlockListener(): void {
+        if (this.unlockListenerRegistered || typeof window === 'undefined') return;
+        window.addEventListener('pointerdown', this.unlockOnGesture, {once: true});
+        this.unlockListenerRegistered = true;
     }
 
-    private readStoredMode(): AlertMode {
-        const mode = window.localStorage.getItem(this.storageKey);
-        return mode === 'sounds' || mode === 'notifications' ? mode : 'off';
+    private removeUnlockListener(): void {
+        if (!this.unlockListenerRegistered || typeof window === 'undefined') return;
+        window.removeEventListener('pointerdown', this.unlockOnGesture);
+        this.unlockListenerRegistered = false;
     }
+
 }
