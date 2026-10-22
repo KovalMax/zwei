@@ -19,6 +19,11 @@ describe('parseGiphyMedia', () => {
             .toEqual({kind: 'image', source: 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif'});
     });
 
+    it('accepts the media2 rendition URL copied from the GIPHY share page', () => {
+        const rendition = 'https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExcmNlZHQwd2hybXFhOTN6Y3hndms1Z2pyZjkzeGo2Z2libTFhbm9sNCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/gh6gFVh35jyzNvHegl/giphy.gif';
+        expect(parseGiphyMedia(rendition)).toEqual({kind: 'image', source: rendition});
+    });
+
     it('recognizes canonical share pages without converting or embedding them', () => {
         expect(parseGiphyMedia('https://giphy.com/gifs/dancing-cat-YsTs5ltWtEhnq?x=1'))
             .toEqual({kind: 'share-link', source: 'https://giphy.com/gifs/dancing-cat-YsTs5ltWtEhnq?x=1'});
@@ -27,6 +32,9 @@ describe('parseGiphyMedia', () => {
     it.each([
         'http://media1.giphy.com/media/id/200.gif', 'https://media1.giphy.com.evil.test/media/id/200.gif',
         'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif',
+        'https://media2.giphy.com/media/v1.token/abc123/extra/giphy.gif',
+        'https://media4.giphy.com/media/v1.token&ep=value/abc123/giphy.gif',
+        'https://media.giphy.com/media/v1.token&ep=value/abc123/giphy.gif',
         'https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/giphy.gif',
         'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/giphy.gif',
         'https://media4.giphy.com/media/id/200.gif', 'https://media4.giphy.com/media/id/200.webp',
