@@ -85,12 +85,11 @@ func (r *Repository) RevokeAllSessions(ctx context.Context, userID uuid.UUID) er
 
 func (r *Repository) Profile(ctx context.Context, userID uuid.UUID) (user.Profile, error) {
 	var profile user.Profile
-	err := r.db.QueryRow(ctx, `SELECT id, email, display_name, retention_period, auto_load_approved_media FROM users WHERE id = $1`, userID).Scan(&profile.ID, &profile.Email, &profile.DisplayName, &profile.RetentionPeriod, &profile.AutoLoadApprovedMedia)
+	err := r.db.QueryRow(ctx, `SELECT id, email, display_name, retention_period, alert_mode, auto_load_approved_media FROM users WHERE id = $1`, userID).Scan(&profile.ID, &profile.Email, &profile.DisplayName, &profile.RetentionPeriod, &profile.AlertMode, &profile.AutoLoadApprovedMedia)
 	return profile, err
 }
-
-func (r *Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string, autoLoadApprovedMedia *bool) error {
-	_, err := r.db.Exec(ctx, `UPDATE users SET display_name = COALESCE($1, display_name), retention_period = COALESCE($2, retention_period), auto_load_approved_media = COALESCE($3, auto_load_approved_media), updated_at = now() WHERE id = $4`, displayName, retention, autoLoadApprovedMedia, userID)
+func (r *Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention, alertMode *string, autoLoadApprovedMedia *bool) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET display_name = COALESCE($1, display_name), retention_period = COALESCE($2, retention_period), alert_mode = COALESCE($3, alert_mode), auto_load_approved_media = COALESCE($4, auto_load_approved_media), updated_at = now() WHERE id = $5`, displayName, retention, alertMode, autoLoadApprovedMedia, userID)
 	return err
 }
 

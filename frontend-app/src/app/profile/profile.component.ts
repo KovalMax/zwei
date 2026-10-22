@@ -3,6 +3,7 @@ import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
 import {HostService} from '../auth/host.service';
 import {AlertMode, BrowserNotificationService} from '../notifications/notification.service';
+import {firstValueFrom} from 'rxjs';
 
 @Component({
     standalone: false,
@@ -16,6 +17,9 @@ export class ProfileComponent implements OnInit {
     public error = false;
     public mediaSaving = false;
     public mediaSaveError = false;
+    public alertMode?: AlertMode;
+    public alertSaveError = false;
+    public alertSaving = false;
     public readonly backRoute: string;
     public readonly backLabel: string;
 
@@ -25,10 +29,26 @@ export class ProfileComponent implements OnInit {
     }
 
     public async setAlertMode(mode: AlertMode): Promise<void> {
-        if (mode === 'off') this.notifications.disable();
-        else if (mode === 'sounds') await this.notifications.enableSounds();
-        else await this.notifications.enable();
+        if (this.alertSaving || mode === this.alertMode) return;
+        this.alertSaving = true;
+        this.alertSaveError = false;
         this.changeDetector.markForCheck();
+        try {
+            // Trigger permission prompts/audio unlock directly from the user's
+            // gesture; these browser-local capabilities do not alter the saved
+            // account preference.
+            await this.notifications.prepareCapabilities(mode);
+            const profile = await firstValueFrom(this.authService.updateProfile({alert_mode: mode}));
+            this.profile = profile;
+            const alertMode = profile.alert_mode ?? 'off';
+            this.alertMode = alertMode;
+            this.notifications.setMode(alertMode);
+        } catch {
+            this.alertSaveError = true;
+        } finally {
+            this.alertSaving = false;
+            this.changeDetector.markForCheck();
+        }
     }
 
     public setMediaAutoLoad(enabled: boolean): void {
@@ -51,6 +71,9 @@ export class ProfileComponent implements OnInit {
         this.authService.profile().subscribe({
             next: profile => {
                 this.profile = profile;
+                const alertMode = profile.alert_mode ?? 'off';
+                this.alertMode = alertMode;
+                this.notifications.setMode(alertMode);
                 this.changeDetector.markForCheck();
             },
             error: () => {

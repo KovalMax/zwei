@@ -153,7 +153,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     public ngOnInit(): void {
         this.authService.profile().subscribe({next: profile => {
             this.profile = profile;
-        this.notifications?.setUserID?.(profile.id);
+            this.notifications?.setUserID(profile.id);
+            this.notifications?.setAlertMode(profile.alert_mode ?? 'off');
             this.changeDetector.markForCheck();
         }});
         if (typeof this.authService.mediaPolicy === 'function') this.authService.mediaPolicy().subscribe({next: policy => {

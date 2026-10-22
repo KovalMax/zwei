@@ -32,7 +32,7 @@ func TestUpdateProfilePersistsExplicitFalseAutoLoadValue(t *testing.T) {
 	repository := &fakeRepository{profile: user.Profile{AutoLoadApprovedMedia: true}}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
 	falseValue := false
-	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &falseValue)
+	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, nil, &falseValue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +72,34 @@ func TestAdminGiphyMutationReturnsPersistedValueWhenConcurrentWriterWins(t *test
 	}
 	if enabled {
 		t.Fatal("mutation returned request value; expected canonical persisted value")
+	}
+}
+
+func TestUpdateProfileAcceptsAlertModeAndLeavesOmittedFieldsUntouched(t *testing.T) {
+	repository := &fakeRepository{profile: user.Profile{AlertMode: "sounds"}}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	mode := "notifications"
+	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode, nil)
+	if err != nil {
+		t.Fatalf("UpdateProfile() error = %v", err)
+	}
+	if profile.AlertMode != "sounds" {
+		t.Fatalf("profile alert mode = %q", profile.AlertMode)
+	}
+	if repository.profileDisplayName != nil || repository.profileRetention != nil || repository.profileAlertMode != &mode {
+		t.Fatalf("updated fields = display %v, retention %v, alert %v", repository.profileDisplayName, repository.profileRetention, repository.profileAlertMode)
+	}
+}
+
+func TestUpdateProfileRejectsUnsupportedAlertMode(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	mode := "all"
+	if _, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode, nil); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("UpdateProfile() error = %v, want ErrInvalidInput", err)
+	}
+	if repository.profileAlertMode != nil {
+		t.Fatal("repository updated for invalid alert mode")
 	}
 }
 
@@ -235,6 +263,9 @@ type fakeRepository struct {
 	updatedAutoLoad      *bool
 	giphyEnabled         bool
 	giphyPersistedResult *bool
+	profileDisplayName   *string
+	profileRetention     *string
+	profileAlertMode     *string
 	account              user.User
 	deviceID             uuid.UUID
 	userID               uuid.UUID
@@ -270,7 +301,8 @@ func (f *fakeRepository) RevokeAllSessions(context.Context, uuid.UUID) error { r
 func (f *fakeRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
 	return f.profile, nil
 }
-func (f *fakeRepository) UpdateProfile(_ context.Context, _ uuid.UUID, _, _ *string, autoLoad *bool) error {
+func (f *fakeRepository) UpdateProfile(_ context.Context, _ uuid.UUID, displayName, retention, alertMode *string, autoLoad *bool) error {
+	f.profileDisplayName, f.profileRetention, f.profileAlertMode = displayName, retention, alertMode
 	if autoLoad != nil {
 		value := *autoLoad
 		f.updatedAutoLoad = &value

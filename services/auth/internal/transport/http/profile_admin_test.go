@@ -110,7 +110,10 @@ type httpTestRepository struct {
 func (r *httpTestRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
 	return r.profile, nil
 }
-func (r *httpTestRepository) UpdateProfile(_ context.Context, _ uuid.UUID, name, retention *string, media *bool) error {
+func (r *httpTestRepository) UpdateProfile(_ context.Context, _ uuid.UUID, name, retention, alertMode *string, media *bool) error {
+	if alertMode != nil {
+		r.profile.AlertMode = *alertMode
+	}
 	if name != nil {
 		r.profile.DisplayName = *name
 	}

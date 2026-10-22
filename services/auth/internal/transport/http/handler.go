@@ -58,6 +58,7 @@ type credentialsRequest struct {
 type profileUpdateRequest struct {
 	DisplayName           *string `json:"display_name"`
 	RetentionPeriod       *string `json:"retention_period"`
+	AlertMode             *string `json:"alert_mode"`
 	AutoLoadApprovedMedia *bool   `json:"auto_load_approved_media"`
 }
 
@@ -248,7 +249,7 @@ func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "profile update is empty")
 		return
 	}
-	profile, err := h.auth.UpdateProfile(r.Context(), userID, request.DisplayName, request.RetentionPeriod, request.AutoLoadApprovedMedia)
+	profile, err := h.auth.UpdateProfile(r.Context(), userID, request.DisplayName, request.RetentionPeriod, request.AlertMode, request.AutoLoadApprovedMedia)
 	if errors.Is(err, application.ErrInvalidInput) {
 		errorJSON(w, http.StatusBadRequest, "invalid profile update")
 		return

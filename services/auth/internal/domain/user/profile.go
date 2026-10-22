@@ -7,12 +7,23 @@ type Profile struct {
 	Email                 string    `json:"email"`
 	DisplayName           string    `json:"display_name"`
 	RetentionPeriod       string    `json:"retention_period"`
+	AlertMode             string    `json:"alert_mode"`
 	AutoLoadApprovedMedia bool      `json:"auto_load_approved_media"`
 }
 
 type ProfileUpdate struct {
 	DisplayName     *string `json:"display_name"`
 	RetentionPeriod *string `json:"retention_period"`
+	AlertMode       *string `json:"alert_mode"`
+}
+
+func ValidAlertMode(value string) bool {
+	switch value {
+	case "off", "sounds", "notifications":
+		return true
+	default:
+		return false
+	}
 }
 
 func ValidRetention(value string) bool {
