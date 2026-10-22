@@ -4745,6 +4745,57 @@ test('shares read and unread state across a user\'s browser devices', async ({ b
   await bobContext.close();
 });
 
+test('mirrors incoming unread messages to the app badge until the conversation is read', async ({browser}, testInfo) => {
+  const aliceEmail = uniqueEmail('badge-alice');
+  const bobEmail = uniqueEmail('badge-bob');
+  const carolEmail = uniqueEmail('badge-carol');
+  const context = await browser.newContext({viewport: {width: 1440, height: 900}});
+  await context.addInitScript(() => {
+    const target = window as Window & {__badgeEvents: {type: string; count?: number}[]};
+    target.__badgeEvents = [];
+    Object.defineProperty(navigator, 'setAppBadge', {configurable: true, value: (count?: number) => { target.__badgeEvents.push({type: 'set', count}); return Promise.resolve(); }});
+    Object.defineProperty(navigator, 'clearAppBadge', {configurable: true, value: () => { target.__badgeEvents.push({type: 'clear'}); return Promise.resolve(); }});
+  });
+  const aliceContext = await browser.newContext();
+  const alice = await aliceContext.newPage();
+  const bob = await context.newPage();
+  const carolContext = await browser.newContext();
+  const carol = await carolContext.newPage();
+
+  try {
+    await register(alice, aliceEmail, 'Alice');
+    await register(bob, bobEmail, 'Bob');
+    await register(carol, carolEmail, 'Carol');
+    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob), waitForLiveConnection(carol)]);
+    await alice.getByPlaceholder('Name or email').fill(bobEmail);
+    await alice.getByText(bobEmail).click();
+    await bob.getByPlaceholder('Name or email').fill(aliceEmail);
+    await expect(bob.locator('.search-result').filter({hasText: aliceEmail})).toBeVisible();
+    await bob.locator('.search-result').filter({hasText: aliceEmail}).click();
+    await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled();
+    await carol.getByPlaceholder('Name or email').fill(bobEmail);
+    await carol.getByText(bobEmail).click();
+    await bob.getByPlaceholder('Name or email').fill(carolEmail);
+    await expect(bob.locator('.search-result').filter({hasText: carolEmail})).toBeVisible();
+    await bob.locator('.search-result').filter({hasText: carolEmail}).click();
+    await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled();
+
+    const message = `badge-${Date.now()}`;
+    await alice.getByPlaceholder('Write a message…').fill(message);
+    await alice.getByRole('button', {name: 'Send message'}).click();
+    await expect.poll(() => bob.evaluate(() => (window as Window & {__badgeEvents: {type: string; count?: number}[]}).__badgeEvents.some(event => event.type === 'set' && event.count === 1))).toBe(true);
+    await expect(bob.locator('.person-option').filter({hasText: 'Alice'}).locator('.unread-count')).toHaveText('1');
+    await bob.screenshot({path: testInfo.outputPath('app-badge-unread-desktop.png')});
+
+    await bob.locator('.person-option').filter({hasText: 'Alice'}).click();
+    await expect(bob.getByText(message)).toBeVisible();
+    await expect.poll(() => bob.evaluate(() => (window as Window & {__badgeEvents: {type: string; count?: number}[]}).__badgeEvents.at(-1)?.type)).toBe('clear');
+    await bob.screenshot({path: testInfo.outputPath('app-badge-read-desktop.png')});
+  } finally {
+    await Promise.all([context.close(), aliceContext.close(), carolContext.close()]);
+  }
+});
+
 test('measures visible Home rail and composer text contrast in light and dark themes', async ({browser}, testInfo) => {
   const context = await browser.newContext({viewport: {width: 390, height: 844}});
   const page = await context.newPage();

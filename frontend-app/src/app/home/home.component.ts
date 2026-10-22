@@ -21,6 +21,7 @@ import {ZweiIconName} from '../shared/zwei-icon/zwei-icon.component';
 import {DirectCallSurfaceIntent} from './call-presentation/direct-call-surface.component';
 import {GroupCallSurfaceIntent} from './call-presentation/group-call-surface.component';
 import {parseGiphyMedia} from './giphy-media';
+import {PwaService} from '../pwa/pwa.service';
 
 export const STICKERS = [
     {id: 'hello', label: 'Hello', asset: 'assets/stickers/hello.svg'}, {id: 'heart', label: 'Heart', asset: 'assets/stickers/heart.svg'},
@@ -128,6 +129,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public showDepartedGroupStatus = false;
     private readonly groupAccess: HomeGroupAccessFacade;
     private readonly groupMutationSubscriptions = new Subscription();
+    private readonly unreadBadgeSubscription = new Subscription();
     private readonly abortedGroupCallConversations = new Set<string>();
     private readonly clearedGroupProjections = new Set<string>();
     private readonly staleGroupIDs = new Set<string>();
@@ -145,9 +147,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     @ViewChild('archiveModeControl') private archiveModeControl?: ElementRef<HTMLButtonElement>;
     @ViewChild(GroupMemberListComponent) private groupMemberList?: GroupMemberListComponent;
 
-    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade) {
+    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService) {
         this.groupAccess = groupAccess;
         this.groupAccessSubscription.add(this.groupAccess.outcomes$.subscribe(outcome => this.handleGroupAccessOutcome(outcome)));
+        this.unreadBadgeSubscription.add(this.conversations.subscribe(conversations => this.pwa?.setUnreadCount(conversations.reduce((total, conversation) => total + conversation.unreadCount, 0))));
     }
 
     public ngOnInit(): void {
@@ -204,6 +207,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.userSearchRequest?.unsubscribe();
         this.groupMutationSubscriptions.unsubscribe();
         this.groupAccessSubscription.unsubscribe();
+        this.unreadBadgeSubscription.unsubscribe();
         this.groupAccess.ngOnDestroy();
         for (const pending of this.pendingRequests.values()) window.clearTimeout(pending.timeout);
         this.stopTyping();
