@@ -49,6 +49,10 @@ func TestReconciliationRepositoryReturnsAuthorizedForwardBoundedMessages(t *test
 			request.Body = "@message 2"
 			request.Mentions = []messaging.Mention{{UserID: peerID, Start: 0, End: 8}}
 		}
+		if index == 3 {
+			request.Body = "heart"
+			request.ContentType = "sticker"
+		}
 		if _, _, err := sender.Send(ctx, request); err != nil {
 			t.Fatalf("send message %d: %v", index, err)
 		}
@@ -70,6 +74,10 @@ func TestReconciliationRepositoryReturnsAuthorizedForwardBoundedMessages(t *test
 	}
 	if len(result.Messages[0].Mentions) != 1 || result.Messages[0].Mentions[0].UserID != peerID {
 		t.Fatalf("reconciliation mentions = %+v, want persisted peer mention", result.Messages[0].Mentions)
+	}
+	stickerResult, err := repository.Reconcile(ctx, ownerID, conversationID, 2, 10)
+	if err != nil || len(stickerResult.Messages) != 1 || stickerResult.Messages[0].Body != "heart" || stickerResult.Messages[0].ContentType != "sticker" {
+		t.Fatalf("reconciled sticker = (%+v, %v), want persisted sticker content type", stickerResult.Messages, err)
 	}
 	if _, err := repository.Reconcile(ctx, outsiderID, conversationID, 0, 1); err == nil {
 		t.Fatal("unauthorized reconciliation succeeded")

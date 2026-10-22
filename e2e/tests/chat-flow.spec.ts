@@ -2779,6 +2779,134 @@ test('shows group members who are typing by name and tracks each member independ
   }
 });
 
+test('sends Unicode emoji and standalone stickers in direct and group conversations', async ({browser}, testInfo) => {
+  test.setTimeout(180_000);
+  const senderEmail = uniqueEmail('sticker-sender');
+  const recipientEmail = uniqueEmail('sticker-recipient');
+  const viewportMatrix = [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}];
+  const senderContext = await browser.newContext({viewport: viewportMatrix[0]});
+  const recipientContext = await browser.newContext({viewport: viewportMatrix[0]});
+  const sender = await senderContext.newPage();
+  const recipient = await recipientContext.newPage();
+
+  try {
+    await register(sender, senderEmail, 'Sticker sender');
+    await register(recipient, recipientEmail, 'Sticker recipient');
+    await Promise.all([waitForLiveConnection(sender), waitForLiveConnection(recipient)]);
+
+    await sender.getByPlaceholder('Name or email').fill(recipientEmail);
+    await sender.locator('.search-result').filter({hasText: recipientEmail}).click();
+    await recipient.locator('.person-option').filter({hasText: 'Sticker sender'}).click();
+    const composer = sender.getByPlaceholder('Write a message…');
+
+    // Check the open sticker picker in both themes at each supported acceptance viewport.
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(sender, theme);
+      for (const viewport of viewportMatrix) {
+        await sender.setViewportSize(viewport);
+        await sender.getByRole('button', {name: 'Open sticker picker'}).click();
+        const geometry = await sender.locator('#sticker-picker').evaluate(picker => {
+          const rect = (element: Element) => {
+            const box = element.getBoundingClientRect();
+            return {left: box.left, right: box.right, top: box.top, bottom: box.bottom};
+          };
+          const buttons = Array.from(picker.querySelectorAll('button'));
+          return {
+            picker: rect(picker), buttons: buttons.map(rect),
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+            viewportHeight: window.innerHeight,
+          };
+        });
+        const context = `${theme}/${viewport.width}x${viewport.height} sticker picker ${JSON.stringify(geometry)}`;
+        expect(geometry.documentWidth, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+        expect(geometry.picker.left, context).toBeGreaterThanOrEqual(0);
+        expect(geometry.picker.right, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+        expect(geometry.picker.top, context).toBeGreaterThanOrEqual(0);
+        expect(geometry.picker.bottom, context).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+        expect(geometry.buttons.length, context).toBeGreaterThan(0);
+        for (const button of geometry.buttons) {
+          expect(button.left, context).toBeGreaterThanOrEqual(0);
+          expect(button.right, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+          expect(button.top, context).toBeGreaterThanOrEqual(0);
+          expect(button.bottom, context).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+        }
+        if ((theme === 'light' && viewport.width === 1440) || (theme === 'dark' && viewport.width === 390)) {
+          await sender.screenshot({path: testInfo.outputPath(`sticker-picker-${theme}-${viewport.width}.png`), fullPage: false});
+        }
+        await sender.getByRole('button', {name: 'Open sticker picker'}).click();
+      }
+    }
+
+    await sender.setViewportSize(viewportMatrix[0]);
+    await setTheme(sender, 'dark');
+    await composer.fill('Hello ');
+    await sender.getByRole('button', {name: 'Open emoji picker'}).click();
+    await sender.getByRole('button', {name: 'Insert Smiling face'}).click();
+    await expect(composer).toHaveValue('Hello 😊');
+    await composer.press('End');
+    await composer.type(' direct message');
+    await sender.getByRole('button', {name: 'Send message'}).click();
+    await expect(recipient.locator('.message-history').getByText('Hello 😊 direct message')).toBeVisible();
+
+    await composer.fill('Keep this draft');
+    await sender.getByRole('button', {name: 'Open sticker picker'}).click();
+    await sender.getByRole('button', {name: 'Send Cat sticker'}).click();
+    await expect(composer).toHaveValue('Keep this draft');
+    const directSticker = recipient.locator('.message-history .message-sticker img').last();
+    await expect(directSticker).toHaveAttribute('src', 'assets/stickers/cat.svg');
+    await expect(directSticker).toHaveAttribute('alt', 'Cat');
+    await recipient.reload();
+    const directConversation = recipient.locator('.person-option').filter({hasText: 'Sticker sender'});
+    await expect(directConversation).toBeVisible();
+    await directConversation.click();
+    const directHistory = recipient.locator('.message-history');
+    await expect(directHistory.getByText('Hello 😊 direct message')).toBeVisible();
+    const restoredDirectSticker = directHistory.locator('.message-sticker img').last();
+    await expect(restoredDirectSticker).toHaveAttribute('src', 'assets/stickers/cat.svg');
+    await expect(restoredDirectSticker).toHaveAttribute('alt', 'Cat');
+
+    for (const sticker of [{name: 'Thanks', asset: 'thanks.svg'}, {name: 'Yes', asset: 'yes.svg'}]) {
+      await sender.getByRole('button', {name: 'Open sticker picker'}).click();
+      await sender.getByRole('button', {name: `Send ${sticker.name} sticker`}).click();
+      const receivedSticker = recipient.locator('.message-history .message-sticker img').last();
+      await expect(receivedSticker).toHaveAttribute('src', `assets/stickers/${sticker.asset}`);
+      await expect(receivedSticker).toHaveAttribute('alt', sticker.name);
+    }
+    await expect(sender.locator('.message-history .message-pending-label')).toHaveCount(0);
+    await sender.screenshot({path: testInfo.outputPath('sticker-rendered-direct-dark-2560.png'), fullPage: false});
+
+    // Create a real group through the authenticated API, then exercise the same visible composer flow.
+    const token = await authenticatedToken(senderContext, senderEmail, 'sticker-group-owner');
+    const recipientID = await userID(senderContext, token, recipientEmail);
+    const created = await senderContext.request.post(`${chatBase}/api/chat/groups`, {
+      headers: {Authorization: `${token.token_type} ${token.access_token}`},
+      data: {name: `Sticker group ${Date.now()}`, member_ids: [recipientID]},
+    });
+    expect(created.status()).toBe(201);
+    const groupName = (await created.json() as {name: string}).name;
+    await sender.locator('.person-option').filter({hasText: groupName}).click();
+    await recipient.reload();
+    const recipientGroup = recipient.locator('.person-option').filter({hasText: groupName});
+    await expect(recipientGroup).toBeVisible();
+    await recipientGroup.click();
+    await sender.getByPlaceholder('Write a message…').fill('Group draft stays here');
+    await sender.getByRole('button', {name: 'Open sticker picker'}).click();
+    await sender.getByRole('button', {name: 'Send Heart sticker'}).click();
+    await expect(sender.getByPlaceholder('Write a message…')).toHaveValue('Group draft stays here');
+    await expect(recipient.locator('.message-history .message-sticker img').last()).toHaveAttribute('src', 'assets/stickers/heart.svg');
+    await recipient.reload();
+    const restoredRecipientGroup = recipient.locator('.person-option').filter({hasText: groupName});
+    await expect(restoredRecipientGroup).toBeVisible();
+    await restoredRecipientGroup.click();
+    const restoredGroupSticker = recipient.locator('.message-history .message-sticker img').last();
+    await expect(restoredGroupSticker).toHaveAttribute('src', 'assets/stickers/heart.svg');
+    await expect(restoredGroupSticker).toHaveAttribute('alt', 'Heart');
+    await sender.screenshot({path: testInfo.outputPath('sticker-rendered-group-dark-2560.png'), fullPage: false});
+  } finally {
+    await Promise.allSettled([senderContext.close(), recipientContext.close()]);
+  }
+});
+
 test('register, create conversation, and deliver a message', async ({ browser }, testInfo) => {
   // Active-call acceptance matrix: light/dark at 2560, 1440, 1024, and 390x844; screen-share content is checked at top/end on desktop/mobile, with no horizontal overflow, all device/share controls above stable sticky actions, and screenshots of both scroll positions.
   test.setTimeout(240_000);

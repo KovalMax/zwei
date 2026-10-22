@@ -15,6 +15,7 @@ type Message struct {
 	Body            string    `json:"body"`
 	CreatedAt       time.Time `json:"created_at"`
 	Kind            string    `json:"kind"`
+	ContentType     string    `json:"content_type"`
 	Mentions        []Mention `json:"mentions,omitempty"`
 }
 

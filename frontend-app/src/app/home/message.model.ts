@@ -5,6 +5,7 @@ export interface Message {
     clientMessageId: string;
     sequence: number;
     body: string;
+    contentType?: 'text' | 'sticker';
     mentions?: MessageMention[];
     createdAt: string;
     kind?: 'user' | 'system';

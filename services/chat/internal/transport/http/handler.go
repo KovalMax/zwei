@@ -475,12 +475,13 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ClientMessageID string `json:"client_message_id"`
 		Body            string `json:"body"`
+		ContentType     string `json:"content_type"`
 	}
 	if !decodeJSON(w, r, &request) {
 		errorJSON(w, http.StatusBadRequest, "invalid message")
 		return
 	}
-	message, created, err := h.sender.Send(r.Context(), messaging.SendRequest{SenderID: userID, ConversationID: conversationID, ClientMessageID: request.ClientMessageID, Body: request.Body})
+	message, created, err := h.sender.Send(r.Context(), messaging.SendRequest{SenderID: userID, ConversationID: conversationID, ClientMessageID: request.ClientMessageID, Body: request.Body, ContentType: request.ContentType})
 	if errors.Is(err, messaging.ErrConversationNotFound) {
 		errorJSON(w, http.StatusNotFound, err.Error())
 		return

@@ -602,7 +602,7 @@ func TestRepositoryGroupMembershipWritesConciseEncryptedSystemEntries(t *testing
 	if err != nil {
 		t.Fatalf("list new member history: %v", err)
 	}
-	if len(history) != 1 || history[0].Body != "Owner added Added member to the group." || history[0].Kind != "system" {
+	if len(history) != 1 || history[0].Body != "Owner added Added member to the group." || history[0].Kind != "system" || history[0].ContentType != "text" {
 		t.Fatalf("new member history = %+v, want only the join system entry", history)
 	}
 	if _, err := repository.ChangeRole(ctx, ownerID, group.ID, addedMemberID, conversation.RoleAdmin); err != nil {
@@ -928,7 +928,8 @@ func assertSystemEntry(t *testing.T, ctx context.Context, db *pgxpool.Pool, secr
 	t.Helper()
 	var kind string
 	var ciphertext, nonce []byte
-	err := db.QueryRow(ctx, `SELECT kind, ciphertext, nonce FROM messages WHERE conversation_id = $1 ORDER BY sequence DESC LIMIT 1`, groupID).Scan(&kind, &ciphertext, &nonce)
+	var contentType string
+	err := db.QueryRow(ctx, `SELECT kind, content_type, ciphertext, nonce FROM messages WHERE conversation_id = $1 ORDER BY sequence DESC LIMIT 1`, groupID).Scan(&kind, &contentType, &ciphertext, &nonce)
 	if want == "" {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatalf("initial system entry query error = %v, want no entry", err)
@@ -940,6 +941,9 @@ func assertSystemEntry(t *testing.T, ctx context.Context, db *pgxpool.Pool, secr
 	}
 	if kind != "system" {
 		t.Fatalf("message kind = %q, want system", kind)
+	}
+	if contentType != "text" {
+		t.Fatalf("system content type = %q, want text", contentType)
 	}
 	key := sha256.Sum256([]byte(secret))
 	body, err := sharedmessage.Decrypt(key[:], ciphertext, nonce)
