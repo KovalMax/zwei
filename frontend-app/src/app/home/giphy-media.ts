@@ -1,0 +1,22 @@
+export type GiphyMedia = {kind: 'image'; source: string} | {kind: 'share-link'; source: string};
+
+/** Accept only documented GIPHY image CDN renditions and canonical GIF detail links. */
+export function parseGiphyMedia(value: string): GiphyMedia | null {
+    let url: URL;
+    try { url = new URL(value); } catch { return null; }
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash) return null;
+    const mediaHost = /^media(?:1|4)?\.giphy\.com$/.test(url.hostname);
+    const rawMediaPath = value.startsWith(`https://${url.hostname}/`) ? value.slice(`https://${url.hostname}`.length).split(/[?#]/, 1)[0] : '';
+    const documentedRendition = url.hostname === 'media1.giphy.com'
+        && /^\/media\/[A-Za-z0-9]+\/200\.(?:gif|webp)$/i.test(rawMediaPath);
+    const sharedDirectRendition = url.hostname !== 'media1.giphy.com' && mediaHost
+        && /^\/media\/v1\.[A-Za-z0-9._=-]+\/[A-Za-z0-9_-]+\/giphy\.gif$/i.test(rawMediaPath);
+    if (mediaHost && (documentedRendition || sharedDirectRendition)) {
+        return {kind: 'image', source: `https://${url.hostname}${url.pathname}${url.search}`};
+    }
+    if (url.hostname === 'giphy.com' && value.startsWith('https://giphy.com/')) {
+        const match = url.pathname.match(/^\/gifs\/[A-Za-z0-9-]+-([A-Za-z0-9]{6,})$/);
+        if (match) return {kind: 'share-link', source: value};
+    }
+    return null;
+}

@@ -22,5 +22,12 @@
             <p *ngIf="alertSaving" role="status">Saving alert preference…</p>
             <p *ngIf="alertSaveError" class="profile-error" role="alert">Could not save your alert preference. Your previous preference is still selected.</p>
         </section>
+        <section *ngIf="profile" class="alert-settings" aria-labelledby="media-settings-title">
+            <h2 id="media-settings-title">Inline media</h2>
+            <p>When enabled, approved GIPHY images and GIFs in messages load automatically. Your browser contacts GIPHY, which may receive your IP address and request timing. Share-page links still require you to open GIPHY.</p>
+            <label class="media-preference"><input type="checkbox" [checked]="profile.auto_load_approved_media" [disabled]="mediaSaving" (change)="setMediaAutoLoad(readChecked($event))"> Automatically load approved GIPHY images and GIFs</label>
+            <p *ngIf="mediaSaving" role="status">Saving media preference…</p>
+            <p *ngIf="mediaSaveError" class="profile-error" role="alert">Could not save this preference. Your previous setting was restored.</p>
+        </section>
     </section>
 </main>

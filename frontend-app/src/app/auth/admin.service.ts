@@ -28,12 +28,22 @@ export interface CreatedInvitation {
     code: string;
 }
 
+export interface GiphyMediaSource {enabled: boolean}
+
 @Injectable({providedIn: 'root'})
 export class AdminService {
     constructor(private http: HttpClient, private host: HostService) {}
 
     public checkAccess(): Observable<{id: string; admin: boolean}> {
         return this.http.get<{id: string; admin: boolean}>(this.host.adminEndpoint('/api/admin/me'));
+    }
+
+    public giphyMediaSource(): Observable<GiphyMediaSource> {
+        return this.http.get<GiphyMediaSource>(this.host.adminEndpoint('/api/admin/media-sources/giphy'));
+    }
+
+    public updateGiphyMediaSource(enabled: boolean): Observable<GiphyMediaSource> {
+        return this.http.put<GiphyMediaSource>(this.host.adminEndpoint('/api/admin/media-sources/giphy'), {enabled});
     }
 
     public users(): Observable<AdminUser[]> {

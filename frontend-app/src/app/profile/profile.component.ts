@@ -15,6 +15,8 @@ import {firstValueFrom} from 'rxjs';
 export class ProfileComponent implements OnInit {
     public profile?: Profile;
     public error = false;
+    public mediaSaving = false;
+    public mediaSaveError = false;
     public alertMode?: AlertMode;
     public alertSaveError = false;
     public alertSaving = false;
@@ -47,6 +49,22 @@ export class ProfileComponent implements OnInit {
             this.alertSaving = false;
             this.changeDetector.markForCheck();
         }
+    }
+
+    public setMediaAutoLoad(enabled: boolean): void {
+        if (!this.profile || this.mediaSaving) return;
+        const previous = this.profile.auto_load_approved_media;
+        this.profile = {...this.profile, auto_load_approved_media: enabled};
+        this.mediaSaving = true;
+        this.mediaSaveError = false;
+        this.authService.updateProfile({auto_load_approved_media: enabled}).subscribe({
+            next: profile => { this.profile = profile; this.mediaSaving = false; this.changeDetector.markForCheck(); },
+            error: () => { if (this.profile) this.profile = {...this.profile, auto_load_approved_media: previous}; this.mediaSaving = false; this.mediaSaveError = true; this.changeDetector.markForCheck(); },
+        });
+    }
+
+    public readChecked(event: Event): boolean {
+        return event.target instanceof HTMLInputElement && event.target.checked;
     }
 
     public ngOnInit(): void {

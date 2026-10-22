@@ -3,11 +3,12 @@ package user
 import "github.com/google/uuid"
 
 type Profile struct {
-	ID              uuid.UUID `json:"id"`
-	Email           string    `json:"email"`
-	DisplayName     string    `json:"display_name"`
-	RetentionPeriod string    `json:"retention_period"`
-	AlertMode       string    `json:"alert_mode"`
+	ID                    uuid.UUID `json:"id"`
+	Email                 string    `json:"email"`
+	DisplayName           string    `json:"display_name"`
+	RetentionPeriod       string    `json:"retention_period"`
+	AlertMode             string    `json:"alert_mode"`
+	AutoLoadApprovedMedia bool      `json:"auto_load_approved_media"`
 }
 
 type ProfileUpdate struct {

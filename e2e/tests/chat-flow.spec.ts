@@ -2779,6 +2779,171 @@ test('shows group members who are typing by name and tracks each member independ
   }
 });
 
+test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy keeps links only', async ({browser}, testInfo) => {
+  test.setTimeout(120_000);
+  const aliceEmail = uniqueEmail('giphy-alice');
+  const bobEmail = uniqueEmail('giphy-bob');
+  const aliceContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const bobContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const alice = await aliceContext.newPage();
+  const bob = await bobContext.newPage();
+  const mediaRequests: string[] = [];
+  const credentialedProviderRequests: string[] = [];
+  let restoreGiphySource: (() => Promise<void>) | undefined;
+  const gif = Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64');
+  const mockProvider = async (route: import('@playwright/test').Route): Promise<void> => {
+    mediaRequests.push(route.request().url());
+    if (route.request().headers().cookie || route.request().headers().authorization) credentialedProviderRequests.push(route.request().url());
+    if (route.request().url().includes('fixture=failed')) {
+      await route.abort('failed');
+      return;
+    }
+    await route.fulfill({status: 200, contentType: 'image/gif', headers: {'Access-Control-Allow-Origin': '*'}, body: gif});
+  };
+  await Promise.all([aliceContext.addCookies([{name: 'provider-session', value: 'must-not-leak', domain: 'giphy.com', path: '/', secure: true, sameSite: 'None'}]),
+    bobContext.addCookies([{name: 'provider-session', value: 'must-not-leak', domain: 'giphy.com', path: '/', secure: true, sameSite: 'None'}])]);
+  await Promise.all([
+    alice.route('https://media1.giphy.com/**', mockProvider), bob.route('https://media1.giphy.com/**', mockProvider),
+    alice.route('https://media4.giphy.com/**', mockProvider), bob.route('https://media4.giphy.com/**', mockProvider),
+    alice.route('https://media.giphy.com/**', mockProvider), bob.route('https://media.giphy.com/**', mockProvider),
+  ]);
+
+  try {
+    await register(alice, aliceEmail, 'GIPHY Alice');
+    await register(bob, bobEmail, 'GIPHY Bob');
+    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob)]);
+    const nonAdminToken = await authenticatedToken(bobContext, bobEmail, 'inline-media-non-admin');
+    const nonAdminResponse = await bobContext.request.get(`${adminBase}/api/admin/media-sources/giphy`, {
+      headers: {Authorization: `${nonAdminToken.token_type} ${nonAdminToken.access_token}`},
+    });
+    expect(nonAdminResponse.status()).toBe(403);
+    await alice.getByPlaceholder('Name or email').fill(bobEmail);
+    await alice.locator('.search-result').filter({hasText: bobEmail}).click();
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    await bob.locator('.person-option').filter({hasText: 'GIPHY Alice'}).click();
+
+    const direct = 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif?fixture=one';
+    await alice.getByPlaceholder('Write a message…').fill(direct);
+    await alice.getByRole('button', {name: 'Send message'}).click();
+    const directMedia = bob.locator('app-inline-giphy').nth(0);
+    await expect(directMedia.getByRole('link', {name: 'Open original GIPHY link'})).toHaveAttribute('href', direct);
+    await expect(directMedia.getByRole('button', {name: 'Load GIPHY media'})).toBeVisible();
+    expect(mediaRequests).toHaveLength(0);
+    for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+      await bob.setViewportSize(viewport);
+      for (const theme of ['light', 'dark']) {
+        await bob.evaluate(value => {
+          document.documentElement.classList.toggle('dark-theme', value === 'dark');
+          document.body.classList.toggle('dark-theme', value === 'dark');
+        }, theme);
+        const geometry = await bob.evaluate(() => {
+          const button = document.querySelector<HTMLButtonElement>('app-inline-giphy button');
+          const box = button?.getBoundingClientRect();
+          return {scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth,
+            left: box?.left ?? -1, right: box?.right ?? Number.MAX_SAFE_INTEGER, color: button ? getComputedStyle(button).color : ''};
+        });
+        expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        expect(geometry.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(geometry.color).not.toBe('');
+        if (viewport.width === 390) await bob.screenshot({path: testInfo.outputPath(`giphy-click-${theme}-mobile.png`)});
+      }
+    }
+    await bob.evaluate(() => { document.documentElement.classList.remove('dark-theme'); document.body.classList.remove('dark-theme'); });
+    await bob.setViewportSize({width: 390, height: 844});
+    const sourceButton = directMedia.getByRole('button', {name: 'Load GIPHY media'});
+    const buttonBox = await sourceButton.boundingBox();
+    expect(buttonBox).not.toBeNull();
+    expect(buttonBox!.x).toBeGreaterThanOrEqual(0);
+    expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(391);
+    expect(await bob.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+    await sourceButton.click();
+    await expect.poll(() => mediaRequests.length).toBe(1);
+    const loadedImage = directMedia.locator('img');
+    await expect(loadedImage).toBeVisible();
+    await expect.poll(() => loadedImage.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+    await bob.screenshot({path: testInfo.outputPath('giphy-canonical-host-loaded-mobile.png')});
+    expect(credentialedProviderRequests).toHaveLength(0);
+
+    const share = 'https://giphy.com/gifs/dancing-cat-YsTs5ltWtEhnq';
+    await alice.getByPlaceholder('Write a message…').fill(share);
+    await alice.getByRole('button', {name: 'Send message'}).click();
+    const shareMedia = bob.locator('app-inline-giphy').nth(1);
+    await expect(shareMedia.getByRole('link', {name: 'Open original GIPHY link'})).toHaveAttribute('href', share);
+    await expect(shareMedia.getByText(/share links open on GIPHY/)).toBeVisible();
+    await expect(shareMedia.locator('iframe')).toHaveCount(0);
+    await expect(shareMedia.getByRole('button', {name: 'Load GIPHY media'})).toHaveCount(0);
+    expect(mediaRequests).toHaveLength(1);
+
+    await alice.getByRole('button', {name: 'Account menu'}).click();
+    await alice.getByRole('menuitem', {name: 'Profile'}).click();
+    await alice.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'}).check();
+    await expect(alice.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'})).toBeChecked();
+    await alice.screenshot({path: testInfo.outputPath('giphy-profile-preference-mobile.png')});
+    await alice.evaluate(() => { document.documentElement.classList.add('dark-theme'); document.body.classList.add('dark-theme'); });
+    await expect(alice.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'})).toBeVisible();
+    await alice.screenshot({path: testInfo.outputPath('giphy-profile-preference-dark-mobile.png')});
+    await alice.evaluate(() => { document.documentElement.classList.remove('dark-theme'); document.body.classList.remove('dark-theme'); });
+    await alice.reload();
+    await expect(alice.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'})).toBeChecked();
+    await alice.getByRole('link', {name: 'Back to chats'}).click();
+    await expect(alice).toHaveURL(/\/home$/);
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    const auto = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.webp?fixture=auto';
+    await bob.getByPlaceholder('Write a message…').fill(auto);
+    await bob.getByRole('button', {name: 'Send message'}).click();
+    await expect(alice.locator('app-inline-giphy img[src*="fixture=auto"]')).toBeVisible();
+    expect(mediaRequests.some(url => url.includes('fixture=auto'))).toBe(true);
+    expect(await alice.locator('app-inline-giphy img').count()).toBeLessThanOrEqual(3);
+    await alice.setViewportSize({width: 390, height: 844});
+    await alice.screenshot({path: testInfo.outputPath('giphy-auto-loaded-mobile.png')});
+
+    const failed = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?fixture=failed';
+    await bob.getByPlaceholder('Write a message…').fill(failed);
+    await bob.getByRole('button', {name: 'Send message'}).click();
+    // The opted-in account auto-loads this image; its failed request must leave the source link visible.
+    const failedInlineMedia = alice.locator('app-inline-giphy').filter({has: alice.locator('a[href*="fixture=failed"]')});
+    const failedLoadButton = failedInlineMedia.getByRole('button', {name: 'Load GIPHY media'});
+    if (await failedLoadButton.isVisible()) await failedLoadButton.click();
+    await expect(alice.getByText('Media could not be loaded. Use the original link above.')).toBeVisible();
+    await expect(alice.getByRole('link', {name: 'Open original GIPHY link'}).last()).toHaveAttribute('href', failed);
+
+    for (let index = 0; index < 4; index++) {
+      await bob.getByPlaceholder('Write a message…').fill(`https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?auto-bound=${index}`);
+      await bob.getByRole('button', {name: 'Send message'}).click();
+      await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled();
+    }
+    await expect(alice.locator('app-inline-giphy img')).toHaveCount(3);
+    await expect(alice.getByRole('button', {name: 'Load GIPHY media'}).last()).toBeVisible();
+
+    const adminToken = await authenticatedToken(aliceContext, adminEmail, 'inline-media-admin');
+    const adminHeaders = {Authorization: `${adminToken.token_type} ${adminToken.access_token}`};
+    const policyURL = `${adminBase}/api/admin/media-sources/giphy`;
+    const currentPolicyResponse = await aliceContext.request.get(policyURL, {headers: adminHeaders});
+    expect(currentPolicyResponse.status()).toBe(200);
+    const currentPolicy = await currentPolicyResponse.json() as {enabled: boolean};
+    restoreGiphySource = async () => { await aliceContext.request.put(policyURL, {headers: adminHeaders, data: {enabled: currentPolicy.enabled}}); };
+    const disableResponse = await aliceContext.request.put(policyURL, {headers: adminHeaders, data: {enabled: false}});
+    expect(disableResponse.status()).toBe(200);
+    expect(await disableResponse.json()).toEqual({enabled: false});
+    await alice.reload();
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    const requestCountBeforeDisabledItem = mediaRequests.length;
+    const disabledURL = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?fixture=disabled';
+    await bob.getByPlaceholder('Write a message…').fill(disabledURL);
+    await bob.getByRole('button', {name: 'Send message'}).click();
+    const disabledInlineMedia = alice.locator('app-inline-giphy').filter({has: alice.locator(`a[href="${disabledURL}"]`)});
+    await expect(disabledInlineMedia.getByText('GIPHY media is disabled by the administrator.')).toBeVisible();
+    await expect(disabledInlineMedia.getByRole('link', {name: 'Open original GIPHY link'})).toHaveAttribute('href', disabledURL);
+    expect(mediaRequests).toHaveLength(requestCountBeforeDisabledItem);
+    const disabledGeometry = await alice.evaluate(() => ({scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth}));
+    expect(disabledGeometry.scrollWidth).toBeLessThanOrEqual(disabledGeometry.clientWidth + 1);
+  } finally {
+    await restoreGiphySource?.();
+    await Promise.allSettled([aliceContext.close(), bobContext.close()]);
+  }
+});
+
 test('sends Unicode emoji and standalone stickers in direct and group conversations', async ({browser}, testInfo) => {
   test.setTimeout(180_000);
   const senderEmail = uniqueEmail('sticker-sender');

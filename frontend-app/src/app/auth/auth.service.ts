@@ -63,6 +63,10 @@ export class AuthService {
         return this.http.patch<Profile>(this.host.authEndpoint('profile'), update);
     }
 
+    public mediaPolicy(): Observable<{giphy_enabled: boolean}> {
+        return this.http.get<{giphy_enabled: boolean}>(this.host.authEndpoint('media-policy'));
+    }
+
     public activate(token: string): Observable<{status: string}> {
         return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});
     }

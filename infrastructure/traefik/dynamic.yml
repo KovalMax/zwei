@@ -12,7 +12,7 @@ http:
         referrerPolicy: strict-origin-when-cross-origin
         permissionsPolicy: geolocation=(), microphone=(self), camera=()
         customResponseHeaders:
-          Content-Security-Policy: "default-src 'self'; connect-src 'self' https://auth.localhost https://api.chat.localhost wss://ws.chat.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+          Content-Security-Policy: "default-src 'self'; connect-src 'self' https://auth.localhost https://api.chat.localhost wss://ws.chat.localhost; img-src 'self' data: https://media1.giphy.com https://media4.giphy.com https://media.giphy.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
           Cross-Origin-Opener-Policy: same-origin
           X-Permitted-Cross-Domain-Policies: none
     auth-rate-limit:

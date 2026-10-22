@@ -28,11 +28,58 @@ func TestLoginDoesNotRequireDisplayName(t *testing.T) {
 	}
 }
 
+func TestUpdateProfilePersistsExplicitFalseAutoLoadValue(t *testing.T) {
+	repository := &fakeRepository{profile: user.Profile{AutoLoadApprovedMedia: true}}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	falseValue := false
+	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, nil, &falseValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.updatedAutoLoad == nil || *repository.updatedAutoLoad {
+		t.Fatalf("auto-load update = %v, want explicit false", repository.updatedAutoLoad)
+	}
+	if profile.AutoLoadApprovedMedia {
+		t.Fatal("returned profile still enables automatic media loading")
+	}
+}
+
+func TestAdminGiphySettingRequiresAdminAndPersistsChanges(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, giphyEnabled: true}
+	service := NewAdminService(repository, nil, nil, "", "")
+	adminID := uuid.New()
+	enabled, err := service.SetGiphyEnabled(context.Background(), adminID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("mutation returned enabled although persistence returned disabled")
+	}
+
+	repository.isAdmin = false
+	if _, err := service.SetGiphyEnabled(context.Background(), adminID, true); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("non-admin update error = %v, want %v", err, ErrNotAdmin)
+	}
+}
+
+func TestAdminGiphyMutationReturnsPersistedValueWhenConcurrentWriterWins(t *testing.T) {
+	persisted := false
+	repository := &fakeRepository{isAdmin: true, giphyEnabled: true, giphyPersistedResult: &persisted}
+	service := NewAdminService(repository, nil, nil, "", "")
+	enabled, err := service.SetGiphyEnabled(context.Background(), uuid.New(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("mutation returned request value; expected canonical persisted value")
+	}
+}
+
 func TestUpdateProfileAcceptsAlertModeAndLeavesOmittedFieldsUntouched(t *testing.T) {
 	repository := &fakeRepository{profile: user.Profile{AlertMode: "sounds"}}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
 	mode := "notifications"
-	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode)
+	profile, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode, nil)
 	if err != nil {
 		t.Fatalf("UpdateProfile() error = %v", err)
 	}
@@ -48,7 +95,7 @@ func TestUpdateProfileRejectsUnsupportedAlertMode(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
 	mode := "all"
-	if _, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode); !errors.Is(err, ErrInvalidInput) {
+	if _, err := service.UpdateProfile(context.Background(), uuid.New(), nil, nil, &mode, nil); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("UpdateProfile() error = %v, want ErrInvalidInput", err)
 	}
 	if repository.profileAlertMode != nil {
@@ -212,23 +259,26 @@ func TestCreateInvitationSendsAccountCreationEmail(t *testing.T) {
 }
 
 type fakeRepository struct {
-	profile            user.Profile
-	profileDisplayName *string
-	profileRetention   *string
-	profileAlertMode   *string
-	account            user.User
-	deviceID           uuid.UUID
-	userID             uuid.UUID
-	params             CreateUserParams
-	isAdmin            bool
-	prepareEmail       string
-	prepareDisplayName string
-	prepareVerified    bool
-	resendEmail        string
-	resendDisplayName  string
-	resendHash         []byte
-	resendExpiresAt    time.Time
-	invitation         user.Invitation
+	profile              user.Profile
+	updatedAutoLoad      *bool
+	giphyEnabled         bool
+	giphyPersistedResult *bool
+	profileDisplayName   *string
+	profileRetention     *string
+	profileAlertMode     *string
+	account              user.User
+	deviceID             uuid.UUID
+	userID               uuid.UUID
+	params               CreateUserParams
+	isAdmin              bool
+	prepareEmail         string
+	prepareDisplayName   string
+	prepareVerified      bool
+	resendEmail          string
+	resendDisplayName    string
+	resendHash           []byte
+	resendExpiresAt      time.Time
+	invitation           user.Invitation
 }
 
 func (f *fakeRepository) CreateUserWithDevice(_ context.Context, params CreateUserParams) (uuid.UUID, uuid.UUID, error) {
@@ -251,9 +301,23 @@ func (f *fakeRepository) RevokeAllSessions(context.Context, uuid.UUID) error { r
 func (f *fakeRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
 	return f.profile, nil
 }
-func (f *fakeRepository) UpdateProfile(_ context.Context, _ uuid.UUID, displayName, retention, alertMode *string) error {
+func (f *fakeRepository) UpdateProfile(_ context.Context, _ uuid.UUID, displayName, retention, alertMode *string, autoLoad *bool) error {
 	f.profileDisplayName, f.profileRetention, f.profileAlertMode = displayName, retention, alertMode
+	if autoLoad != nil {
+		value := *autoLoad
+		f.updatedAutoLoad = &value
+		f.profile.AutoLoadApprovedMedia = value
+	}
 	return nil
+}
+func (f *fakeRepository) GiphyEnabled(context.Context) (bool, error) { return f.giphyEnabled, nil }
+func (f *fakeRepository) SetGiphyEnabled(_ context.Context, enabled bool) (bool, error) {
+	f.giphyEnabled = enabled
+	if f.giphyPersistedResult != nil {
+		f.giphyEnabled = *f.giphyPersistedResult
+		return f.giphyEnabled, nil
+	}
+	return enabled, nil
 }
 func (f *fakeRepository) IsAdmin(context.Context, uuid.UUID) (bool, error)              { return f.isAdmin, nil }
 func (f *fakeRepository) ListAdminUsers(context.Context) ([]user.AdminUser, error)      { return nil, nil }

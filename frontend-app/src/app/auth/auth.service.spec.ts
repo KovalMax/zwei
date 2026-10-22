@@ -53,4 +53,21 @@ describe('AuthService', () => {
         expect(backends.activation).toBe(`${backends.auth}/api/auth/activate`);
         expect(productionBackends.activation).toBe(`${productionBackends.auth}/api/auth/activate`);
     });
+
+    it('patches the account media preference through the typed profile endpoint', () => {
+        service.updateProfile({auto_load_approved_media: false}).subscribe(profile => {
+            expect(profile.auto_load_approved_media).toBe(false);
+        });
+        const request = http.expectOne(`${backends.auth}/api/auth/me`);
+        expect(request.request.method).toBe('PATCH');
+        expect(request.request.body).toEqual({auto_load_approved_media: false});
+        request.flush({id: 'u', email: 'u@example.test', display_name: 'User', retention_period: '30d', auto_load_approved_media: false});
+    });
+
+    it('reads media policy with the auth service contract', () => {
+        service.mediaPolicy().subscribe(policy => expect(policy).toEqual({giphy_enabled: true}));
+        const request = http.expectOne(`${backends.auth}/api/auth/media-policy`);
+        expect(request.request.method).toBe('GET');
+        request.flush({giphy_enabled: true});
+    });
 });
