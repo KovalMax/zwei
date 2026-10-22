@@ -6,7 +6,7 @@ import { By } from '@angular/platform-browser';
 import { MatTooltip } from '@angular/material/tooltip';
 import { BehaviorSubject, EMPTY, NEVER, Observable, of, Subject, throwError, map } from 'rxjs';
 
-import { HomeComponent } from './home.component';
+import { HomeComponent, STICKERS } from './home.component';
 import { AppModule } from '../app.module';
 import { HomeModule } from './home.module';
 import { AuthService } from '../auth/auth.service';
@@ -81,6 +81,107 @@ describe('HomeComponent', () => {
         expect(request.payload.mentions).toEqual([{user_id: 'alice-id', start: 3, end: 9}]);
         expect(historyComponent.messages[0].mentions).toEqual([{userId: 'alice-id', start: 3, end: 9}]);
         historyComponent.ngOnDestroy();
+    });
+
+    it('rejects a UTF-16-valid draft above the server UTF-8 byte limit without consuming draft state', () => {
+        const send = vi.fn().mockName('send').mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn().mockName('markForCheck')} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.profile = {id: 'user-1'} as Profile;
+        home.socketReady = true;
+        home.draft = '😀'.repeat(1025);
+        home.onDraftChange();
+        const draftMentions = (home as unknown as {draftMentions: unknown[]}).draftMentions;
+        const mention = {userId: 'alice', start: 0, end: 2};
+        draftMentions.push(mention);
+
+        home.sendMessage();
+
+        expect(send.mock.calls.some(([event]) => event.type === 'message.send')).toBe(false);
+        expect(home.draft).toBe('😀'.repeat(1025));
+        expect(draftMentions).toEqual([mention]);
+        expect(home.sendStatus).toContain('4096 UTF-8 byte limit');
+        home.ngOnDestroy();
+    });
+
+    it('renders the byte-limit error in the composer status area', () => {
+        component.sendStatus = 'Message exceeds the 4096 UTF-8 byte limit. Shorten it before sending.';
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('.send-status')?.textContent).toContain('4096 UTF-8 byte limit');
+        component.ngOnDestroy();
+    });
+
+    it('sends a sticker standalone without changing the composer draft', () => {
+        const send = vi.fn().mockName('send').mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn().mockName('markForCheck')} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('sticker-chat');
+        home.socketReady = true;
+        home.draft = 'Hi there';
+        home.onDraftChange();
+        home.sendSticker('cat');
+        const command = vi.mocked(send).mock.calls.map(([value]) => value).find(value => value.type === 'message.send');
+        expect(command).toMatchObject({type: 'message.send', payload: {content_type: 'sticker', body: 'cat', conversation_id: 'sticker-chat'}});
+        expect(home.draft).toBe('Hi there');
+        home.ngOnDestroy();
+    });
+
+    it('exposes separate accessible emoji and sticker picker controls', () => {
+        fixture.detectChanges();
+        const buttons = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
+        expect(buttons.some(button => button.getAttribute('aria-label') === 'Open emoji picker')).toBe(true);
+        expect(buttons.some(button => button.getAttribute('aria-label') === 'Open sticker picker')).toBe(true);
+        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open emoji picker')?.getAttribute('aria-controls')).toBe('emoji-picker');
+        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open sticker picker')?.getAttribute('aria-controls')).toBe('sticker-picker');
+        component.ngOnDestroy();
+    });
+
+    it('uses only fixed local sticker assets and labels rendered artwork and unavailable IDs', () => {
+        expect(STICKERS).toHaveLength(12);
+        expect(STICKERS.map(sticker => sticker.asset)).toEqual([
+            'assets/stickers/hello.svg', 'assets/stickers/heart.svg', 'assets/stickers/laugh.svg', 'assets/stickers/wow.svg',
+            'assets/stickers/thanks.svg', 'assets/stickers/sorry.svg', 'assets/stickers/yes.svg', 'assets/stickers/no.svg',
+            'assets/stickers/coffee.svg', 'assets/stickers/cat.svg', 'assets/stickers/dog.svg', 'assets/stickers/celebrate.svg',
+        ]);
+        expect(component.stickerAsset('https://example.invalid/sticker.svg')).toBeUndefined();
+        expect(component.stickerLabel('unknown-wire-value')).toBe('Unavailable sticker');
+
+        component.selectedConversation = conversation('sticker-assets');
+        component.messages = [{id: 'sticker-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'client', sequence: 1, body: 'heart', contentType: 'sticker', createdAt: '2026-01-01T00:00:00Z'}];
+        component.stickerPickerOpen = true;
+        fixture.detectChanges();
+        const pickerImages = Array.from(fixture.nativeElement.querySelectorAll('#sticker-picker img')) as HTMLImageElement[];
+        expect(pickerImages).toHaveLength(12);
+        expect(pickerImages[1].getAttribute('src')).toBe('assets/stickers/heart.svg');
+        expect(pickerImages[1].getAttribute('alt')).toBe('Heart');
+        expect(fixture.nativeElement.querySelector('.message-sticker img')?.getAttribute('src')).toBe('assets/stickers/heart.svg');
+        expect(fixture.nativeElement.querySelector('.message-sticker img')?.getAttribute('alt')).toBe('Heart');
+        component.ngOnDestroy();
+    });
+
+    it('inserts Unicode emoji at the caret, preserves mention offsets and draft, and does not send', async () => {
+        const send = vi.fn().mockName('send').mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn().mockName('markForCheck')} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = {...groupConversation('emoji-chat'), members: [groupMember('user-1', 1), {...groupMember('alice-id', 1), displayName: 'Alice'}]};
+        home.profile = {id: 'user-1'} as Profile;
+        home.socketReady = true;
+        home.draft = '@Ali';
+        home.onDraftChange();
+        home.selectMention({userId: 'alice-id', displayName: 'Alice'});
+        home.draft += 'hello';
+        home.onDraftChange();
+        const textarea = {selectionStart: 7, selectionEnd: 7, focus: vi.fn(), setSelectionRange: vi.fn()} as unknown as HTMLTextAreaElement;
+
+        home.insertEmoji('😊', textarea);
+        await Promise.resolve();
+
+        expect(home.draft).toBe('@Alice 😊hello');
+        expect(home.draftMentionNames()).toEqual(['Alice']);
+        expect(home.messageSegments({id: 'm', conversationId: 'emoji-chat', senderId: 'user-1', clientMessageId: 'c', sequence: 1, body: home.draft, createdAt: '', mentions: [{userId: 'alice-id', start: 0, end: 6}]})).toEqual([
+            {text: '@Alice', mentioned: true}, {text: ' 😊hello', mentioned: false},
+        ]);
+        expect(textarea.setSelectionRange).toHaveBeenCalledWith(9, 9);
+        expect(vi.mocked(send).mock.calls.map(([event]) => event).filter(event => event.type === 'message.send')).toEqual([]);
+        home.ngOnDestroy();
     });
 
     it('replaces preserved mention ranges when selecting a second member', () => {

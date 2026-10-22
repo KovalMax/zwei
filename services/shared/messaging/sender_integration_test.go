@@ -43,6 +43,9 @@ func TestSenderRejectsClientMessageIDReuseAcrossConversations(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("first send = (%+v, %t, %v), want created message", first, created, err)
 	}
+	if first.ContentType != "text" {
+		t.Fatalf("default content type = %q, want text", first.ContentType)
+	}
 
 	replayed, created, err := sender.Send(ctx, request)
 	if err != nil || created || replayed.ID != first.ID {
@@ -58,6 +61,60 @@ func TestSenderRejectsClientMessageIDReuseAcrossConversations(t *testing.T) {
 	request.ConversationID = secondConversationID
 	if _, created, err := sender.Send(ctx, request); !errors.Is(err, ErrClientMessageIDConflict) || created {
 		t.Fatalf("cross-conversation reuse error = %v, created = %t, want %v and false", err, created, ErrClientMessageIDConflict)
+	}
+}
+
+func TestSenderPersistsStickerContentTypeAndReplaysItForDelivery(t *testing.T) {
+	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	senderID, recipientID, conversationID, deviceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	if _, err := db.Exec(ctx, `INSERT INTO users (id, email, password_hash, display_name) VALUES ($1, $2, 'integration', 'Sender'), ($3, $4, 'integration', 'Recipient')`, senderID, senderID.String()+"@sticker.integration.test", recipientID, recipientID.String()+"@sticker.integration.test"); err != nil {
+		t.Fatalf("insert users: %v", err)
+	}
+	defer func() {
+		_, _ = db.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{senderID, recipientID})
+	}()
+	insertConversation(t, ctx, db, conversationID, senderID, recipientID)
+	if _, err := db.Exec(ctx, `INSERT INTO devices (id, user_id, client_device_id) VALUES ($1, $2, 'sticker-device')`, deviceID, recipientID); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+	sender := NewSender(db, "sticker-persistence-test-key")
+	request := SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "sticker-send", Body: "heart", ContentType: "sticker"}
+	createdMessage, created, err := sender.Send(ctx, request)
+	if err != nil || !created || createdMessage.ContentType != "sticker" {
+		t.Fatalf("sticker send = (%+v, %t, %v), want created sticker result", createdMessage, created, err)
+	}
+	var storedType string
+	if err := db.QueryRow(ctx, `SELECT content_type FROM messages WHERE id = $1`, createdMessage.ID).Scan(&storedType); err != nil || storedType != "sticker" {
+		t.Fatalf("stored content type = %q, error = %v, want sticker", storedType, err)
+	}
+	replayed, created, err := sender.Send(ctx, request)
+	if err != nil || created || replayed.ID != createdMessage.ID || replayed.ContentType != "sticker" {
+		t.Fatalf("idempotent sticker retry = (%+v, %t, %v), want original sticker", replayed, created, err)
+	}
+	pending, err := NewDeliveryRepository(db, "sticker-persistence-test-key").Pending(ctx, deviceID, 10)
+	if err != nil || len(pending) != 1 || pending[0].ID != createdMessage.ID || pending[0].ContentType != "sticker" {
+		t.Fatalf("pending sticker delivery = (%+v, %v), want sticker content type", pending, err)
+	}
+
+	for _, invalid := range []SendRequest{
+		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "bad-type", Body: "heart", ContentType: "image"},
+		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "bad-sticker", Body: "unknown", ContentType: "sticker"},
+		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "sticker-mention", Body: "heart", ContentType: "sticker", Mentions: []Mention{{UserID: uuid.New(), Start: 0, End: 1}}},
+	} {
+		if _, wasCreated, err := sender.Send(ctx, invalid); !errors.Is(err, ErrInvalidMessage) || wasCreated {
+			t.Errorf("invalid sticker request error = %v, created = %t, want ErrInvalidMessage and false", err, wasCreated)
+		}
 	}
 }
 

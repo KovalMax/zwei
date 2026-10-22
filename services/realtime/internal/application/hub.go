@@ -515,6 +515,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 			ConversationID  uuid.UUID           `json:"conversation_id"`
 			ClientMessageID string              `json:"client_message_id"`
 			Body            string              `json:"body"`
+			ContentType     string              `json:"content_type"`
 			Mentions        []messaging.Mention `json:"mentions,omitempty"`
 			Sequence        int64               `json:"sequence"`
 			AfterSequence   int64               `json:"after_sequence"`
@@ -678,6 +679,9 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if request.Type != "message.send" {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported event")}
 	}
+	if protocolVersion < 2 && request.Payload.ContentType != "" && request.Payload.ContentType != "text" {
+		return &RequestError{RequestID: request.RequestID, Err: messaging.ErrInvalidMessage}
+	}
 	limiter, ok := h.coord.(MessageRateCoordinator)
 	if !ok {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("message rate limit exceeded")}
@@ -686,7 +690,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if err != nil || !allowed {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("message rate limit exceeded")}
 	}
-	message, created, err := h.sender.Send(ctx, messaging.SendRequest{SenderID: client.Identity().UserID, ConversationID: request.Payload.ConversationID, ClientMessageID: request.Payload.ClientMessageID, Body: request.Payload.Body, Mentions: request.Payload.Mentions})
+	message, created, err := h.sender.Send(ctx, messaging.SendRequest{SenderID: client.Identity().UserID, ConversationID: request.Payload.ConversationID, ClientMessageID: request.Payload.ClientMessageID, Body: request.Payload.Body, ContentType: request.Payload.ContentType, Mentions: request.Payload.Mentions})
 	if err != nil {
 		return &RequestError{RequestID: request.RequestID, Err: err}
 	}

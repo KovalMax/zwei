@@ -96,6 +96,13 @@ describe('wire mapper', () => {
         expect(toMessage({ ...base, kind: 'system' })?.kind).toBe('system');
     });
 
+    it('defaults omitted content_type to text and maps sticker content without changing message kind', () => {
+        const base = {id: 'message-1', conversation_id: 'group-1', sender_id: 'owner', client_message_id: 'client-1', sequence: 1, body: 'hello', created_at: '2026-01-01T00:00:00Z'};
+        expect(toMessage(base)?.contentType).toBe('text');
+        expect(toMessage({...base, body: 'cat', content_type: 'sticker', kind: 'system'}) ).toMatchObject({contentType: 'sticker', body: 'cat', kind: 'system'});
+        expect(toMessage({...base, content_type: 'video'} as never)).toBeNull();
+    });
+
     it('maps optional stable mention IDs and UTF-16 ranges and rejects malformed metadata', () => {
         const base = {id: 'message-1', conversation_id: 'group-1', sender_id: 'sender', client_message_id: 'client-1', sequence: 1, body: '😀 @Alice', created_at: '2026-01-01T00:00:00Z'};
         expect(toMessageMentionWires([{userId: 'alice', start: 3, end: 9}])).toEqual([{user_id: 'alice', start: 3, end: 9}]);

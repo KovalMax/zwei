@@ -36,6 +36,12 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	}
 	request.ClientMessageID = strings.TrimSpace(request.ClientMessageID)
 	request.Body = strings.TrimSpace(request.Body)
+	if !ValidateContent(request.ContentType, request.Body, request.Mentions) {
+		return Message{}, false, ErrInvalidMessage
+	}
+	if request.ContentType == "" {
+		request.ContentType = "text"
+	}
 	if request.SenderID == uuid.Nil || request.ConversationID == uuid.Nil || request.ClientMessageID == "" || len(request.ClientMessageID) > 128 || request.Body == "" || len(request.Body) > 4096 {
 		return Message{}, false, ErrInvalidMessage
 	}
@@ -60,7 +66,7 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	var result Message
 	var ciphertext, nonce, mentionsCiphertext, mentionsNonce []byte
 	var expiresAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, mentions_ciphertext, mentions_nonce, created_at, kind, expires_at FROM messages WHERE sender_id = $1 AND client_message_id = $2`, request.SenderID, request.ClientMessageID).Scan(&result.ID, &result.ConversationID, &result.SenderID, &result.ClientMessageID, &result.Sequence, &ciphertext, &nonce, &mentionsCiphertext, &mentionsNonce, &result.CreatedAt, &result.Kind, &expiresAt)
+	err = tx.QueryRow(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, mentions_ciphertext, mentions_nonce, created_at, kind, content_type, expires_at FROM messages WHERE sender_id = $1 AND client_message_id = $2`, request.SenderID, request.ClientMessageID).Scan(&result.ID, &result.ConversationID, &result.SenderID, &result.ClientMessageID, &result.Sequence, &ciphertext, &nonce, &mentionsCiphertext, &mentionsNonce, &result.CreatedAt, &result.Kind, &result.ContentType, &expiresAt)
 	if err == nil {
 		if result.ConversationID != request.ConversationID {
 			return Message{}, false, ErrClientMessageIDConflict
@@ -113,7 +119,7 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 		value := s.now().Add(duration)
 		expires = &value
 	}
-	if err = tx.QueryRow(ctx, `INSERT INTO messages (conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, encryption_key_version, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`, request.ConversationID, request.SenderID, request.ClientMessageID, result.Sequence, ciphertext, nonce, "v1", expires).Scan(&result.ID, &result.CreatedAt); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO messages (conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, encryption_key_version, expires_at, content_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`, request.ConversationID, request.SenderID, request.ClientMessageID, result.Sequence, ciphertext, nonce, "v1", expires, request.ContentType).Scan(&result.ID, &result.CreatedAt); err != nil {
 		return Message{}, false, ErrPersistence
 	}
 	if len(request.Mentions) > 0 {
@@ -161,6 +167,7 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	result.ClientMessageID = request.ClientMessageID
 	result.Body = request.Body
 	result.Kind = "user"
+	result.ContentType = request.ContentType
 	if len(result.RecipientIDs) == 1 {
 		result.RecipientID = result.RecipientIDs[0]
 	}

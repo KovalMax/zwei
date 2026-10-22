@@ -200,6 +200,19 @@ func TestHubRejectsMessageWithoutSharedRateCoordinator(t *testing.T) {
 	}
 }
 
+func TestHubRejectsStickerOnV1BeforeRateLimitOrPersistence(t *testing.T) {
+	client := &recordingClient{}
+	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
+	err := hub.HandleVersion(context.Background(), client, 1, []byte(`{"version":1,"type":"message.send","request_id":"legacy-1","payload":{"content_type":"sticker","body":"heart"}}`))
+	var requestError *RequestError
+	if !errors.As(err, &requestError) || requestError.RequestID != "legacy-1" {
+		t.Fatalf("error = %v, want correlated v1 sticker rejection", err)
+	}
+	if len(client.events) != 0 {
+		t.Fatalf("events after rejection = %#v", client.events)
+	}
+}
+
 func TestHubRejectsMessageWhenSharedRateCoordinatorFails(t *testing.T) {
 	client := &recordingClient{}
 	hub := NewHub(nil, nil, messageRateCoordinator{err: errors.New("redis unavailable")}, nil, nil, nil, nil)

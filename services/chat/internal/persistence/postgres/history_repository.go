@@ -25,7 +25,7 @@ func NewHistoryRepository(db *pgxpool.Pool, encryptionSecret string) *HistoryRep
 }
 
 func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uuid.UUID, before int64, limit int) ([]conversation.Message, string, error) {
-	query := `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at, m.kind, m.mentions_ciphertext, m.mentions_nonce FROM (SELECT conversation_id, visible_from_sequence FROM conversation_members WHERE conversation_id = $2 AND user_id = $1 AND active) member CROSS JOIN LATERAL (SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, kind, expires_at, mentions_ciphertext, mentions_nonce FROM messages WHERE conversation_id = member.conversation_id AND sequence >= member.visible_from_sequence`
+	query := `SELECT m.id, m.conversation_id, m.sender_id, m.client_message_id, m.sequence, m.ciphertext, m.nonce, m.created_at, m.kind, m.content_type, m.mentions_ciphertext, m.mentions_nonce FROM (SELECT conversation_id, visible_from_sequence FROM conversation_members WHERE conversation_id = $2 AND user_id = $1 AND active) member CROSS JOIN LATERAL (SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, kind, content_type, expires_at, mentions_ciphertext, mentions_nonce FROM messages WHERE conversation_id = member.conversation_id AND sequence >= member.visible_from_sequence`
 	args := []any{userID, conversationID}
 	if before > 0 {
 		query += ` AND sequence < $3`
@@ -43,7 +43,7 @@ func (r *HistoryRepository) List(ctx context.Context, userID, conversationID uui
 	for rows.Next() {
 		var message conversation.Message
 		var ciphertext, nonce, mentionsCiphertext, mentionsNonce []byte
-		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMessageID, &message.Sequence, &ciphertext, &nonce, &message.CreatedAt, &message.Kind, &mentionsCiphertext, &mentionsNonce); err != nil {
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMessageID, &message.Sequence, &ciphertext, &nonce, &message.CreatedAt, &message.Kind, &message.ContentType, &mentionsCiphertext, &mentionsNonce); err != nil {
 			return nil, "", err
 		}
 		body, err := sharedmessage.Decrypt(r.key, ciphertext, nonce)

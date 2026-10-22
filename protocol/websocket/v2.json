@@ -14,7 +14,7 @@
     "group.call.signal": ["request_id", "payload.conversation_id", "payload.room_id", "payload.generation", "payload.target_user_id", "payload.target_device_id", "payload.signal"]
   },
   "clientEventAdditiveFields": {
-    "message.send": ["payload.mentions"]
+    "message.send": ["payload.mentions", "payload.content_type"]
   },
   "serverEvents": [
     "message.accepted",
@@ -51,8 +51,8 @@
 	"call.lifecycle.support_ref": "additive UUID field retained for the ephemeral direct call state's TTL",
 	"group.call.start.supportRef": "server-generated UUID; present on group room lifecycle projections and rejected-start payloads when the syntactically valid attempt reaches application handling",
 	"group.call.lifecycle.support_ref": "additive UUID field retained for the ephemeral room state's TTL",
-    "message.accepted.additiveFields": ["payload.mentions"],
-    "message.created.additiveFields": ["payload.mentions"],
+    "message.accepted.additiveFields": ["payload.mentions", "payload.content_type"],
+    "message.created.additiveFields": ["payload.mentions", "payload.content_type"],
     "conversation.read": ["payload.conversation_id", "payload.user_id", "payload.sequence", "payload.visible_from_sequence"],
     "conversation.reconciled": ["request_id", "payload.conversation_id", "payload.messages", "payload.next_after_sequence", "payload.high_watermark", "payload.has_more", "payload.own_read_sequence", "payload.peer_read_sequence"],
     "conversation.reconciled.additiveFields": ["payload.peer_read_cursors"],
@@ -79,6 +79,7 @@
   },
   "clientEventFieldSchemas": {
     "group.call.signal.payload.signal": {"$ref": "protocol/websocket/v1.json#/$defs/callSignal"},
-    "message.send.payload.mentions": {"$ref": "protocol/websocket/v1.json#/$defs/mentions"}
+    "message.send.payload.mentions": {"$ref": "protocol/websocket/v1.json#/$defs/mentions"},
+    "message.send.payload.content_type": {"$ref": "protocol/websocket/v1.json#/$defs/messageContentType"}
   }
 }

@@ -92,6 +92,7 @@ export interface MessageWire {
     client_message_id: string;
     sequence: number;
     body: string;
+    content_type?: 'text' | 'sticker';
     mentions?: MessageMentionWire[];
     created_at: string;
     kind?: 'user' | 'system';
@@ -186,7 +187,7 @@ export function toGroup(value: unknown): GroupConversation | null {
 }
 
 export function toMessage(item: MessageWire): Message | null {
-    if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim() || typeof item.conversation_id !== 'string' || !item.conversation_id.trim() || typeof item.sender_id !== 'string' || !item.sender_id.trim() || typeof item.client_message_id !== 'string' || !item.client_message_id.trim() || !Number.isSafeInteger(item.sequence) || item.sequence < 1 || typeof item.body !== 'string' || typeof item.created_at !== 'string' || !item.created_at.trim() || (item.kind !== undefined && item.kind !== 'user' && item.kind !== 'system') || (item.mentions !== undefined && !isValidMessageMentionWire(item.mentions, item.body))) return null;
+    if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim() || typeof item.conversation_id !== 'string' || !item.conversation_id.trim() || typeof item.sender_id !== 'string' || !item.sender_id.trim() || typeof item.client_message_id !== 'string' || !item.client_message_id.trim() || !Number.isSafeInteger(item.sequence) || item.sequence < 1 || typeof item.body !== 'string' || typeof item.created_at !== 'string' || !item.created_at.trim() || (item.kind !== undefined && item.kind !== 'user' && item.kind !== 'system') || (item.content_type !== undefined && item.content_type !== 'text' && item.content_type !== 'sticker') || (item.mentions !== undefined && !isValidMessageMentionWire(item.mentions, item.body))) return null;
     return {
         id: item.id,
         conversationId: item.conversation_id,
@@ -194,6 +195,7 @@ export function toMessage(item: MessageWire): Message | null {
         clientMessageId: item.client_message_id,
         sequence: item.sequence,
         body: item.body,
+        contentType: item.content_type ?? 'text',
         createdAt: item.created_at,
         kind: item.kind === 'system' ? 'system' : 'user',
         ...(item.mentions === undefined ? {} : {mentions: item.mentions.map(mention => ({userId: mention.user_id, start: mention.start, end: mention.end}))}),

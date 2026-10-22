@@ -21,6 +21,22 @@ import {ZweiIconName} from '../shared/zwei-icon/zwei-icon.component';
 import {DirectCallSurfaceIntent} from './call-presentation/direct-call-surface.component';
 import {GroupCallSurfaceIntent} from './call-presentation/group-call-surface.component';
 
+export const STICKERS = [
+    {id: 'hello', label: 'Hello', asset: 'assets/stickers/hello.svg'}, {id: 'heart', label: 'Heart', asset: 'assets/stickers/heart.svg'},
+    {id: 'laugh', label: 'Laugh', asset: 'assets/stickers/laugh.svg'}, {id: 'wow', label: 'Wow', asset: 'assets/stickers/wow.svg'},
+    {id: 'thanks', label: 'Thanks', asset: 'assets/stickers/thanks.svg'}, {id: 'sorry', label: 'Sorry', asset: 'assets/stickers/sorry.svg'},
+    {id: 'yes', label: 'Yes', asset: 'assets/stickers/yes.svg'}, {id: 'no', label: 'No', asset: 'assets/stickers/no.svg'},
+    {id: 'coffee', label: 'Coffee', asset: 'assets/stickers/coffee.svg'}, {id: 'cat', label: 'Cat', asset: 'assets/stickers/cat.svg'},
+    {id: 'dog', label: 'Dog', asset: 'assets/stickers/dog.svg'}, {id: 'celebrate', label: 'Celebrate', asset: 'assets/stickers/celebrate.svg'},
+] as const;
+
+export const COMPOSER_EMOJIS = [
+    {label: 'Smiling face', glyph: '😊'}, {label: 'Laughing face', glyph: '😂'},
+    {label: 'Heart', glyph: '❤️'}, {label: 'Thumbs up', glyph: '👍'},
+    {label: 'Waving hand', glyph: '👋'}, {label: 'Party popper', glyph: '🎉'},
+    {label: 'Thinking face', glyph: '🤔'}, {label: 'Crying face', glyph: '😢'},
+] as const;
+
 @Component({
     standalone: false,
     changeDetection: ChangeDetectionStrategy.OnPush,
@@ -47,6 +63,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     public historyCursor?: string;
     public isHistoryLoading = false;
     public draft = '';
+    public stickerPickerOpen = false;
+    public emojiPickerOpen = false;
+    public readonly stickers = STICKERS;
+    public readonly composerEmojis = COMPOSER_EMOJIS;
     public mentionSuggestions: {userId: string; displayName: string}[] = [];
     public activeMentionIndex = 0;
     private draftSnapshot = '';
@@ -635,6 +655,36 @@ export class HomeComponent implements OnInit, OnDestroy {
         return this.draftMentions.map(mention => members.find(member => member.userId === mention.userId)?.displayName).filter((name): name is string => Boolean(name));
     }
 
+    public stickerLabel(id: string): string { return STICKERS.find(sticker => sticker.id === id)?.label || 'Unavailable sticker'; }
+    public stickerAsset(id: string): string | undefined { return STICKERS.find(sticker => sticker.id === id)?.asset; }
+
+    public insertEmoji(glyph: string, textarea = this.messageDraft?.nativeElement): void {
+        if (!COMPOSER_EMOJIS.some(emoji => emoji.glyph === glyph) || !textarea) return;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const previous = this.draft;
+        this.draft = `${previous.slice(0, start)}${glyph}${previous.slice(end)}`;
+        this.draftMentions.splice(0, this.draftMentions.length, ...updateMentionRanges(previous, this.draft, this.draftMentions));
+        this.draftSnapshot = this.draft;
+        this.onDraftChange();
+        queueMicrotask(() => { textarea.focus(); const cursor = start + glyph.length; textarea.setSelectionRange(cursor, cursor); });
+    }
+
+    public sendSticker(id: string): void {
+        if (!STICKERS.some(sticker => sticker.id === id) || !this.selectedConversation || !this.socketReady) return;
+        const conversationID = this.selectedConversation.id;
+        const clientMessageId = createRandomID();
+        const requestID = createRandomID();
+        const sent = this.dataProvider.send({type: 'message.send', request_id: requestID, payload: {conversation_id: conversationID, client_message_id: clientMessageId, body: id, content_type: 'sticker'}});
+        if (!sent) { this.sendStatus = 'Secure connection was lost. Refresh to reconnect.'; this.changeDetector.markForCheck(); return; }
+        this.stopTyping();
+        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: conversationID, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body: id, contentType: 'sticker', createdAt: new Date().toISOString(), pending: true}];
+        this.sendStatus = '';
+        const timeout = window.setTimeout(() => this.markMessageUncertain(requestID), 10_000);
+        this.pendingRequests.set(requestID, {clientMessageID: clientMessageId, timeout});
+        this.changeDetector.markForCheck();
+    }
+
     public onDraftChange(): void {
         const previous = this.draftSnapshot;
         const next = this.draft;
@@ -982,6 +1032,10 @@ export class HomeComponent implements OnInit, OnDestroy {
             this.sendStatus = 'Write a message before sending.';
             return;
         }
+        if (new TextEncoder().encode(body).length > 4096) {
+            this.sendStatus = 'Message exceeds the 4096 UTF-8 byte limit. Shorten it before sending.';
+            return;
+        }
         if (!this.socketReady) {
             this.sendStatus = 'Secure connection is not ready. Wait a moment and try again.';
             return;
@@ -994,7 +1048,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         const sent = this.dataProvider.send({
             type: 'message.send',
             request_id: requestID,
-            payload: {conversation_id: this.selectedConversation.id, client_message_id: clientMessageId, body, ...(mentions.length ? {mentions} : {})},
+            payload: {conversation_id: this.selectedConversation.id, client_message_id: clientMessageId, body, content_type: 'text', ...(mentions.length ? {mentions} : {})},
         });
         if (!sent) {
             this.socketReady = false;
@@ -1003,7 +1057,7 @@ export class HomeComponent implements OnInit, OnDestroy {
             return;
         }
         const optimisticMentions = mentions.map(mention => ({userId: mention.user_id, start: mention.start, end: mention.end}));
-        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: this.selectedConversation.id, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body, ...(optimisticMentions.length ? {mentions: optimisticMentions} : {}), createdAt: new Date().toISOString(), pending: true}];
+        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: this.selectedConversation.id, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body, contentType: 'text', ...(optimisticMentions.length ? {mentions: optimisticMentions} : {}), createdAt: new Date().toISOString(), pending: true}];
         this.sendStatus = '';
         this.draft = '';
         this.draftSnapshot = '';

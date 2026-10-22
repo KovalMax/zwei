@@ -15,10 +15,14 @@
   },
   "clientEventFieldSchemas": {
     "call.signal.payload.signal": {"$ref": "#/$defs/callSignal"},
-    "message.send.payload.mentions": {"$ref": "#/$defs/mentions"}
+    "message.send.payload.mentions": {"$ref": "#/$defs/mentions"},
+    "message.send.payload.content_type": {"$ref": "#/$defs/messageContentType"}
   },
   "clientEventAdditiveFields": {
-    "message.send": ["payload.mentions"]
+    "message.send": ["payload.mentions", "payload.content_type"]
+  },
+  "clientEventFieldCompatibility": {
+    "message.send.payload.content_type": "v1 accepts omitted or text; sticker sends are rejected"
   },
   "callSignalTypes": ["offer", "answer", "candidate", "screen-share-started", "screen-share-stopped"],
   "serverEvents": [
@@ -43,8 +47,8 @@
 	"call.rejected.payload.additiveFields": ["support_ref"],
 	"call.start.supportRef": "server-generated UUID; present on call state projections and rejected-start payloads when the syntactically valid attempt reaches application handling",
 	"call.lifecycle.support_ref": "additive UUID field retained for the ephemeral call state's TTL",
-    "message.accepted.additiveFields": ["payload.mentions"],
-    "message.created.additiveFields": ["payload.mentions"],
+    "message.accepted.additiveFields": ["payload.mentions", "payload.content_type"],
+    "message.created.additiveFields": ["payload.mentions", "payload.content_type"],
     "call.accepted": ["payload.call_id", "payload.ice_servers", "payload.ice_servers[].urls", "payload.ice_servers[].username", "payload.ice_servers[].credential"],
     "call.signal": ["payload.call_id", "payload.signal"],
     "call.signal.signal": {"$ref": "#/$defs/callSignal"},
@@ -52,6 +56,7 @@
     "conversation.read.additiveFields": ["payload.visible_from_sequence"]
   },
   "$defs": {
+    "messageContentType": {"enum": ["text", "sticker"]},
     "mentions": {
       "type": "array",
       "maxItems": 16,

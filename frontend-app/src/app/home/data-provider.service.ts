@@ -23,7 +23,7 @@ export const RECONNECT_RANDOM = new InjectionToken<() => number>('ZWEI_RECONNECT
 export interface MessageSendEvent {
     type: 'message.send';
     request_id: string;
-    payload: { conversation_id: string; client_message_id: string; body: string; mentions?: {user_id: string; start: number; end: number}[] };
+    payload: { conversation_id: string; client_message_id: string; body: string; content_type?: 'text' | 'sticker'; mentions?: {user_id: string; start: number; end: number}[] };
 }
 
 export interface TypingClientEvent {
@@ -88,6 +88,7 @@ export interface MessagePayload {
     client_message_id: string;
     sequence: number;
     body: string;
+    content_type?: 'text' | 'sticker';
     mentions?: {user_id: string; start: number; end: number}[];
     created_at: string;
     kind?: 'user' | 'system';
@@ -308,6 +309,7 @@ function isMessagePayload(value: unknown): value is MessagePayload {
         typeof value.body === 'string' &&
         typeof value.sequence === 'number' && Number.isSafeInteger(value.sequence) && value.sequence > 0 &&
         (value.kind === undefined || value.kind === 'user' || value.kind === 'system') &&
+        (value.content_type === undefined || value.content_type === 'text' || value.content_type === 'sticker') &&
         (value.mentions === undefined || isValidMessageMentionWire(value.mentions, value.body));
 }
 
@@ -444,7 +446,7 @@ export class DataProviderService {
     }
 
     public send(event: ClientSocketEvent): boolean {
-        if (event.type === 'message.send' && (!isRecord(event.payload) || typeof event.payload.body !== 'string' ||
+        if (event.type === 'message.send' && (!isRecord(event.payload) || typeof event.payload.body !== 'string' || (event.payload.content_type !== undefined && event.payload.content_type !== 'text' && event.payload.content_type !== 'sticker') ||
             (event.payload.mentions !== undefined && !isValidMessageMentionWire(event.payload.mentions, event.payload.body)))) return false;
         if (event.type === 'call.signal' && (!isRecord(event.payload) || !isIdentifier(event.payload.call_id) || !isValidCallSignal(event.payload.signal))) return false;
         if (isGroupCallClientType(event.type) && !isValidGroupCallClientEvent(event)) return false;
