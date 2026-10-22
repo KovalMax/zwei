@@ -3,6 +3,7 @@ import {Subscription} from 'rxjs';
 import {CallFacade} from './call-facade.service';
 import {DataProviderService, MessageSocketEvent} from './data-provider.service';
 import {BrowserNotificationService} from '../notifications/notification.service';
+import {AlertMode} from '../auth/profile.model';
 
 @Injectable()
 export class HomeNotificationService implements OnDestroy {
@@ -30,6 +31,7 @@ export class HomeNotificationService implements OnDestroy {
     }
 
     public setUserID(userID: string | undefined): void { this.userID = userID; }
+    public setAlertMode(mode: AlertMode): void { this.notifications.setMode(mode); }
     public setSelectedConversationID(conversationID: string | undefined): void { this.selectedConversationID = conversationID; }
 
     public ngOnDestroy(): void {

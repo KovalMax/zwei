@@ -126,8 +126,8 @@ func (s *Service) Profile(ctx context.Context, userID uuid.UUID) (user.Profile, 
 	return s.repository.Profile(ctx, userID)
 }
 
-func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention *string) (user.Profile, error) {
-	if displayName == nil && retention == nil {
+func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayName, retention, alertMode *string) (user.Profile, error) {
+	if displayName == nil && retention == nil && alertMode == nil {
 		return user.Profile{}, ErrInvalidInput
 	}
 	if displayName != nil {
@@ -140,7 +140,10 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, displayNa
 	if retention != nil && !user.ValidRetention(*retention) {
 		return user.Profile{}, ErrInvalidInput
 	}
-	if err := s.repository.UpdateProfile(ctx, userID, displayName, retention); err != nil {
+	if alertMode != nil && !user.ValidAlertMode(*alertMode) {
+		return user.Profile{}, ErrInvalidInput
+	}
+	if err := s.repository.UpdateProfile(ctx, userID, displayName, retention, alertMode); err != nil {
 		return user.Profile{}, err
 	}
 	return s.repository.Profile(ctx, userID)
