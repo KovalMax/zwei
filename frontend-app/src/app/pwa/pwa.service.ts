@@ -26,6 +26,8 @@ export class PwaService implements OnDestroy {
     private restoredOfflineMarker = sessionStorage.getItem(offlineSessionKey) === 'true';
     private observedOfflineEvent = false;
     private authenticated = false;
+    private unreadCount = 0;
+    private badgeSyncRunning = false;
     private deferredInstall?: BeforeInstallPromptEvent;
     private readonly subscriptions = new Subscription();
     private readonly offlineListener: () => void;
@@ -64,7 +66,15 @@ export class PwaService implements OnDestroy {
 
     public setAuthenticated(authenticated: boolean): void {
         this.authenticated = authenticated;
+        if (!authenticated) this.unreadCount = 0;
         this.canInstall = authenticated && this.deferredInstall !== undefined;
+        this.synchronizeAppBadge();
+    }
+
+    public setUnreadCount(count: number): void {
+        if (!this.authenticated) return;
+        this.unreadCount = Math.max(0, count);
+        this.synchronizeAppBadge();
     }
 
     public get isOffline(): boolean {
@@ -115,5 +125,38 @@ export class PwaService implements OnDestroy {
         sessionStorage.removeItem(offlineSessionKey);
         this.offlineChanges.next(false);
         this.observedOfflineEvent = false;
+    }
+
+    private synchronizeAppBadge(): void {
+        if (this.badgeSyncRunning) return;
+        this.badgeSyncRunning = true;
+        void this.drainAppBadgeUpdates();
+    }
+
+    private async drainAppBadgeUpdates(): Promise<void> {
+        try {
+            let applied: number | null | undefined;
+            do {
+                const desired = this.authenticated && this.unreadCount > 0 ? this.unreadCount : null;
+                await this.applyAppBadge(desired);
+                applied = desired;
+            } while (applied !== (this.authenticated && this.unreadCount > 0 ? this.unreadCount : null));
+        } finally {
+            this.badgeSyncRunning = false;
+        }
+    }
+
+    private async applyAppBadge(count: number | null): Promise<void> {
+        const badgeNavigator = this.document.defaultView?.navigator;
+        if (!badgeNavigator) return;
+        try {
+            if (count === null) {
+                if (typeof badgeNavigator.clearAppBadge === 'function') await badgeNavigator.clearAppBadge();
+            } else if (typeof badgeNavigator.setAppBadge === 'function') {
+                await badgeNavigator.setAppBadge(count);
+            }
+        } catch {
+            // Badge support is optional and must not affect chat.
+        }
     }
 }
