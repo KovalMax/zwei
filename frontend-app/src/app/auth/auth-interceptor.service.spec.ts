@@ -1,8 +1,8 @@
-import {HttpErrorResponse, HttpRequest, HttpResponse} from '@angular/common/http';
+import {HttpContext, HttpErrorResponse, HttpRequest, HttpResponse} from '@angular/common/http';
 import {DefaultUrlSerializer} from '@angular/router';
 import {of, throwError} from 'rxjs';
 
-import {AuthInterceptorService} from './auth-interceptor.service';
+import {AuthInterceptorService, SKIP_AUTH_INTERCEPTOR} from './auth-interceptor.service';
 
 describe('AuthInterceptorService connectivity confirmation', () => {
     const pwa = {confirmNetworkResponse: vi.fn()};
@@ -31,6 +31,17 @@ describe('AuthInterceptorService connectivity confirmation', () => {
         interceptor.intercept(request, handler).subscribe();
 
         expect(pwa.confirmNetworkResponse).toHaveBeenCalledOnce();
+    });
+
+    it('passes explicitly external public requests through without auth or global response handling', () => {
+        const request = new HttpRequest('GET', 'https://api.giphy.com/v1/gifs/search', {}, {context: new HttpContext().set(SKIP_AUTH_INTERCEPTOR, true), withCredentials: false, referrerPolicy: 'no-referrer'});
+        const handler = {handle: vi.fn().mockReturnValue(of(new HttpResponse({status: 200})))};
+
+        interceptor.intercept(request, handler).subscribe();
+
+        expect(handler.handle).toHaveBeenCalledWith(request);
+        expect(request.headers.has('Authorization')).toBe(false);
+        expect(pwa.confirmNetworkResponse).not.toHaveBeenCalled();
     });
 
     it('confirms connectivity for real HTTP errors, but not service-worker timeouts or network failures', () => {

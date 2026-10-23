@@ -20,10 +20,11 @@ type Handler struct {
 	sessions       *sharedauth.SessionValidator
 	adminIPs       *IPAllowlist
 	allowedOrigins map[string]struct{}
+	giphyAPIKey    string
 }
 
-func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}) *Handler {
-	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins}
+func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}, giphyAPIKey string) *Handler {
+	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins, giphyAPIKey: giphyAPIKey}
 }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/register", h.register)
@@ -35,6 +36,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/me", h.me)
 	mux.HandleFunc("PATCH /api/auth/me", h.updateMe)
 	mux.HandleFunc("GET /api/auth/media-policy", h.mediaPolicy)
+	mux.HandleFunc("GET /api/auth/giphy-key", h.giphyKey)
 	mux.HandleFunc("GET /api/admin/users", h.adminUsers)
 	mux.HandleFunc("GET /api/admin/me", h.adminMe)
 	mux.HandleFunc("GET /api/admin/media-sources/giphy", h.adminGiphy)
@@ -274,6 +276,31 @@ func (h *Handler) mediaPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"giphy_enabled": enabled})
+}
+
+func (h *Handler) giphyKey(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !h.authHostAllowed(w, r) {
+		return
+	}
+	if _, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization")); err != nil {
+		errorJSON(w, http.StatusUnauthorized, "invalid access token")
+		return
+	}
+	enabled, err := h.auth.MediaPolicy(r.Context())
+	if err != nil {
+		errorJSON(w, http.StatusServiceUnavailable, "GIPHY key is unavailable")
+		return
+	}
+	if !enabled {
+		errorJSON(w, http.StatusForbidden, "GIPHY is disabled")
+		return
+	}
+	if h.giphyAPIKey == "" {
+		errorJSON(w, http.StatusServiceUnavailable, "GIPHY key is unavailable")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]string{"api_key": h.giphyAPIKey})
 }
 
 func (h *Handler) adminGiphy(w http.ResponseWriter, r *http.Request) {

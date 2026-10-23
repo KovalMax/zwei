@@ -28,3 +28,16 @@ func TestLoadPreservesExplicitTrustedProxyCIDRs(t *testing.T) {
 		t.Fatalf("TrustedProxyCIDRs = %q, want explicitly configured ranges", config.TrustedProxyCIDRs)
 	}
 }
+
+func TestLoadAllowsGiphyAPIKeyToBeUnset(t *testing.T) {
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("GIPHY_API_KEY", "")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.GiphyAPIKey != "" {
+		t.Fatalf("GiphyAPIKey = %q, want empty when feature key is unconfigured", config.GiphyAPIKey)
+	}
+}

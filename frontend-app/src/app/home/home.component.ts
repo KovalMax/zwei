@@ -21,7 +21,10 @@ import {ZweiIconName} from '../shared/zwei-icon/zwei-icon.component';
 import {DirectCallSurfaceIntent} from './call-presentation/direct-call-surface.component';
 import {GroupCallSurfaceIntent} from './call-presentation/group-call-surface.component';
 import {parseGiphyMedia} from './giphy-media';
+import {GiphySearchResult, GiphySearchService} from './giphy-search.service';
 import {PwaService} from '../pwa/pwa.service';
+
+const GIPHY_SEARCH_COOLDOWN_MS = 750;
 
 export const STICKERS = [
     {id: 'hello', label: 'Hello', asset: 'assets/stickers/hello.svg'}, {id: 'heart', label: 'Heart', asset: 'assets/stickers/heart.svg'},
@@ -37,6 +40,11 @@ export const COMPOSER_EMOJIS = [
     {label: 'Heart', glyph: '❤️'}, {label: 'Thumbs up', glyph: '👍'},
     {label: 'Waving hand', glyph: '👋'}, {label: 'Party popper', glyph: '🎉'},
     {label: 'Thinking face', glyph: '🤔'}, {label: 'Crying face', glyph: '😢'},
+    {label: 'Fire', glyph: '🔥'}, {label: 'Clapping hands', glyph: '👏'}, {label: 'Folded hands', glyph: '🙏'}, {label: 'Sparkles', glyph: '✨'},
+    {label: 'Red heart', glyph: '❤️'}, {label: 'Heart eyes', glyph: '😍'}, {label: 'Kissing face', glyph: '😘'}, {label: 'Winking face', glyph: '😉'},
+    {label: 'Confetti ball', glyph: '🎊'}, {label: 'Rocket', glyph: '🚀'}, {label: 'Star', glyph: '⭐'}, {label: 'Hundred points', glyph: '💯'},
+    {label: 'Raised hands', glyph: '🙌'}, {label: 'Thinking', glyph: '🧐'}, {label: 'Grinning face', glyph: '😁'}, {label: 'Rolling on floor laughing', glyph: '🤣'},
+    {label: 'Blue heart', glyph: '💙'}, {label: 'Smiling face with hearts', glyph: '🥰'}, {label: 'Wave', glyph: '👋'}, {label: 'Thumbs down', glyph: '👎'},
 ] as const;
 
 @Component({
@@ -68,6 +76,14 @@ export class HomeComponent implements OnInit, OnDestroy {
     public draft = '';
     public stickerPickerOpen = false;
     public emojiPickerOpen = false;
+    public giphyPickerOpen = false;
+    public giphyQuery = '';
+    public giphyResults: GiphySearchResult[] = [];
+    public giphyThumbnailFailures: Record<string, true> = {};
+    public selectedGiphy?: GiphySearchResult;
+    public giphyPreviewFailed = false;
+    public giphySearchState: 'idle' | 'loading' | 'results' | 'empty' | 'error' = 'idle';
+    public giphySearchError = '';
     public readonly stickers = STICKERS;
     public readonly composerEmojis = COMPOSER_EMOJIS;
     public mentionSuggestions: {userId: string; displayName: string}[] = [];
@@ -140,14 +156,20 @@ export class HomeComponent implements OnInit, OnDestroy {
     private groupMemberSearchGeneration = 0;
     private userSearchRequest?: Subscription;
     private userSearchGeneration = 0;
+    private giphySearchGeneration = 0;
+    private giphySearchRequest?: Subscription;
+    private giphySearchCooldownUntil = 0;
+    private giphySearchCooldownTimer?: number;
     private recoveryGeneration = 0;
     private navigationIntentVersion = 0;
     @ViewChild('messageHistory') private messageHistory?: ElementRef<HTMLElement>;
     @ViewChild('messageDraft') private messageDraft?: ElementRef<HTMLTextAreaElement>;
+    @ViewChild('giphyPickerTrigger') private giphyPickerTrigger?: ElementRef<HTMLButtonElement>;
+    @ViewChild('giphySearchInput') private set giphySearchInput(input: ElementRef<HTMLInputElement> | undefined) { input?.nativeElement.focus(); }
     @ViewChild('archiveModeControl') private archiveModeControl?: ElementRef<HTMLButtonElement>;
     @ViewChild(GroupMemberListComponent) private groupMemberList?: GroupMemberListComponent;
 
-    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService) {
+    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService, @Optional() private readonly giphySearch?: GiphySearchService) {
         this.groupAccess = groupAccess;
         this.groupAccessSubscription.add(this.groupAccess.outcomes$.subscribe(outcome => this.handleGroupAccessOutcome(outcome)));
         this.unreadBadgeSubscription.add(this.conversations.subscribe(conversations => this.pwa?.setUnreadCount(conversations.reduce((total, conversation) => total + conversation.unreadCount, 0))));
@@ -162,8 +184,9 @@ export class HomeComponent implements OnInit, OnDestroy {
         }});
         if (typeof this.authService.mediaPolicy === 'function') this.authService.mediaPolicy().subscribe({next: policy => {
             this.giphyEnabled = policy.giphy_enabled === true;
+            if (!this.giphyEnabled) { this.giphyPickerOpen = false; this.clearGiphyPicker(); }
             this.changeDetector.markForCheck();
-        }, error: () => { this.giphyEnabled = false; this.changeDetector.markForCheck(); }});
+        }, error: () => { this.giphyEnabled = false; this.giphyPickerOpen = false; this.clearGiphyPicker(); this.changeDetector.markForCheck(); }});
         this.loadInitialConversations(++this.conversationRefreshGeneration, 2);
         this.dataProvider.getObservable().subscribe({
             next: event => this.handleSocketEvent(event),
@@ -197,6 +220,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public ngOnDestroy(): void {
+        this.clearGiphyPicker();
+        window.clearTimeout(this.giphySearchCooldownTimer);
         this.conversationRefreshGeneration++;
         this.recoveryGeneration++;
         this.listRequests.unsubscribe();
@@ -661,7 +686,29 @@ export class HomeComponent implements OnInit, OnDestroy {
     public messageDateLabel(message: Message): string { return messageDateLabel(message.createdAt); }
     public messageDateTimeLabel(message: Message): string { return messageDateTimeLabel(message.createdAt); }
     public messageSegments(message: Message) { return messageTextSegments(message.body, message.mentions); }
+    public messageDisplaySegments(message: Message): {text: string; mentioned: boolean; emoji: boolean}[] {
+        const output: {text: string; mentioned: boolean; emoji: boolean}[] = [];
+        for (const segment of this.messageSegments(message)) {
+            for (const {segment: grapheme} of new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(segment.text)) {
+                const emoji = this.isEmojiGrapheme(grapheme);
+                const previous = output[output.length - 1];
+                if (previous?.mentioned === segment.mentioned && previous.emoji === emoji) previous.text += grapheme;
+                else output.push({text: grapheme, mentioned: segment.mentioned, emoji});
+            }
+        }
+        return output;
+    }
     public isGiphyMessage(message: Message): boolean { return message.contentType !== 'sticker' && parseGiphyMedia(message.body) !== null; }
+    public isSingleEmojiMessage(message: Message): boolean {
+        const glyphs = Array.from(new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(message.body.trim()), item => item.segment);
+        return glyphs.length === 1 && this.isEmojiGrapheme(glyphs[0]);
+    }
+    private isEmojiGrapheme(value: string): boolean {
+        if (/\uFE0E/u.test(value)) return false;
+        if (/^[#*0-9]\uFE0F?\u20E3$/u.test(value) || /^\p{Regional_Indicator}{2}$/u.test(value)) return true;
+        if (!/\p{Extended_Pictographic}/u.test(value)) return false;
+        return /\uFE0F/u.test(value) || /\p{Emoji_Presentation}/u.test(value);
+    }
     public shouldAutoLoadGiphy(message: Message): boolean {
         if (!this.giphyEnabled || this.profile?.auto_load_approved_media !== true) return false;
         let approvedMediaCount = 0;
@@ -689,6 +736,73 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.draftSnapshot = this.draft;
         this.onDraftChange();
         queueMicrotask(() => { textarea.focus(); const cursor = start + glyph.length; textarea.setSelectionRange(cursor, cursor); });
+    }
+
+    public toggleGiphyPicker(): void {
+        if (this.giphyPickerOpen) { this.closeGiphyPicker(); return; }
+        if (!this.giphyEnabled || !this.selectedConversation || !this.socketReady) return;
+        this.giphyPickerOpen = true;
+    }
+
+    public closeGiphyPicker(): void {
+        this.giphyPickerOpen = false;
+        this.clearGiphyPicker();
+        this.giphyPickerTrigger?.nativeElement.focus();
+    }
+
+    public get giphySearchCoolingDown(): boolean { return Date.now() < this.giphySearchCooldownUntil; }
+
+    public searchGiphy(): void {
+        const term = this.giphyQuery.trim();
+        if (!this.giphyEnabled || !this.giphyPickerOpen || !this.selectedConversation || !this.socketReady) return;
+        if (!term || term.length > 50) { this.giphySearchState = 'error'; this.giphySearchError = 'Enter a search term of 1 to 50 characters.'; return; }
+        if (!this.giphySearch) { this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; return; }
+        if (this.giphySearchCoolingDown) return;
+        // UX/quota hygiene only—not a security boundary. Public production keys still require provider-side origin restrictions and quota monitoring.
+        this.giphySearchCooldownUntil = Date.now() + GIPHY_SEARCH_COOLDOWN_MS;
+        window.clearTimeout(this.giphySearchCooldownTimer);
+        this.giphySearchCooldownTimer = window.setTimeout(() => this.changeDetector.markForCheck(), GIPHY_SEARCH_COOLDOWN_MS);
+        this.giphySearchRequest?.unsubscribe();
+        const generation = ++this.giphySearchGeneration;
+        this.giphySearchState = 'loading'; this.giphySearchError = ''; this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined;
+        this.giphySearchRequest = this.giphySearch.search(term).subscribe({
+            next: results => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled) return; this.giphyResults = results; this.giphySearchState = results.length ? 'results' : 'empty'; this.changeDetector.markForCheck(); },
+            error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.changeDetector.markForCheck(); },
+        });
+    }
+
+    public selectGiphy(result: GiphySearchResult): void {
+        if (this.giphyEnabled && this.giphyPickerOpen && this.giphyResults.includes(result)) { this.selectedGiphy = result; this.giphyPreviewFailed = false; }
+    }
+
+    public markGiphyThumbnailFailed(result: GiphySearchResult): void {
+        this.giphyThumbnailFailures = {...this.giphyThumbnailFailures, [result.id]: true};
+    }
+
+    public cancelGiphySelection(): void { this.selectedGiphy = undefined; this.giphyPreviewFailed = false; }
+
+    public sendSelectedGiphy(): void {
+        if (!this.giphyEnabled || !this.selectedGiphy || !this.selectedConversation || !this.socketReady) return;
+        const previousCount = this.messages.length;
+        const composerDraft = this.draft;
+        const composerMentions = this.draftMentions.map(mention => ({...mention}));
+        this.draft = this.selectedGiphy.url;
+        this.draftMentions.splice(0);
+        this.draftSnapshot = this.draft;
+        this.sendMessage();
+        const sent = this.messages.length > previousCount;
+        this.draft = composerDraft;
+        this.draftSnapshot = composerDraft;
+        this.draftMentions.splice(0, this.draftMentions.length, ...composerMentions);
+        this.updateMentionSuggestions();
+        if (sent) { this.selectedGiphy = undefined; this.giphyPickerOpen = false; this.clearGiphyPicker(); }
+        this.changeDetector.markForCheck();
+    }
+
+    private clearGiphyPicker(): void {
+        this.giphySearchGeneration++;
+        this.giphySearchRequest?.unsubscribe(); this.giphySearchRequest = undefined;
+        this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = '';
     }
 
     public sendSticker(id: string): void {
@@ -997,6 +1111,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.clearRemoteTypingState();
         if (!preserveCallSurface && this.isOngoingCall()) this.minimizeCall();
         const selectedConversation = {...conversation};
+        if (this.selectedConversation?.id !== selectedConversation.id) { this.giphyPickerOpen = false; this.clearGiphyPicker(); }
         if (this.selectedConversation?.id !== selectedConversation.id) this.draftMentions.splice(0);
         this.mentionSuggestions = [];
         this.isCreatingGroup = false;
@@ -1026,6 +1141,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public closeConversation(trackNavigationIntent = true): void {
+        this.giphyPickerOpen = false;
+        this.clearGiphyPicker();
         if (trackNavigationIntent) this.navigationIntentVersion++;
         this.showDepartedGroupStatus = false;
         this.stopTyping();

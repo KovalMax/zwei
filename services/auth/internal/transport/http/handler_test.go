@@ -133,7 +133,7 @@ func TestGiphyAdminRoutesRejectSourceIPBeforeAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(nil, nil, nil, allowlist, nil)
+	handler := NewHandler(nil, nil, nil, allowlist, nil, "")
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
