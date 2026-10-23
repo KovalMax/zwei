@@ -69,6 +69,15 @@ describe('GiphySearchService', () => {
         expect(results).toEqual([{id: 'approved', title: 'Cat', url: GIF.images.fixed_height.url}]);
     });
 
+    it('maps a G-rated fixed-height result served from the media3 CDN host', () => {
+        let results: unknown;
+        service.search('tell me more').subscribe(value => results = value);
+        grantKey();
+        const request = http.expectOne(isSearchRequest);
+        request.flush({data: [{...GIF, images: {fixed_height: {url: 'https://media3.giphy.com/media/cZ7rmKfFYOvYI/200.gif'}}}]});
+        expect(results).toEqual([{id: 'approved', title: 'Cat', url: 'https://media3.giphy.com/media/cZ7rmKfFYOvYI/200.gif'}]);
+    });
+
     it('shares one first key request across concurrent searches', () => {
         const results: unknown[] = [];
         service.search('cats').subscribe(value => results.push(value));

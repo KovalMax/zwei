@@ -3083,7 +3083,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
   const [senderContext, recipientContext] = contexts;
   const sender = await senderContext.newPage();
   const recipient = await recipientContext.newPage();
-  const gifURL = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif';
+  const gifURL = 'https://media3.giphy.com/media/cZ7rmKfFYOvYI/200.gif';
   let malformedResponseSent = false;
   let searchRequests = 0;
   let expectedSearchQuery = 'cats';
@@ -3122,7 +3122,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     }
     return route.fulfill({headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {data: [{id: 'fixture-cat', title: 'Cat GIF', rating: 'g', images: {fixed_height: {url: gifURL}}}]}});
   });
-  await senderContext.route('https://media1.giphy.com/**', route => route.fulfill({status: 504, body: 'media upstream timeout'}));
+  await senderContext.route('https://media3.giphy.com/**', route => route.fulfill({status: 504, body: 'media upstream timeout'}));
   const runGiphySearch = async () => {
     const searchButton = sender.getByRole('button', {name: 'Search', exact: true});
     await expect(searchButton).toBeEnabled();

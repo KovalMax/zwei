@@ -8,6 +8,11 @@ describe('parseGiphyMedia', () => {
         expect(parseGiphyMedia('https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.webp')?.kind).toBe('image');
     });
 
+    it.each(['media0', 'media2', 'media3', 'media4'])('accepts fixed-height renditions from the %s CDN host', host => {
+        const url = `https://${host}.giphy.com/media/cZ7rmKfFYOvYI/200.gif`;
+        expect(parseGiphyMedia(url)).toEqual({kind: 'image', source: url});
+    });
+
     it('accepts the direct media4 GIF URL rendition shared by GIPHY', () => {
         expect(parseGiphyMedia('https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif'))
             .toEqual({kind: 'image', source: 'https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif'});
@@ -31,13 +36,14 @@ describe('parseGiphyMedia', () => {
 
     it.each([
         'http://media1.giphy.com/media/id/200.gif', 'https://media1.giphy.com.evil.test/media/id/200.gif',
+        'https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif',
         'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif',
         'https://media2.giphy.com/media/v1.token/abc123/extra/giphy.gif',
         'https://media4.giphy.com/media/v1.token&ep=value/abc123/giphy.gif',
         'https://media.giphy.com/media/v1.token&ep=value/abc123/giphy.gif',
         'https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/giphy.gif',
         'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/giphy.gif',
-        'https://media4.giphy.com/media/id/200.gif', 'https://media4.giphy.com/media/id/200.webp',
+        'https://media4.giphy.com/media/id/unreviewed.gif', 'https://media4.giphy.com/media/id/unreviewed.webp',
         'https://media.giphy.com/media/id/200.gif', 'https://media.giphy.com.evil.test/media/v1.token/giphy.gif',
         'https://user@media1.giphy.com/media/id/200.gif', 'https://media1.giphy.com:443/media/id/200.gif',
         'https://media1.giphy.com/media/cZ7rmKfFYOvYI/unreviewed.gif', 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/unreviewed.webp',
