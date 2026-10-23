@@ -78,6 +78,15 @@ describe('GiphySearchService', () => {
         expect(results).toEqual([{id: 'approved', title: 'Cat', url: 'https://media3.giphy.com/media/cZ7rmKfFYOvYI/200.gif'}]);
     });
 
+    it('maps a G-rated tokenized fixed-height result returned by live GIPHY search', () => {
+        const url = 'https://media4.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200.gif';
+        let results: unknown;
+        service.search('amazing day').subscribe(value => results = value);
+        grantKey();
+        http.expectOne(isSearchRequest).flush({data: [{...GIF, images: {fixed_height: {url}}}]});
+        expect(results).toEqual([{id: 'approved', title: 'Cat', url}]);
+    });
+
     it('shares one first key request across concurrent searches', () => {
         const results: unknown[] = [];
         service.search('cats').subscribe(value => results.push(value));

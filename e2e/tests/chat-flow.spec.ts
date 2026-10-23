@@ -3083,7 +3083,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
   const [senderContext, recipientContext] = contexts;
   const sender = await senderContext.newPage();
   const recipient = await recipientContext.newPage();
-  const gifURL = 'https://media3.giphy.com/media/cZ7rmKfFYOvYI/200.gif';
+  const gifURL = 'https://media3.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200.gif';
   let malformedResponseSent = false;
   let searchRequests = 0;
   let expectedSearchQuery = 'cats';
@@ -3198,7 +3198,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
           expectedSearchQuery = 'nothing';
           await query.fill('nothing'); await runGiphySearch();
           await expect(picker.getByRole('status')).toContainText('No G-rated GIFs found.');
-          await sender.screenshot({path:testInfo.outputPath('giphy-empty-light-2560.png')});
+          await sender.screenshot({path:testInfo.outputPath(`giphy-empty-${theme}-${viewport.width}.png`)});
           expectedSearchQuery = 'cats';
           await query.fill('cats'); await runGiphySearch();
         }

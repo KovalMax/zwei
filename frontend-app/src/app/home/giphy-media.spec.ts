@@ -13,6 +13,16 @@ describe('parseGiphyMedia', () => {
         expect(parseGiphyMedia(url)).toEqual({kind: 'image', source: url});
     });
 
+    it.each(['media0', 'media1', 'media2', 'media3', 'media4'])('accepts tokenized fixed-height results from the %s CDN host', host => {
+        const url = `https://${host}.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200.gif`;
+        expect(parseGiphyMedia(url)).toEqual({kind: 'image', source: url});
+    });
+
+    it.each(['media0', 'media1', 'media2', 'media3', 'media4'])('rejects ampersands in tokenized fixed-height paths on %s', host => {
+        const url = `https://${host}.giphy.com/media/v1.token&ep=value/approved42/200.gif`;
+        expect(parseGiphyMedia(url)).toBeNull();
+    });
+
     it('accepts the direct media4 GIF URL rendition shared by GIPHY', () => {
         expect(parseGiphyMedia('https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif'))
             .toEqual({kind: 'image', source: 'https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/abc123/giphy.gif'});
@@ -43,6 +53,10 @@ describe('parseGiphyMedia', () => {
         'https://media.giphy.com/media/v1.token&ep=value/abc123/giphy.gif',
         'https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/giphy.gif',
         'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjEx/giphy.gif',
+        'https://media5.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200.gif',
+        'https://media4.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200_d.gif',
+        'https://media4.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200.mp4',
+        'https://media4.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu%2Fapproved42/200.gif',
         'https://media4.giphy.com/media/id/unreviewed.gif', 'https://media4.giphy.com/media/id/unreviewed.webp',
         'https://media.giphy.com/media/id/200.gif', 'https://media.giphy.com.evil.test/media/v1.token/giphy.gif',
         'https://user@media1.giphy.com/media/id/200.gif', 'https://media1.giphy.com:443/media/id/200.gif',
