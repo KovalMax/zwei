@@ -26,15 +26,6 @@ import {PwaService} from '../pwa/pwa.service';
 
 const GIPHY_SEARCH_COOLDOWN_MS = 750;
 
-export const STICKERS = [
-    {id: 'hello', label: 'Hello', asset: 'assets/stickers/hello.svg'}, {id: 'heart', label: 'Heart', asset: 'assets/stickers/heart.svg'},
-    {id: 'laugh', label: 'Laugh', asset: 'assets/stickers/laugh.svg'}, {id: 'wow', label: 'Wow', asset: 'assets/stickers/wow.svg'},
-    {id: 'thanks', label: 'Thanks', asset: 'assets/stickers/thanks.svg'}, {id: 'sorry', label: 'Sorry', asset: 'assets/stickers/sorry.svg'},
-    {id: 'yes', label: 'Yes', asset: 'assets/stickers/yes.svg'}, {id: 'no', label: 'No', asset: 'assets/stickers/no.svg'},
-    {id: 'coffee', label: 'Coffee', asset: 'assets/stickers/coffee.svg'}, {id: 'cat', label: 'Cat', asset: 'assets/stickers/cat.svg'},
-    {id: 'dog', label: 'Dog', asset: 'assets/stickers/dog.svg'}, {id: 'celebrate', label: 'Celebrate', asset: 'assets/stickers/celebrate.svg'},
-] as const;
-
 export const COMPOSER_EMOJIS = [
     {label: 'Smiling face', glyph: '😊'}, {label: 'Laughing face', glyph: '😂'},
     {label: 'Heart', glyph: '❤️'}, {label: 'Thumbs up', glyph: '👍'},
@@ -74,7 +65,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     public historyCursor?: string;
     public isHistoryLoading = false;
     public draft = '';
-    public stickerPickerOpen = false;
     public emojiPickerOpen = false;
     public giphyPickerOpen = false;
     public giphyQuery = '';
@@ -84,7 +74,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     public giphyPreviewFailed = false;
     public giphySearchState: 'idle' | 'loading' | 'results' | 'empty' | 'error' = 'idle';
     public giphySearchError = '';
-    public readonly stickers = STICKERS;
     public readonly composerEmojis = COMPOSER_EMOJIS;
     public mentionSuggestions: {userId: string; displayName: string}[] = [];
     public activeMentionIndex = 0;
@@ -657,13 +646,13 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public isLatestReadMessage(message: Message): boolean {
-        if (message.kind === 'system') return false;
+        if (message.kind === 'system' || message.contentType === 'sticker') return false;
         const conversation = this.conversations.getValue().find(item => item.id === message.conversationId) || (this.selectedConversation?.id === message.conversationId ? this.selectedConversation : undefined);
         if (conversation?.kind === 'group') {
             if (message.pending || !this.isOwnMessage(message)) return false;
             const activeOtherMembers = conversation.members.filter(member => member.userId !== this.profile?.id);
             const cursors = this.groupPeerReadCursors.get(message.conversationId);
-            const qualifies = (candidate: Message): boolean => activeOtherMembers.some(member => {
+            const qualifies = (candidate: Message): boolean => candidate.contentType !== 'sticker' && activeOtherMembers.some(member => {
                 const cursor = cursors?.get(member.userId);
                 return cursor !== undefined && cursor.sequence >= candidate.sequence && cursor.visibleFromSequence <= candidate.sequence && member.visibleFromSequence <= candidate.sequence;
             });
@@ -671,7 +660,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         }
         const readSequence = this.peerReadSequences.get(message.conversationId) || 0;
         if (message.pending || !this.isOwnMessage(message) || message.sequence > readSequence) return false;
-        return !this.messages.some(item => this.isOwnMessage(item) && item.conversationId === message.conversationId && item.sequence > message.sequence && item.sequence <= readSequence);
+        return !this.messages.some(item => item.contentType !== 'sticker' && this.isOwnMessage(item) && item.conversationId === message.conversationId && item.sequence > message.sequence && item.sequence <= readSequence);
     }
 
     public readReceiptLabel(message: Message): string {
@@ -685,6 +674,8 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     public messageDateLabel(message: Message): string { return messageDateLabel(message.createdAt); }
     public messageDateTimeLabel(message: Message): string { return messageDateTimeLabel(message.createdAt); }
+    public get visibleMessages(): Message[] { return this.messages.filter(message => message.contentType !== 'sticker'); }
+    public get onlyLegacyStickersHidden(): boolean { return this.messages.length > 0 && this.visibleMessages.length === 0; }
     public messageSegments(message: Message) { return messageTextSegments(message.body, message.mentions); }
     public messageDisplaySegments(message: Message): {text: string; mentioned: boolean; emoji: boolean}[] {
         const output: {text: string; mentioned: boolean; emoji: boolean}[] = [];
@@ -698,7 +689,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         }
         return output;
     }
-    public isGiphyMessage(message: Message): boolean { return message.contentType !== 'sticker' && parseGiphyMedia(message.body) !== null; }
+    public isGiphyMessage(message: Message): boolean { return parseGiphyMedia(message.body) !== null; }
     public isSingleEmojiMessage(message: Message): boolean {
         const glyphs = Array.from(new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(message.body.trim()), item => item.segment);
         return glyphs.length === 1 && this.isEmojiGrapheme(glyphs[0]);
@@ -713,7 +704,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.giphyEnabled || this.profile?.auto_load_approved_media !== true) return false;
         let approvedMediaCount = 0;
         for (const candidate of this.messages) {
-            if (candidate.contentType !== 'sticker' && parseGiphyMedia(candidate.body)?.kind === 'image') approvedMediaCount++;
+            if (parseGiphyMedia(candidate.body)?.kind === 'image') approvedMediaCount++;
             if (candidate.id === message.id) return approvedMediaCount <= 3;
         }
         return false;
@@ -722,9 +713,6 @@ export class HomeComponent implements OnInit, OnDestroy {
         const members = this.selectedConversation?.kind === 'group' ? this.selectedConversation.members : this.selectedConversation?.kind === 'direct' ? [{userId: this.selectedConversation.otherUserId, displayName: this.selectedConversation.otherDisplayName}] : [];
         return this.draftMentions.map(mention => members.find(member => member.userId === mention.userId)?.displayName).filter((name): name is string => Boolean(name));
     }
-
-    public stickerLabel(id: string): string { return STICKERS.find(sticker => sticker.id === id)?.label || 'Unavailable sticker'; }
-    public stickerAsset(id: string): string | undefined { return STICKERS.find(sticker => sticker.id === id)?.asset; }
 
     public insertEmoji(glyph: string, textarea = this.messageDraft?.nativeElement): void {
         if (!COMPOSER_EMOJIS.some(emoji => emoji.glyph === glyph) || !textarea) return;
@@ -803,21 +791,6 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphySearchGeneration++;
         this.giphySearchRequest?.unsubscribe(); this.giphySearchRequest = undefined;
         this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = '';
-    }
-
-    public sendSticker(id: string): void {
-        if (!STICKERS.some(sticker => sticker.id === id) || !this.selectedConversation || !this.socketReady) return;
-        const conversationID = this.selectedConversation.id;
-        const clientMessageId = createRandomID();
-        const requestID = createRandomID();
-        const sent = this.dataProvider.send({type: 'message.send', request_id: requestID, payload: {conversation_id: conversationID, client_message_id: clientMessageId, body: id, content_type: 'sticker'}});
-        if (!sent) { this.sendStatus = 'Secure connection was lost. Refresh to reconnect.'; this.changeDetector.markForCheck(); return; }
-        this.stopTyping();
-        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: conversationID, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body: id, contentType: 'sticker', createdAt: new Date().toISOString(), pending: true}];
-        this.sendStatus = '';
-        const timeout = window.setTimeout(() => this.markMessageUncertain(requestID), 10_000);
-        this.pendingRequests.set(requestID, {clientMessageID: clientMessageId, timeout});
-        this.changeDetector.markForCheck();
     }
 
     public onDraftChange(): void {

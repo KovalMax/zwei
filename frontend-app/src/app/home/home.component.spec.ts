@@ -6,7 +6,7 @@ import { By } from '@angular/platform-browser';
 import { MatTooltip } from '@angular/material/tooltip';
 import { BehaviorSubject, EMPTY, NEVER, Observable, of, Subject, throwError, map } from 'rxjs';
 
-import { HomeComponent, STICKERS, COMPOSER_EMOJIS } from './home.component';
+import { HomeComponent, COMPOSER_EMOJIS } from './home.component';
 import { AppModule } from '../app.module';
 import { HomeModule } from './home.module';
 import { AuthService } from '../auth/auth.service';
@@ -165,39 +165,19 @@ describe('HomeComponent', () => {
         component.ngOnDestroy();
     });
 
-    it('keeps emoji, sticker, and GIPHY picker controls available', () => {
+    it('keeps emoji picker while exposing only the sparkle GIPHY trigger', () => {
         fixture.detectChanges();
         const buttons = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
         expect(buttons.some(button => button.getAttribute('aria-label') === 'Open emoji picker')).toBe(true);
-        expect(buttons.some(button => button.getAttribute('aria-label') === 'Open sticker picker')).toBe(true);
         expect(buttons.some(button => button.getAttribute('aria-label') === 'Open GIPHY picker')).toBe(true);
         expect(buttons.find(button => button.getAttribute('aria-label') === 'Open emoji picker')?.getAttribute('aria-controls')).toBe('emoji-picker');
-        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open sticker picker')?.getAttribute('aria-controls')).toBe('sticker-picker');
         expect(buttons.find(button => button.getAttribute('aria-label') === 'Open GIPHY picker')?.getAttribute('aria-controls')).toBe('giphy-picker');
-        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open sticker picker')?.disabled).toBe(true);
         expect(buttons.find(button => button.getAttribute('aria-label') === 'Open emoji picker')?.disabled).toBe(true);
-        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open GIPHY picker')?.disabled).toBe(true);
-        component.ngOnDestroy();
-    });
-
-    it('sends a selected sticker as a correlated optimistic sticker message', () => {
-        fixture.detectChanges();
-        const send = vi.spyOn(fixture.debugElement.injector.get(DataProviderService), 'send').mockReturnValue(true);
-        component.selectedConversation = conversation('sticker-send');
-        component.socketReady = true;
-        component.profile = {id: 'test-user'} as Profile;
-        fixture.detectChanges();
-        (fixture.nativeElement as HTMLElement).querySelector('[aria-label="Open sticker picker"]')?.dispatchEvent(new MouseEvent('click', {bubbles: true}));
-        fixture.detectChanges();
-        (fixture.nativeElement as HTMLElement).querySelector('[aria-label="Send Cat sticker"]')?.dispatchEvent(new MouseEvent('click', {bubbles: true}));
-
-        const command = send.mock.calls.map(([event]) => event).find(event => event.type === 'message.send');
-        expect(command).toMatchObject({
-            type: 'message.send',
-            request_id: expect.any(String),
-            payload: {conversation_id: 'sticker-send', client_message_id: expect.any(String), body: 'cat', content_type: 'sticker'},
-        });
-        expect(component.messages.at(-1)).toMatchObject({body: 'cat', contentType: 'sticker', pending: true, clientMessageId: (command as {payload: {client_message_id: string}}).payload.client_message_id});
+        const giphyTrigger = buttons.find(button => button.getAttribute('aria-label') === 'Open GIPHY picker');
+        expect(giphyTrigger?.disabled).toBe(true);
+        expect(giphyTrigger?.textContent?.trim()).toBe('✦');
+        expect(fixture.nativeElement.querySelector('[aria-label="Open sticker picker"]')).toBeNull();
+        expect(fixture.nativeElement.querySelector('#sticker-picker')).toBeNull();
         component.ngOnDestroy();
     });
 
@@ -244,21 +224,32 @@ describe('HomeComponent', () => {
         component.ngOnDestroy();
     });
 
-    it('uses only fixed local sticker assets and labels rendered artwork and unavailable IDs', () => {
-        expect(STICKERS).toHaveLength(12);
-        expect(STICKERS.map(sticker => sticker.asset)).toEqual([
-            'assets/stickers/hello.svg', 'assets/stickers/heart.svg', 'assets/stickers/laugh.svg', 'assets/stickers/wow.svg',
-            'assets/stickers/thanks.svg', 'assets/stickers/sorry.svg', 'assets/stickers/yes.svg', 'assets/stickers/no.svg',
-            'assets/stickers/coffee.svg', 'assets/stickers/cat.svg', 'assets/stickers/dog.svg', 'assets/stickers/celebrate.svg',
-        ]);
-        expect(component.stickerAsset('https://example.invalid/sticker.svg')).toBeUndefined();
-        expect(component.stickerLabel('unknown-wire-value')).toBe('Unavailable sticker');
-
-        component.selectedConversation = conversation('sticker-assets');
-        component.messages = [{id: 'sticker-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'client', sequence: 1, body: 'heart', contentType: 'sticker', createdAt: '2026-01-01T00:00:00Z'}];
+    it('uses the sparkle as the only GIPHY trigger and hides legacy stickers without blanking history', () => {
+        const legacySticker: Message = {id: 'sticker-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'client', sequence: 1, body: 'heart', contentType: 'sticker', createdAt: '2026-01-01T00:00:00Z'};
+        component.selectedConversation = conversation('sticker-assets'); component.socketReady = true;
+        component.messages = [
+            legacySticker,
+            {id: 'text-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'text-client', sequence: 2, body: 'Visible text remains', createdAt: '2026-01-01T00:01:00Z'},
+        ];
         fixture.detectChanges();
-        expect(fixture.nativeElement.querySelector('.message-sticker img')?.getAttribute('src')).toBe('assets/stickers/heart.svg');
-        expect(fixture.nativeElement.querySelector('.message-sticker img')?.getAttribute('alt')).toBe('Heart');
+        component.selectedConversation = conversation('sticker-assets'); component.socketReady = true; component.giphyEnabled = true;
+        fixture.detectChanges();
+
+        const sparkleTrigger = fixture.nativeElement.querySelector('button[aria-label="Open GIPHY picker"]') as HTMLButtonElement;
+        expect(sparkleTrigger.textContent.trim()).toBe('✦');
+        expect(fixture.nativeElement.querySelector('[aria-label="Open sticker picker"]')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.message-sticker')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.message-history').textContent).toContain('Visible text remains');
+        expect(fixture.nativeElement.querySelector('.message-history').textContent).not.toContain('heart');
+        component.selectedConversation = conversation('sticker-assets'); component.socketReady = true; component.giphyEnabled = true; component.giphyPickerOpen = false;
+        sparkleTrigger.disabled = false;
+        sparkleTrigger.dispatchEvent(new MouseEvent('click', {bubbles: true})); fixture.detectChanges();
+        expect(component.giphyPickerOpen).toBe(true);
+        expect(fixture.nativeElement.querySelector('#giphy-picker')).not.toBeNull();
+
+        component.messages = [legacySticker];
+        expect(component.visibleMessages).toEqual([]);
+        expect(component.onlyLegacyStickersHidden).toBe(true);
         component.ngOnDestroy();
     });
 
@@ -2331,6 +2322,22 @@ describe('HomeComponent', () => {
         historyComponent.handleSocketEvent({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.read', payload: { conversation_id: direct.id, user_id: direct.otherUserId, sequence: 3 } });
         expect(historyComponent.isLatestReadMessage(directMessage)).toBe(true);
         expect(historyComponent.readReceiptLabel(directMessage)).toBe('Read by peer');
+    });
+
+    it('keeps the latest visible direct read marker when a newer legacy sticker is hidden', () => {
+        const direct = conversation('direct-sticker-read');
+        const visibleMessage = ownMessage(direct.id, 3);
+        const hiddenSticker: Message = {...ownMessage(direct.id, 4), body: 'heart', contentType: 'sticker'};
+        const historyComponent = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: () => undefined} as ChangeDetectorRef, {} as DataProviderService, {close: () => undefined} as CallFacade);
+        historyComponent.profile = {id: 'user-me'} as Profile;
+        historyComponent.selectedConversation = direct;
+        historyComponent.conversations.next([direct]);
+        historyComponent.messages = [visibleMessage, hiddenSticker];
+        historyComponent['peerReadSequences'].set(direct.id, hiddenSticker.sequence);
+
+        expect(historyComponent.visibleMessages).toEqual([visibleMessage]);
+        expect(historyComponent.isLatestReadMessage(visibleMessage)).toBe(true);
+        expect(historyComponent.isLatestReadMessage(hiddenSticker)).toBe(false);
     });
 
     it('applies reconciliation account cursors monotonically without using the group scalar', () => {

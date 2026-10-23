@@ -3024,7 +3024,7 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
   }
 });
 
-test('renders persisted legacy stickers after reload in direct and group chat history', async ({browser}, testInfo) => {
+test('hides persisted legacy stickers while showing ordinary and GIPHY history in direct and group chats', async ({browser}) => {
   test.setTimeout(150_000);
   const senderEmail = uniqueEmail('legacy-sticker-sender');
   const recipientEmail = uniqueEmail('legacy-sticker-recipient');
@@ -3038,149 +3038,41 @@ test('renders persisted legacy stickers after reload in direct and group chat hi
     const token = await authenticatedToken(senderContext, senderEmail, 'legacy-sticker-history');
     const headers = {Authorization:`${token.token_type} ${token.access_token}`};
     const recipientID = await userID(senderContext, token, recipientEmail);
+    const postMessage = async (conversationID: string, body: string, content_type: 'text' | 'sticker') => senderContext.request.post(`${chatBase}/api/chat/conversations/${conversationID}/messages`, {
+      headers, data:{client_message_id:crypto.randomUUID(), body, content_type},
+    });
     const directResponse = await senderContext.request.post(`${chatBase}/api/chat/conversations`, {headers, data:{other_user_id:recipientID}});
     expect(directResponse.status()).toBe(201);
     const direct = await directResponse.json() as {id:string};
-    const directSticker = await senderContext.request.post(`${chatBase}/api/chat/conversations/${direct.id}/messages`, {
-      headers, data:{client_message_id:crypto.randomUUID(), body:'cat', content_type:'sticker'},
-    });
-    expect(directSticker.status()).toBe(201);
+    expect((await postMessage(direct.id, 'cat', 'sticker')).status()).toBe(201);
     await recipient.reload(); await waitForPresenceReady(recipient);
     await recipient.locator('.person-option').filter({hasText:'Legacy sticker sender'}).click();
-    await expect(recipient.locator('.message-history .message-sticker img').last()).toHaveAttribute('src','assets/stickers/cat.svg');
-    for (const theme of ['light','dark'] as const) {
-      await setTheme(recipient, theme);
-      for (const viewport of [{width:1440,height:900},{width:390,height:844}]) {
-        await recipient.setViewportSize(viewport);
-        const image = recipient.locator('.message-history .message-sticker img').last();
-        await expect(image).toBeVisible();
-        const bounds = await image.evaluate(element => {const r=element.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth};});
-        expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(bounds.width + 1);
-        expect(bounds.top).toBeGreaterThanOrEqual(0); expect(bounds.bottom).toBeLessThanOrEqual(bounds.height + 1);
-        expect(bounds.documentWidth).toBeLessThanOrEqual(bounds.clientWidth + 1);
-        if ((theme === 'light' && viewport.width === 1440) || (theme === 'dark' && viewport.width === 390)) await recipient.screenshot({path:testInfo.outputPath(`legacy-sticker-direct-${theme}-${viewport.width}.png`)});
-      }
-    }
+    await expect(recipient.locator('.empty-messages')).toContainText('Sticker messages are no longer shown.');
+    await expect(recipient.locator('.message-history .message-bubble')).toHaveCount(0);
+    expect((await postMessage(direct.id, 'Visible direct text', 'text')).status()).toBe(201);
+    expect((await postMessage(direct.id, 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', 'text')).status()).toBe(201);
+    await recipient.reload(); await waitForPresenceReady(recipient);
+    await recipient.locator('.person-option').filter({hasText:'Legacy sticker sender'}).click();
+    const directHistory = recipient.locator('.message-history');
+    await expect(directHistory.getByText('Visible direct text')).toBeVisible();
+    await expect(directHistory.getByRole('link', {name:'Open original GIPHY link'})).toHaveAttribute('href', 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif');
+    await expect(directHistory.locator('.message-sticker')).toHaveCount(0);
+    await expect(directHistory).not.toContainText('cat');
 
     const groupResponse = await senderContext.request.post(`${chatBase}/api/chat/groups`, {headers, data:{name:`Legacy sticker group ${Date.now()}`, member_ids:[recipientID]}});
     expect(groupResponse.status()).toBe(201);
     const group = await groupResponse.json() as {id:string;name:string};
-    const groupSticker = await senderContext.request.post(`${chatBase}/api/chat/conversations/${group.id}/messages`, {
-      headers, data:{client_message_id:crypto.randomUUID(), body:'heart', content_type:'sticker'},
-    });
-    expect(groupSticker.status()).toBe(201);
-    await recipient.setViewportSize({width:1440,height:900});
+    expect((await postMessage(group.id, 'heart', 'sticker')).status()).toBe(201);
+    expect((await postMessage(group.id, 'Visible group text', 'text')).status()).toBe(201);
+    expect((await postMessage(group.id, 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', 'text')).status()).toBe(201);
     await recipient.reload(); await waitForPresenceReady(recipient);
     await recipient.locator('.person-option').filter({hasText:group.name}).click();
-    await expect(recipient.locator('.message-history .message-sticker img').last()).toHaveAttribute('src','assets/stickers/heart.svg');
-    for (const theme of ['light','dark'] as const) {
-      await setTheme(recipient, theme);
-      for (const viewport of [{width:1440,height:900},{width:390,height:844}]) {
-        await recipient.setViewportSize(viewport);
-        const image = recipient.locator('.message-history .message-sticker img').last();
-        await expect(image).toBeVisible();
-        const bounds = await image.evaluate(element => {const r=element.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth};});
-        expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(bounds.width + 1);
-        expect(bounds.top).toBeGreaterThanOrEqual(0); expect(bounds.bottom).toBeLessThanOrEqual(bounds.height + 1);
-        expect(bounds.documentWidth).toBeLessThanOrEqual(bounds.clientWidth + 1);
-        if ((theme === 'light' && viewport.width === 1440) || (theme === 'dark' && viewport.width === 390)) await recipient.screenshot({path:testInfo.outputPath(`legacy-sticker-group-${theme}-${viewport.width}.png`)});
-      }
-    }
+    const groupHistory = recipient.locator('.message-history');
+    await expect(groupHistory.getByText('Visible group text')).toBeVisible();
+    await expect(groupHistory.getByRole('link', {name:'Open original GIPHY link'})).toHaveAttribute('href', 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif');
+    await expect(groupHistory.locator('.message-sticker')).toHaveCount(0);
+    await expect(groupHistory).not.toContainText('heart');
   } finally { await Promise.allSettled([senderContext.close(),recipientContext.close()]); }
-});
-
-test('sends stickers from the picker in direct and group chats', async ({browser}, testInfo) => {
-  test.setTimeout(180_000);
-  const senderEmail = uniqueEmail('sticker-picker-sender');
-  const recipientEmail = uniqueEmail('sticker-picker-recipient');
-  const contexts = [await browser.newContext({viewport: {width: 1440, height: 900}}), await browser.newContext({viewport: {width: 1440, height: 900}})];
-  const [senderContext, recipientContext] = contexts;
-  const sender = await senderContext.newPage();
-  const recipient = await recipientContext.newPage();
-  try {
-    await register(sender, senderEmail, 'Sticker sender'); await register(recipient, recipientEmail, 'Sticker recipient');
-    await Promise.all([waitForLiveConnection(sender), waitForLiveConnection(recipient)]);
-    for (const label of ['Open emoji picker', 'Open sticker picker', 'Open GIPHY picker']) await expect(sender.getByRole('button', {name: label})).toBeDisabled();
-    await expect(sender.getByRole('button', {name: 'Send message'})).toBeDisabled();
-    await sender.getByPlaceholder('Name or email').fill(recipientEmail);
-    await sender.locator('.search-result').filter({hasText: recipientEmail}).click();
-    await recipient.locator('.person-option').filter({hasText: 'Sticker sender'}).click();
-    const composer = sender.getByPlaceholder('Write a message…');
-
-    for (const theme of ['light', 'dark'] as const) {
-      await setTheme(sender, theme);
-      await setTheme(recipient, theme);
-      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
-        await sender.setViewportSize(viewport);
-        const composerGeometry = await sender.locator('.composer').evaluate(element => {
-          const controls = Array.from(element.querySelectorAll<HTMLElement>('.sticker-picker-trigger, button[aria-label="Send message"]'));
-          return controls.map(control => {
-            const rect = control.getBoundingClientRect();
-            return {label: control.getAttribute('aria-label'), left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
-          });
-        });
-        expect(composerGeometry, `${theme}/${viewport.width} composer trigger/send geometry`).toHaveLength(4);
-        for (let index = 0; index < composerGeometry.length; index++) {
-          const control = composerGeometry[index];
-          expect(control.left, `${theme}/${viewport.width} ${control.label} left containment ${JSON.stringify(composerGeometry)}`).toBeGreaterThanOrEqual(0);
-          expect(control.right, `${theme}/${viewport.width} ${control.label} right containment ${JSON.stringify(composerGeometry)}`).toBeLessThanOrEqual(viewport.width + 1);
-          expect(control.top, `${theme}/${viewport.width} ${control.label} top containment ${JSON.stringify(composerGeometry)}`).toBeGreaterThanOrEqual(0);
-          expect(control.bottom, `${theme}/${viewport.width} ${control.label} bottom containment ${JSON.stringify(composerGeometry)}`).toBeLessThanOrEqual(viewport.height + 1);
-          for (const adjacent of composerGeometry.slice(index + 1)) {
-            const overlaps = control.left < adjacent.right && adjacent.left < control.right && control.top < adjacent.bottom && adjacent.top < control.bottom;
-            expect(overlaps, `${theme}/${viewport.width} composer controls overlap: ${JSON.stringify({control, adjacent, composerGeometry})}`).toBe(false);
-          }
-        }
-        console.info(`Composer trigger/send rects ${theme}/${viewport.width}: ${JSON.stringify(composerGeometry)}`);
-        const trigger = sender.getByRole('button', {name: 'Open sticker picker'});
-        await expect(trigger).toBeEnabled(); await trigger.click();
-        const picker = sender.locator('#sticker-picker');
-        const geometry = await picker.evaluate(element => {
-          const rect = element.getBoundingClientRect();
-          const buttons = Array.from(element.querySelectorAll('button'), button => button.getBoundingClientRect());
-          return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, buttons: buttons.map(button => ({left: button.left, right: button.right, top: button.top, bottom: button.bottom})), width: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, height: window.innerHeight};
-        });
-        expect(geometry.width).toBeLessThanOrEqual(geometry.clientWidth + 1);
-        expect(geometry.left).toBeGreaterThanOrEqual(0); expect(geometry.right).toBeLessThanOrEqual(geometry.clientWidth + 1);
-        expect(geometry.top).toBeGreaterThanOrEqual(0); expect(geometry.bottom).toBeLessThanOrEqual(geometry.height + 1);
-        for (const button of geometry.buttons) {
-          expect(button.left).toBeGreaterThanOrEqual(0); expect(button.right).toBeLessThanOrEqual(geometry.clientWidth + 1);
-          expect(button.top).toBeGreaterThanOrEqual(0); expect(button.bottom).toBeLessThanOrEqual(geometry.height + 1);
-        }
-        if ((theme === 'light' && viewport.width === 1440) || (theme === 'dark' && viewport.width === 390)) await sender.screenshot({path: testInfo.outputPath(`sticker-picker-${theme}-${viewport.width}.png`)});
-        await trigger.click();
-      }
-    }
-
-    await sender.setViewportSize({width: 1440, height: 900});
-    await composer.fill('Keep this draft');
-    await sender.getByRole('button', {name: 'Open sticker picker'}).click();
-    await sender.getByRole('button', {name: 'Send Cat sticker'}).click();
-    await expect(composer).toHaveValue('Keep this draft');
-    const directSticker = recipient.locator('.message-history .message-sticker img').last();
-    await expect(directSticker).toHaveAttribute('src', 'assets/stickers/cat.svg');
-    await expect(directSticker).toHaveAttribute('alt', 'Cat');
-    await expect(sender.locator('.message-history .message-pending-label')).toHaveCount(0);
-
-    const token = await authenticatedToken(senderContext, senderEmail, 'sticker-group-owner');
-    const recipientID = await userID(senderContext, token, recipientEmail);
-    const created = await senderContext.request.post(`${chatBase}/api/chat/groups`, {
-      headers: {Authorization: `${token.token_type} ${token.access_token}`},
-      data: {name: `Sticker group ${Date.now()}`, member_ids: [recipientID]},
-    });
-    expect(created.status()).toBe(201);
-    const groupName = (await created.json() as {name: string}).name;
-    await sender.locator('.person-option').filter({hasText: groupName}).click();
-    await recipient.reload();
-    await recipient.locator('.person-option').filter({hasText: groupName}).click();
-    await sender.getByRole('button', {name: 'Open sticker picker'}).click();
-    await sender.getByRole('button', {name: 'Send Heart sticker'}).click();
-    await expect(recipient.locator('.message-history .message-sticker img').last()).toHaveAttribute('src', 'assets/stickers/heart.svg');
-    await expect(sender.locator('.message-history .message-pending-label')).toHaveCount(0);
-    await sender.setViewportSize({width: 2560, height: 1440});
-    await setTheme(sender, 'dark');
-    await sender.screenshot({path: testInfo.outputPath('sticker-rendered-group-dark-2560.png')});
-  } finally { await Promise.allSettled(contexts.map(context => context.close())); }
 });
 
 test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats', async ({browser}, testInfo) => {
@@ -3251,6 +3143,27 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
         const requestsBeforeOpening = searchRequests;
         const keyRequestsBeforeOpening = giphyKeyRequests;
         const pickerTrigger = sender.getByRole('button', {name: 'Open GIPHY picker'});
+        await expect(pickerTrigger).toHaveText('✦');
+        await expect(sender.locator('.composer').getByRole('button', {name: 'GIF', exact: true})).toHaveCount(0);
+        const composerGeometry = await sender.locator('.composer').evaluate(element => {
+          const controls = Array.from(element.querySelectorAll<HTMLElement>('.composer-picker-trigger, button[aria-label="Send message"]'));
+          return controls.map(control => {
+            const rect = control.getBoundingClientRect();
+            return {label: control.getAttribute('aria-label'), left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
+          });
+        });
+        expect(composerGeometry, `${theme}/${viewport.width} composer trigger/send geometry`).toHaveLength(3);
+        for (let index = 0; index < composerGeometry.length; index++) {
+          const control = composerGeometry[index];
+          expect(control.left, `${theme}/${viewport.width} ${control.label} left containment ${JSON.stringify(composerGeometry)}`).toBeGreaterThanOrEqual(0);
+          expect(control.right, `${theme}/${viewport.width} ${control.label} right containment ${JSON.stringify(composerGeometry)}`).toBeLessThanOrEqual(viewport.width + 1);
+          expect(control.top, `${theme}/${viewport.width} ${control.label} top containment ${JSON.stringify(composerGeometry)}`).toBeGreaterThanOrEqual(0);
+          expect(control.bottom, `${theme}/${viewport.width} ${control.label} bottom containment ${JSON.stringify(composerGeometry)}`).toBeLessThanOrEqual(viewport.height + 1);
+          for (const adjacent of composerGeometry.slice(index + 1)) {
+            const overlaps = control.left < adjacent.right && adjacent.left < control.right && control.top < adjacent.bottom && adjacent.top < control.bottom;
+            expect(overlaps, `${theme}/${viewport.width} composer controls overlap: ${JSON.stringify({control, adjacent, composerGeometry})}`).toBe(false);
+          }
+        }
         const picker = sender.locator('#giphy-picker');
         const keyboardOpening = (theme === 'light' && viewport.width === 2560) || viewport.width === 1024;
         if (keyboardOpening) { await pickerTrigger.focus(); await pickerTrigger.press('Enter'); }

@@ -1,13 +1,13 @@
-app-home .sticker-picker.emoji-picker button span { font-size: 28px; }
+app-home .composer-picker.emoji-picker button span { font-size: 28px; }
 app-home .message-bubble p .message-emoji { font-size: 22px; }
 app-home .message-bubble p.message-single-emoji { font-size: 38px; line-height: 1.2; }
 app-home .message-bubble p.message-single-emoji .message-emoji { font-size: 38px; }
-app-home .sticker-picker.giphy-picker { display: block; width: min(360px, calc(100vw - 36px)); max-height: min(70vh, 540px); overflow-y: auto; box-sizing: border-box; color: var(--chat-text-strong); }
+app-home .composer-picker.giphy-picker { display: block; width: min(360px, calc(100vw - 36px)); max-height: min(70vh, 540px); overflow-y: auto; box-sizing: border-box; color: var(--chat-text-strong); }
 app-home .giphy-picker > label { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 700; }
 app-home .giphy-search-row { display: flex; gap: 6px; }
 app-home .giphy-search-row input { min-width: 0; flex: 1; padding: 8px; border: 1px solid var(--chat-line-strong); border-radius: 7px; background: var(--chat-surface-control); color: var(--chat-text-strong); font: inherit; }
-app-home .sticker-picker.giphy-picker button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--chat-line-strong); border-radius: 8px; background: var(--chat-surface-control); color: var(--chat-text-strong); cursor: pointer; }
-app-home .sticker-picker.giphy-picker button:focus-visible, app-home .giphy-search-row input:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+app-home .composer-picker.giphy-picker button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--chat-line-strong); border-radius: 8px; background: var(--chat-surface-control); color: var(--chat-text-strong); cursor: pointer; }
+app-home .composer-picker.giphy-picker button:focus-visible, app-home .giphy-search-row input:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 app-home .giphy-disclosure, app-home .giphy-picker [role="status"], app-home .giphy-picker [role="alert"] { margin: 7px 0; color: var(--chat-muted); font-size: 11px; line-height: 1.4; }
 app-home .giphy-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; max-height: 260px; margin: 8px 0; overflow-y: auto; }
 app-home .giphy-results button { display: grid; min-width: 0; height: 76px; padding: 2px; overflow: hidden; }
@@ -17,21 +17,15 @@ app-home .giphy-attribution { display: block; margin-top: 8px; color: var(--chat
 app-home .giphy-preview { display: grid; gap: 8px; overflow-wrap: anywhere; }
 app-home .giphy-preview img { width: min(100%, 320px); max-height: 240px; object-fit: contain; }
 app-home .giphy-preview > div { display: flex; justify-content: flex-end; gap: 8px; }
-app-home .sticker-picker-wrap { position: relative; flex: 0 0 auto; }
-app-home .sticker-picker-trigger { width: 40px; height: 40px; border: 0; border-radius: 50%; background: transparent; color: var(--chat-text-strong); font-size: 25px; cursor: pointer; }
-app-home .sticker-picker-trigger:focus-visible { outline: 2px solid var(--chat-accent); outline-offset: 2px; }
-app-home .sticker-picker { position: absolute; z-index: 5; right: 0; bottom: calc(100% + 10px); display: grid; grid-template-columns: repeat(4, minmax(54px, 1fr)); gap: 4px; width: min(280px, calc(100vw - 36px)); padding: 8px; border: 1px solid var(--chat-line-strong); border-radius: 14px; background: var(--chat-surface-raised); box-shadow: 0 8px 26px #0003; }
-app-home .sticker-picker button { display: grid; min-height: 58px; place-content: center; gap: 3px; border: 0; border-radius: 9px; background: transparent; color: var(--chat-text-strong); cursor: pointer; }
-app-home .sticker-picker button:hover, app-home .sticker-picker button:focus-visible { background: var(--chat-surface-control); outline: 2px solid var(--chat-accent); outline-offset: 1px; }
-app-home .sticker-picker button img { width: 40px; height: 40px; object-fit: contain; }
-app-home .sticker-picker button small { font-size: 10px; }
+app-home .composer-picker-wrap { position: relative; flex: 0 0 auto; }
+app-home .composer-picker-trigger { width: 40px; height: 40px; border: 0; border-radius: 50%; background: transparent; color: var(--chat-text-strong); font-size: 25px; cursor: pointer; }
+app-home .composer-picker-trigger:focus-visible { outline: 2px solid var(--chat-accent); outline-offset: 2px; }
+app-home .composer-picker { position: absolute; z-index: 5; right: 0; bottom: calc(100% + 10px); display: grid; grid-template-columns: repeat(4, minmax(54px, 1fr)); gap: 4px; width: min(280px, calc(100vw - 36px)); padding: 8px; border: 1px solid var(--chat-line-strong); border-radius: 14px; background: var(--chat-surface-raised); box-shadow: 0 8px 26px #0003; }
+app-home .composer-picker button { display: grid; min-height: 58px; place-content: center; gap: 3px; border: 0; border-radius: 9px; background: transparent; color: var(--chat-text-strong); cursor: pointer; }
+app-home .composer-picker button:hover, app-home .composer-picker button:focus-visible { background: var(--chat-surface-control); outline: 2px solid var(--chat-accent); outline-offset: 1px; }
 app-home .emoji-picker { grid-template-columns: repeat(4, minmax(48px, 1fr)); }
 app-home .emoji-picker button { min-height: 54px; }
 app-home .emoji-picker button span { font-size: 24px; }
-app-home .message-sticker { width: min(112px, 100%); aspect-ratio: 1; display: grid; place-items: center; overflow: hidden; }
-app-home .message-sticker img { display: block; width: 100%; height: 100%; object-fit: contain; }
-app-home .message-sticker span { padding: 8px; font-size: 14px; text-align: center; }
-
 @media (max-width: 760px) {
-    app-home .sticker-picker-wrap .sticker-picker { position: fixed; right: 8px; bottom: calc(74px + env(safe-area-inset-bottom)); }
+    app-home .composer-picker-wrap .composer-picker { position: fixed; right: 8px; bottom: calc(74px + env(safe-area-inset-bottom)); }
 }
