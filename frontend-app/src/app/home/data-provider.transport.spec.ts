@@ -162,6 +162,23 @@ describe('DataProviderService transport', () => {
         expect(socket.socket.sent[sentBefore]).toEqual({type: 'call.signal', request_id: 'valid', payload: {call_id: 'call-1', signal: {type: 'offer', sdp: 'offer sdp'}}, version: WEBSOCKET_PROTOCOL_VERSION});
     });
 
+    it('sends correlated direct-call recovery and discards malformed recovery projections', () => {
+        const received: MessageSocketEvent[] = [];
+        service.getObservable().subscribe(event => received.push(event));
+        const socket = requestTicket('ticket-call-recovery');
+        open(socket.config);
+        socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: []}});
+        const request = {type: 'call.recover', request_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', payload: {call_id: '11111111-1111-4111-8111-111111111111'}} as const;
+        expect(service.send(request)).toBe(true);
+        expect(socket.socket.sent.at(-1)).toEqual({...request, version: WEBSOCKET_PROTOCOL_VERSION});
+        const ringing = {version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.recovered', request_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', payload: {status: 'ringing', call: {call_id: '11111111-1111-4111-8111-111111111111', conversation_id: '22222222-2222-4222-8222-222222222222', caller_id: '33333333-3333-4333-8333-333333333333', status: 'ringing', expires_at: '2099-01-01T00:00:00Z'}}};
+        socket.socket.emit(ringing);
+        socket.socket.emit({...ringing, payload: {...ringing.payload, call: {...ringing.payload.call, status: 'active'}}});
+        socket.socket.emit({...ringing, payload: {...ringing.payload, unexpected: '/profile'}});
+        socket.socket.emit({...request, payload: {call_id: ''}} as never);
+        expect(received.filter(event => event.type === 'call.recovered')).toEqual([ringing]);
+    });
+
     it('filters malformed direct and group call signal server events before publishing them', () => {
         const received: MessageSocketEvent[] = [];
         service.getObservable().subscribe(event => received.push(event));

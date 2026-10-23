@@ -16,7 +16,7 @@ function field(page: Page, name: string) {
   return page.locator('mat-form-field').filter({has: input(page, name)});
 }
 
-async function register(page: Page, email: string, nickname = 'Test User'): Promise<string> {
+async function register(page: Page, email: string, nickname = 'Test User', baseURL = ''): Promise<string> {
   const loginResponse = await page.context().request.post(`${adminBase}/api/auth/login`, {
     data: {email: adminEmail, password, device_id: `e2e-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'},
   });
@@ -26,7 +26,7 @@ async function register(page: Page, email: string, nickname = 'Test User'): Prom
     data: {email},
   });
   const invitationPayload = await invitationResponse.json() as {code: string};
-  await page.goto(`/sign-up?invite=1&code=${encodeURIComponent(invitationPayload.code)}`);
+  await page.goto(`${baseURL}/sign-up?invite=1&code=${encodeURIComponent(invitationPayload.code)}`);
   await input(page, 'email').fill(email);
   await input(page, 'firstName').fill('Test');
   await input(page, 'lastName').fill('User');
@@ -53,6 +53,255 @@ async function login(page: Page, email: string, value = password): Promise<void>
   await input(page, 'password').fill(value);
   await page.getByRole('button', {name: 'Sign in'}).click();
 }
+
+test('profile push setup state stays contained across themes and target viewports', async ({page}, testInfo) => {
+  const email = uniqueEmail('push-profile');
+  const accessToken = await register(page, email, 'Push Profile User');
+  const preference = await page.context().request.patch('/api/auth/me', {
+    headers: {Authorization: `Bearer ${accessToken}`},
+    data: {alert_mode: 'notifications'},
+  });
+  expect(preference.ok()).toBeTruthy();
+  await page.goto('/profile');
+  await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
+  await expect(page.getByRole('heading', {name: 'This browser'})).toBeVisible();
+  await expect(page.getByRole('status').filter({hasText: /Web Push is not supported|Notifications are blocked|Enable browser notifications|not currently registered|Push notifications are enabled/})).toHaveCount(1);
+
+  for (const theme of ['light', 'dark'] as const) {
+    await page.evaluate(selected => {
+      document.documentElement.classList.toggle('dark-theme', selected === 'dark');
+      document.documentElement.classList.toggle('light-theme', selected === 'light');
+      document.body.classList.toggle('dark-theme', selected === 'dark');
+      document.body.classList.toggle('light-theme', selected === 'light');
+    }, theme);
+    for (const viewport of [
+      {width: 2560, height: 1440}, {width: 1440, height: 900},
+      {width: 1024, height: 768}, {width: 390, height: 844},
+    ]) {
+      await page.setViewportSize(viewport);
+      const layout = await page.evaluate(() => {
+        const card = document.querySelector<HTMLElement>('.profile-card');
+        const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.profile-card button'));
+        const rects = buttons.map(button => button.getBoundingClientRect());
+        return {
+          documentContained: document.documentElement.scrollWidth <= window.innerWidth,
+          cardContained: Boolean(card && card.getBoundingClientRect().left >= 0 && card.getBoundingClientRect().right <= window.innerWidth),
+          buttonsContained: rects.every(rect => rect.left >= 0 && rect.right <= window.innerWidth),
+          buttonsOverlap: rects.some((rect, index) => rects.slice(index + 1).some(other => rect.left < other.right && rect.right > other.left && rect.top < other.bottom && rect.bottom > other.top)),
+          pushStateVisible: Boolean(document.querySelector('[aria-labelledby="push-settings-title"]')),
+        };
+      });
+      expect(layout, `${theme} Profile push state at ${viewport.width}x${viewport.height}`).toEqual({
+        documentContained: true, cardContained: true, buttonsContained: true, buttonsOverlap: false, pushStateVisible: true,
+      });
+      await page.screenshot({path: testInfo.outputPath(`profile-push-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: true});
+      const scrolledLayout = await page.evaluate(() => {
+        const scroller = document.querySelector<HTMLElement>('.profile-page');
+        if (!scroller) return null;
+        scroller.scrollTop = scroller.scrollHeight;
+        const push = document.querySelector<HTMLElement>('[aria-labelledby="push-settings-title"]');
+        const bounds = push?.getBoundingClientRect();
+        return {
+          scrollTop: scroller.scrollTop,
+          scrollHeight: scroller.scrollHeight,
+          clientHeight: scroller.clientHeight,
+          scrollWidth: scroller.scrollWidth,
+          clientWidth: scroller.clientWidth,
+          pushVisible: Boolean(bounds && bounds.top >= 0 && bounds.bottom <= window.innerHeight),
+          horizontalContainment: scroller.scrollWidth <= scroller.clientWidth && document.documentElement.scrollWidth <= window.innerWidth,
+        };
+      });
+      expect(scrolledLayout, `${theme} Profile push state scrolled at ${viewport.width}x${viewport.height}`).not.toBeNull();
+      expect(scrolledLayout?.pushVisible).toBe(true);
+      expect(scrolledLayout?.horizontalContainment).toBe(true);
+      await page.screenshot({path: testInfo.outputPath(`profile-push-${theme}-${viewport.width}x${viewport.height}-scrolled.png`), fullPage: true});
+    }
+  }
+});
+
+test('profile push permission states preserve account preference and stay contained', async ({browser}, testInfo) => {
+  const chatBase = process.env.BASE_URL ?? 'https://chat.localhost';
+  const origin = new URL(chatBase).origin;
+  const cases = [
+    {state: 'not-enrolled', permission: 'granted' as const},
+    {state: 'denied', permission: 'denied' as const},
+  ];
+
+  for (const {state, permission} of cases) {
+    const context = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      permissions: permission === 'granted' ? ['notifications'] : [],
+      viewport: {width: 1440, height: 900},
+    });
+    try {
+      const page = await context.newPage();
+      if (permission === 'granted') {
+        await context.grantPermissions(['notifications'], {origin});
+      } else {
+        const cdp = await context.newCDPSession(page);
+        await cdp.send('Browser.setPermission', {
+          permission: {name: 'notifications'},
+          setting: 'denied',
+          origin,
+        });
+        await cdp.detach();
+      }
+      // Headless Chromium in this Docker setup reports notifications as denied
+      // despite per-context grants; pin the exposed state before any navigation.
+      await context.addInitScript((permissionState: NotificationPermission) => {
+        if (typeof Notification !== 'undefined') {
+          Object.defineProperty(Notification, 'permission', {configurable: true, get: () => permissionState});
+        }
+      }, permission);
+
+      const accessToken = await register(page, uniqueEmail(`push-${state}`), `Push ${state}`, chatBase);
+      expect(await page.evaluate(() => Notification.permission), `${state}: notification permission after registration`).toBe(permission);
+      const preference = await context.request.patch(`${origin}/api/auth/me`, {
+        headers: {Authorization: `Bearer ${accessToken}`},
+        data: {alert_mode: 'notifications'},
+      });
+      expect(preference.ok(), `${state}: save account notification preference`).toBeTruthy();
+      await page.goto(`${chatBase}/profile`);
+      await expect(page.getByRole('heading', {name: 'This browser'})).toBeVisible();
+
+      if (state === 'not-enrolled') {
+        await expect(page.getByRole('status').filter({hasText: 'This browser is not currently registered to receive push notifications.'})).toBeVisible();
+        await expect(page.getByRole('button', {name: 'Enable on this browser'})).toBeVisible();
+      } else {
+        await expect(page.getByRole('status').filter({hasText: 'Notifications are blocked. Allow them in this browser’s site settings, then re-enable here.'})).toBeVisible();
+      }
+      await expect(page.getByRole('radio', {name: /Notifications and sounds/})).toHaveAttribute('aria-checked', 'true');
+
+      for (const theme of ['light', 'dark'] as const) {
+        await page.evaluate(selected => {
+          document.documentElement.classList.toggle('dark-theme', selected === 'dark');
+          document.documentElement.classList.toggle('light-theme', selected === 'light');
+          document.body.classList.toggle('dark-theme', selected === 'dark');
+          document.body.classList.toggle('light-theme', selected === 'light');
+        }, theme);
+        for (const viewport of [
+          {width: 2560, height: 1440}, {width: 1440, height: 900},
+          {width: 1024, height: 768}, {width: 390, height: 844},
+        ]) {
+          await page.setViewportSize(viewport);
+          const layout = await page.evaluate(() => {
+            const card = document.querySelector<HTMLElement>('.profile-card');
+            const pushState = document.querySelector<HTMLElement>('[aria-labelledby="push-settings-title"]');
+            const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.profile-card button'));
+            const rects = buttons.map(button => button.getBoundingClientRect());
+            const cardRect = card?.getBoundingClientRect();
+            const cta = pushState?.querySelector<HTMLButtonElement>('button');
+            const ctaStyle = cta ? getComputedStyle(cta) : null;
+            const ctaRect = cta?.getBoundingClientRect();
+            const contrast = (foreground: string, background: string): number => {
+              const canvas = document.createElement('canvas');
+              canvas.width = 1;
+              canvas.height = 1;
+              const context = canvas.getContext('2d');
+              if (!context) return 0;
+              const luminance = (color: string): number => {
+                context.clearRect(0, 0, 1, 1);
+                context.fillStyle = color;
+                context.fillRect(0, 0, 1, 1);
+                const channels = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(channel => {
+                  const normalized = channel / 255;
+                  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+                });
+                return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+              };
+              const foregroundLuminance = luminance(foreground);
+              const backgroundLuminance = luminance(background);
+              return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+            };
+            return {
+              noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+              cardContained: Boolean(cardRect && cardRect.left >= 0 && cardRect.right <= window.innerWidth),
+              stateContained: Boolean(cardRect && pushState && pushState.getBoundingClientRect().left >= cardRect.left && pushState.getBoundingClientRect().right <= cardRect.right),
+              buttonsContained: rects.every(rect => Boolean(cardRect && rect.left >= cardRect.left && rect.right <= cardRect.right)),
+              buttonsDoNotOverlap: rects.every((rect, index) => rects.slice(index + 1).every(other => rect.right <= other.left || rect.left >= other.right || rect.bottom <= other.top || rect.top >= other.bottom)),
+              ctaStyled: Boolean(ctaStyle && ctaRect && ctaRect.height >= 44 && ctaStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' && ctaStyle.backgroundColor !== 'rgb(239, 239, 239)' && ctaStyle.color !== 'rgb(0, 0, 0)' && ctaStyle.borderRadius !== '0px'),
+              ctaContrast: ctaStyle ? contrast(ctaStyle.color, ctaStyle.backgroundColor) : 0,
+              ctaColors: ctaStyle ? `${ctaStyle.color} on ${ctaStyle.backgroundColor}` : 'missing',
+              ctaDisabled: Boolean(cta?.disabled),
+            };
+          });
+          expect(layout, `${state} ${theme} Profile at ${viewport.width}x${viewport.height}`).toEqual({
+            noHorizontalOverflow: true,
+            cardContained: true,
+            stateContained: true,
+            buttonsContained: true,
+            buttonsDoNotOverlap: true,
+            ctaStyled: true,
+            ctaContrast: expect.any(Number),
+            ctaColors: expect.any(String),
+            ctaDisabled: expect.any(Boolean),
+          });
+          expect(layout.ctaContrast, `${state} ${theme} CTA contrast at ${viewport.width}x${viewport.height}: ${layout.ctaColors}, disabled=${layout.ctaDisabled}`).toBeGreaterThanOrEqual(4.5);
+          await page.locator('[aria-labelledby="push-settings-title"]').scrollIntoViewIfNeeded();
+          await expect(page.getByRole('status').filter({hasText: state === 'denied' ? 'Notifications are blocked.' : 'This browser is not currently registered'})).toBeInViewport();
+          const enableButton = page.getByRole('button', {name: 'Enable on this browser'});
+          await expect(enableButton).toBeInViewport();
+          const restingBackground = await enableButton.evaluate(button => getComputedStyle(button).backgroundColor);
+          await enableButton.hover();
+          const hoverBackground = await enableButton.evaluate(button => getComputedStyle(button).backgroundColor);
+          expect(hoverBackground, `${state} ${theme} CTA hover at ${viewport.width}x${viewport.height}`).not.toBe(restingBackground);
+          await page.getByRole('radio', {name: /Notifications and sounds/}).focus();
+          await page.keyboard.press('Tab');
+          await expect(enableButton).toBeFocused();
+          const focusStyle = await enableButton.evaluate(button => ({
+            outlineStyle: getComputedStyle(button).outlineStyle,
+            outlineWidth: getComputedStyle(button).outlineWidth,
+            outlineColor: getComputedStyle(button).outlineColor,
+            focusedVisible: button.matches(':focus-visible'),
+            rect: (() => { const {x, y, width, height} = button.getBoundingClientRect(); return {x, y, width, height}; })(),
+          }));
+          expect(focusStyle.focusedVisible, `${state} ${theme} CTA keyboard focus at ${viewport.width}x${viewport.height}`).toBe(true);
+          expect(focusStyle.outlineStyle).toBe('solid');
+          expect(focusStyle.outlineWidth).toBe('3px');
+          expect(focusStyle.outlineColor).toBe('rgb(23, 105, 194)');
+          expect(focusStyle.rect.width).toBeGreaterThan(0);
+          expect(focusStyle.rect.height).toBeGreaterThanOrEqual(44);
+          await page.screenshot({path: testInfo.outputPath(`profile-push-${state}-${theme}-${viewport.width}x${viewport.height}-focus.png`), fullPage: true});
+          await enableButton.evaluate(button => { (button as HTMLButtonElement).disabled = true; });
+          const disabledStyle = await enableButton.evaluate(button => {
+            const style = getComputedStyle(button);
+            const canvas = document.createElement('canvas');
+            canvas.width = 1;
+            canvas.height = 1;
+            const context = canvas.getContext('2d');
+            const luminance = (color: string): number => {
+              if (!context) return 0;
+              context.clearRect(0, 0, 1, 1);
+              context.fillStyle = color;
+              context.fillRect(0, 0, 1, 1);
+              const channels = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(channel => {
+                const normalized = channel / 255;
+                return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+              });
+              return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+            };
+            const foreground = luminance(style.color);
+            const background = luminance(style.backgroundColor);
+            return {
+              background: style.backgroundColor,
+              color: style.color,
+              cursor: style.cursor,
+              contrast: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05),
+            };
+          });
+          expect(disabledStyle.background).not.toBe('rgba(0, 0, 0, 0)');
+          expect(disabledStyle.color).not.toBe('rgb(0, 0, 0)');
+          expect(disabledStyle.cursor).toBe('not-allowed');
+          expect(disabledStyle.contrast, `${state} ${theme} disabled CTA contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          await enableButton.evaluate(button => { (button as HTMLButtonElement).disabled = false; });
+          await page.screenshot({path: testInfo.outputPath(`profile-push-${state}-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: true});
+        }
+      }
+    } finally {
+      await context.close();
+    }
+  }
+});
 
 async function assertAccountMenuContrast(page: Page, theme: 'dark' | 'light'): Promise<void> {
   const metrics = await page.getByRole('menu').evaluate(async menu => {

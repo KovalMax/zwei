@@ -64,6 +64,8 @@ export interface CallSignalEvent {
     payload: { call_id: string; signal: CallSignal };
 }
 
+export interface CallRecoverEvent { type: 'call.recover'; request_id: string; payload: {call_id: string}; }
+
 export interface GroupCallDiscoverEvent { type: 'group.call.discover'; request_id: string; payload: {conversation_id: string}; }
 export interface GroupCallStartEvent { type: 'group.call.start'; request_id: string; payload: {conversation_id: string}; }
 export interface GroupCallJoinEvent { type: 'group.call.join'; request_id: string; payload: {conversation_id: string; room_id: string; generation: number}; }
@@ -79,7 +81,7 @@ export type CallSignal =
     | { type: 'candidate'; candidate: object }
     | { type: 'screen-share-started' | 'screen-share-stopped' };
 
-export type ClientSocketEvent = MessageSendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent | ConversationReconcileEvent | CallStartEvent | CallControlEvent | CallSignalEvent | GroupCallDiscoverEvent | GroupCallStartEvent | GroupCallJoinEvent | GroupCallSyncEvent | GroupCallControlEvent | GroupCallSignalEvent;
+export type ClientSocketEvent = MessageSendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent | ConversationReconcileEvent | CallStartEvent | CallControlEvent | CallSignalEvent | CallRecoverEvent | GroupCallDiscoverEvent | GroupCallStartEvent | GroupCallJoinEvent | GroupCallSyncEvent | GroupCallControlEvent | GroupCallSignalEvent;
 
 export interface MessagePayload {
     id: string;
@@ -209,6 +211,13 @@ export interface CallRejectedSocketEvent {
     payload: { error: string; support_ref?: string };
 }
 
+export interface CallRecoveredSocketEvent {
+    version: typeof WEBSOCKET_PROTOCOL_VERSION;
+    type: 'call.recovered';
+    request_id: string;
+    payload: {status: 'ringing'; call: {call_id: string; conversation_id: string; caller_id: string; status: 'ringing'; expires_at: string}} | {status: 'missed'};
+}
+
 export interface GroupCallParticipant { user_id: string; device_id: string; }
 export interface GroupCallRoomPayload { room_id: string; conversation_id: string; membership_revision: number; generation: number; status: 'ringing' | 'active' | 'ended'; expires_at: string; participants: GroupCallParticipant[]; presenter?: GroupCallParticipant; ice_servers?: ICEServer[]; support_ref?: string; }
 export type GroupCallDiscoveredRoomPayload = Omit<GroupCallRoomPayload, 'ice_servers'> & {state_revision: number};
@@ -224,7 +233,7 @@ export interface GroupCallSyncedSocketEvent { version: typeof WEBSOCKET_PROTOCOL
 export interface GroupCallDiscoveredSocketEvent { version: typeof WEBSOCKET_PROTOCOL_VERSION; type: 'group.call.discovered'; request_id: string; payload: {conversation_id: string; room: GroupCallDiscoveredRoomPayload | null}; }
 export interface GroupCallSignalSocketEvent { version: typeof WEBSOCKET_PROTOCOL_VERSION; type: 'group.call.signal'; payload: {room_id: string; generation: number; from_user_id: string; from_device_id: string; signal: CallSignal}; }
 
-export type CallSocketEvent = CallStateSocketEvent | CallAcceptedSocketEvent | CallSignalSocketEvent | CallRejectedSocketEvent;
+export type CallSocketEvent = CallStateSocketEvent | CallAcceptedSocketEvent | CallSignalSocketEvent | CallRejectedSocketEvent | CallRecoveredSocketEvent;
 export type MessageSocketEvent = MessageAcceptedEvent | MessageCreatedEvent | MessageRejectedEvent | PresenceSnapshotEvent | PresenceChangedEvent | TypingSocketEvent | ConversationCreatedEvent | ConversationReadSocketEvent | GroupMembershipChangedSocketEvent | ConversationReconciledSocketEvent | CallSocketEvent | GroupCallRoomSocketEvent | GroupCallSyncedSocketEvent | GroupCallDiscoveredSocketEvent | GroupCallSignalSocketEvent;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -325,6 +334,14 @@ function isIdentifier(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value === value.trim();
 }
 
+function isUUID(value: unknown): value is string {
+    return typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
+}
+
+function exactKeys(value: object, expected: readonly string[]): boolean {
+    return Object.keys(value).length === expected.length && expected.every(key => Object.prototype.hasOwnProperty.call(value, key));
+}
+
 /** Reject malformed group-call commands at the transport boundary, including JS callers bypassing TS. */
 export function isValidGroupCallClientEvent(event: unknown): event is GroupCallDiscoverEvent | GroupCallStartEvent | GroupCallJoinEvent | GroupCallSyncEvent | GroupCallControlEvent | GroupCallSignalEvent {
     if (!isRecord(event) || typeof event.type !== 'string') return false;
@@ -356,6 +373,13 @@ export function isValidCallSocketEvent(event: unknown): event is CallSocketEvent
     if (!isRecord(event) || event.version !== WEBSOCKET_PROTOCOL_VERSION || typeof event.type !== 'string' || !('payload' in event)) return false;
     if (event.type === 'call.signal') return isRecord(event.payload) && typeof event.payload.call_id === 'string' && isValidCallSignal(event.payload.signal);
     if (event.type === 'call.rejected') return isRecord(event.payload) && typeof event.payload.error === 'string' && (event.payload.support_ref === undefined || isIdentifier(event.payload.support_ref));
+    if (event.type === 'call.recovered') {
+        if (!exactKeys(event, ['version', 'type', 'request_id', 'payload']) || !isUUID(event.request_id) || !isRecord(event.payload)) return false;
+        if (event.payload.status === 'missed') return exactKeys(event.payload, ['status']);
+        if (event.payload.status !== 'ringing' || !isRecord(event.payload.call) || !exactKeys(event.payload, ['status', 'call'])) return false;
+        const call = event.payload.call;
+        return call.status === 'ringing' && isUUID(call.call_id) && isUUID(call.conversation_id) && isUUID(call.caller_id) && typeof call.expires_at === 'string' && Number.isFinite(Date.parse(call.expires_at)) && exactKeys(call, ['call_id', 'conversation_id', 'caller_id', 'status', 'expires_at']);
+    }
     if (event.type === 'call.accepted') return isAcceptedCallPayload(event.payload);
     return ['call.incoming', 'call.ringing', 'call.declined', 'call.ended'].includes(event.type) && isCallPayload(event.payload);
 }
@@ -397,6 +421,7 @@ function isValidSocketEvent(event: unknown): event is MessageSocketEvent {
         case 'call.accepted':
         case 'call.signal':
         case 'call.rejected':
+        case 'call.recovered':
             return isValidCallSocketEvent(event);
         case 'group.call.started':
         case 'group.call.participant.joined':
@@ -449,6 +474,7 @@ export class DataProviderService {
         if (event.type === 'message.send' && (!isRecord(event.payload) || typeof event.payload.body !== 'string' || (event.payload.content_type !== undefined && event.payload.content_type !== 'text' && event.payload.content_type !== 'sticker') ||
             (event.payload.mentions !== undefined && !isValidMessageMentionWire(event.payload.mentions, event.payload.body)))) return false;
         if (event.type === 'call.signal' && (!isRecord(event.payload) || !isIdentifier(event.payload.call_id) || !isValidCallSignal(event.payload.signal))) return false;
+        if (event.type === 'call.recover' && (!exactKeys(event, ['type', 'request_id', 'payload']) || !isUUID(event.request_id) || !isRecord(event.payload) || !exactKeys(event.payload, ['call_id']) || !isUUID(event.payload.call_id))) return false;
         if (isGroupCallClientType(event.type) && !isValidGroupCallClientEvent(event)) return false;
         const socket = this.socket;
         if (!socket || !this.socketReady) {

@@ -38,6 +38,26 @@ type Call struct {
 	ExpiresAt            time.Time `json:"expires_at"`
 }
 
+// CallRecovery is a notification-click projection. A missed result intentionally
+// carries no call details so it is indistinguishable from an unauthorized ID.
+type CallRecovery struct {
+	Status string                  `json:"status"`
+	Call   *CallRecoveryProjection `json:"call,omitempty"`
+}
+
+type CallRecoveryProjection struct {
+	CallID         uuid.UUID `json:"call_id"`
+	ConversationID uuid.UUID `json:"conversation_id"`
+	CallerID       uuid.UUID `json:"caller_id"`
+	Status         string    `json:"status"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+const (
+	CallRecoveryRinging = "ringing"
+	CallRecoveryMissed  = "missed"
+)
+
 type CallChange struct {
 	Source               string          `json:"source,omitempty"`
 	Type                 string          `json:"type"`

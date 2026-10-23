@@ -147,8 +147,9 @@ func TestServeHTTPClosesConnectionForInvalidBinaryAndOversizedFrames(t *testing.
 		payload     []byte
 		closeCode   int
 	}{
-		{name: "binary", messageType: websocket.BinaryMessage, payload: []byte(`{"version":1}`), closeCode: websocket.CloseUnsupportedData},
+		{name: "binary", messageType: websocket.BinaryMessage, payload: []byte(`{"version":2}`), closeCode: websocket.CloseUnsupportedData},
 		{name: "invalid json", messageType: websocket.TextMessage, payload: []byte("{"), closeCode: websocket.CloseUnsupportedData},
+		{name: "v1 protocol", messageType: websocket.TextMessage, payload: []byte(`{"version":1,"type":"presence.refresh"}`), closeCode: websocket.CloseUnsupportedData},
 		{name: "oversized", messageType: websocket.TextMessage, payload: bytes.Repeat([]byte("x"), maxFrameSize+1), closeCode: websocket.CloseMessageTooBig},
 	}
 	for _, test := range tests {
@@ -188,16 +189,49 @@ func TestServeHTTPClosesConnectionForInvalidBinaryAndOversizedFrames(t *testing.
 	}
 }
 
+func TestWSV2RouteRejectsVersionOneFrames(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	mux := http.NewServeMux()
+	mux.Handle("GET /ws/v2", newNetworkHandler(secret, &networkTicketConsumer{allow: true}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	conn, response, err := (&websocket.Dialer{HandshakeTimeout: time.Second}).Dial(
+		websocketURL(server.URL+"/ws/v2", signedTicket(t, secret, "websocket", time.Now().Add(time.Minute))),
+		http.Header{"Origin": []string{"https://chat.localhost"}},
+	)
+	if err != nil {
+		if response != nil {
+			response.Body.Close()
+		}
+		t.Fatalf("websocket upgrade on /ws/v2: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := conn.ReadMessage(); err != nil { // initial presence snapshot
+		t.Fatalf("read initial event: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"version":1,"type":"presence.refresh"}`)); err != nil {
+		t.Fatalf("write v1 frame: %v", err)
+	}
+	_, _, err = conn.ReadMessage()
+	var closeError *websocket.CloseError
+	if !errors.As(err, &closeError) || closeError.Code != websocket.CloseUnsupportedData {
+		t.Fatalf("read rejection = %v, want unsupported-data close", err)
+	}
+}
+
 func TestServeHTTPReturnsVersionTwoRejectionForRejectedGroupCall(t *testing.T) {
 	secret := []byte("01234567890123456789012345678901")
 	consumer := &networkTicketConsumer{allow: true}
-	handler := NewVersionedHandler(
+	handler := NewHandler(
 		context.Background(),
 		application.NewHub(nil, nil, nil, nil, nil, nil, nil),
 		sharedauth.NewSessionValidator(sessionVersionReader{version: 3}, secret),
 		consumer,
 		map[string]struct{}{"https://chat.localhost": {}},
-		2,
 	)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -252,15 +286,15 @@ func TestReadPumpOmitsPerFrameInfoLogsForCallSignals(t *testing.T) {
 	}{
 		{
 			name:    "direct call signal",
-			command: `{"version":1,"type":"call.signal","request_id":"signal-direct","payload":{"signal":"private-signal-marker"}}`,
+			command: `{"version":2,"type":"call.signal","request_id":"signal-direct","payload":{"signal":"private-signal-marker"}}`,
 		},
 		{
 			name:    "group call signal",
-			command: `{"version":1,"type":"group.call.signal","request_id":"signal-group","payload":{"signal":"private-signal-marker"}}`,
+			command: `{"version":2,"type":"group.call.signal","request_id":"signal-group","payload":{"signal":"private-signal-marker"}}`,
 		},
 		{
 			name:    "call lifecycle command",
-			command: `{"version":1,"type":"call.start","request_id":"call-lifecycle","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
+			command: `{"version":2,"type":"call.start","request_id":"call-lifecycle","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
 			wantLog: true,
 		},
 	}
@@ -318,10 +352,10 @@ func TestServeHTTPRejectsScreenShareSignalsWithExtraWebRTCFields(t *testing.T) {
 		wantSupportRef   bool
 	}{
 		{
-			name:     "v1 direct call",
-			protocol: 1,
-			request:  "direct-screen-share-v1",
-			command:  `{"version":1,"type":"call.signal","request_id":"direct-screen-share-v1","payload":{"call_id":"` + uuid.NewString() + `","signal":{"type":"screen-share-started","sdp":"` + sdpValue + `","candidate":{"candidate":"` + candidateValue + `"}}}}`,
+			name:     "direct call",
+			protocol: 2,
+			request:  "direct-screen-share-v2",
+			command:  `{"version":2,"type":"call.signal","request_id":"direct-screen-share-v2","payload":{"call_id":"` + uuid.NewString() + `","signal":{"type":"screen-share-started","sdp":"` + sdpValue + `","candidate":{"candidate":"` + candidateValue + `"}}}}`,
 		},
 		{
 			name:     "v2 group call",
@@ -338,22 +372,22 @@ func TestServeHTTPRejectsScreenShareSignalsWithExtraWebRTCFields(t *testing.T) {
 		},
 		{
 			name:             "invalid direct start UUID omits support reference",
-			protocol:         1,
+			protocol:         2,
 			request:          "invalid-direct-start-uuid",
 			requestIDOmitted: true,
-			command:          `{"version":1,"type":"call.start","request_id":"invalid-direct-start-uuid","payload":{"conversation_id":"not-a-uuid"}}`,
+			command:          `{"version":2,"type":"call.start","request_id":"invalid-direct-start-uuid","payload":{"conversation_id":"not-a-uuid"}}`,
 		},
 		{
 			name:     "missing direct start conversation omits support reference",
-			protocol: 1,
+			protocol: 2,
 			request:  "missing-direct-start-conversation",
-			command:  `{"version":1,"type":"call.start","request_id":"missing-direct-start-conversation","payload":{}}`,
+			command:  `{"version":2,"type":"call.start","request_id":"missing-direct-start-conversation","payload":{}}`,
 		},
 		{
 			name:           "valid direct start rejected by business logic includes support reference",
-			protocol:       1,
+			protocol:       2,
 			request:        "valid-direct-start-rejected",
-			command:        `{"version":1,"type":"call.start","request_id":"valid-direct-start-rejected","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
+			command:        `{"version":2,"type":"call.start","request_id":"valid-direct-start-rejected","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
 			wantSupportRef: true,
 		},
 	}
@@ -363,12 +397,11 @@ func TestServeHTTPRejectsScreenShareSignalsWithExtraWebRTCFields(t *testing.T) {
 			secret := []byte("01234567890123456789012345678901")
 			consumer := &networkTicketConsumer{allow: true}
 			hub := application.NewHub(nil, nil, nil, nil, nil, nil, nil)
-			handler := NewVersionedHandler(
+			handler := NewHandler(
 				context.Background(), hub,
 				sharedauth.NewSessionValidator(sessionVersionReader{version: 3}, secret),
 				consumer,
 				map[string]struct{}{"https://chat.localhost": {}},
-				test.protocol,
 			)
 			server := httptest.NewServer(handler)
 			defer server.Close()

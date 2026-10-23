@@ -57,6 +57,13 @@ describe('CallFacade', () => {
         expect(facade.state.errorLabel).toBe('Microphone permission was denied. Allow microphone access for this site and try again.');
     });
 
+    it('renders a recovered ringing projection without sending accept or requesting microphone access', () => {
+        facade.showRecoveredRinging('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333');
+        expect(facade.state).toMatchObject({phase: 'incoming', role: 'recipient', callID: '11111111-1111-4111-8111-111111111111', statusLabel: 'Incoming audio call. Choose Accept to answer.'});
+        expect(send).not.toHaveBeenCalled();
+        expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    });
+
     it('retains a server-provided support reference through a terminal notice and tolerates omission', () => {
         const payload = {...callPayload('ringing'), support_ref: 'server-ref-1'};
         events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.incoming', payload});

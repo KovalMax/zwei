@@ -7,6 +7,12 @@
 :host-context(.dark-theme) .profile-card { border-color: #30465e; background: #202c3b; box-shadow: 0 20px 60px rgba(0, 0, 0, .22); }
 .media-preference { display:flex; align-items:flex-start; gap:10px; color:#172033; font-size:14px; font-weight:700; }
 .media-preference input { width:18px; height:18px; accent-color:var(--zwei-focus); }
+.alert-settings > button { min-height: 48px; padding: 0 16px; border: 1px solid transparent; border-radius: var(--zwei-radius-control); background: var(--auth-submit); color: var(--auth-submit-text); font: 700 14px/1 'DM Sans', sans-serif; cursor: pointer; transition: background-color var(--zwei-motion-duration) ease; }
+.alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--auth-submit) 88%, var(--zwei-focus)); }
+.alert-settings > button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.alert-settings > button:disabled { background: var(--auth-submit-disabled); color: var(--auth-submit-text); cursor: not-allowed; }
+:host-context(.dark-theme) .alert-settings > button:not(:disabled) { background: var(--chat-line-strong); color: var(--chat-text-strong); }
+:host-context(.dark-theme) .alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--chat-line-strong) 88%, var(--zwei-focus)); }
 :host-context(.dark-theme) .media-preference { color:#edf2fa; }
 :host-context(.dark-theme) .back-link { color: #efaa8d; }
 :host-context(.dark-theme) .eyebrow { color: #efaa8d; }

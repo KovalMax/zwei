@@ -1,5 +1,8 @@
 export const environment = {
-    production: true
+    production: true,
+    serviceWorkerEnabled: true,
+    serviceWorkerWorker: 'ngsw-worker.js',
+    serviceWorkerRegistrationStrategy: 'registerWhenStable:30000',
 };
 
 export const backends = {

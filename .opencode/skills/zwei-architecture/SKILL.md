@@ -94,7 +94,7 @@ Client sends are independently correlated by `request_id` and `client_message_id
 
 Wire-to-UI conversion belongs in a typed mapper at the transport boundary, not in components. Validate required identifiers and sequences there, filter malformed messages before state mutation, and keep API history and WebSocket message conversion on the same mapping path.
 
-`protocol/websocket/v1.json` is the shared source of truth for WebSocket event names and required fields. Commands and events must include `version: 1`; reject incompatible commands and discard incompatible events at transport boundaries. Introduce a new version through a new contract artifact and explicit compatibility policy.
+`protocol/websocket/v2.json` is the shared source of truth for WebSocket event names and required fields. Commands and events must include `version: 2`; reject incompatible commands and discard incompatible events at transport boundaries. The backend supports only the `/ws/v2` route.
 
 Angular transport adapters must be injected rather than constructed in components. Scope a stateful socket adapter to the component when its close lifecycle must reset on route exit; use root scope only when state is intentionally shared across features.
 

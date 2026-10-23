@@ -1,5 +1,6 @@
 import {Component} from '@angular/core';
 import {PwaService} from './pwa/pwa.service';
+import {PushClickService} from './pwa/push-click.service';
 
 @Component({
     standalone: false,
@@ -8,5 +9,5 @@ import {PwaService} from './pwa/pwa.service';
     styleUrls: ['./app.component.css']
 })
 export class AppComponent {
-    public constructor(public readonly pwa: PwaService) {}
+    public constructor(public readonly pwa: PwaService, pushClicks: PushClickService) { pushClicks.start(); }
 }

@@ -39,6 +39,8 @@ func TestHubStartsGroupRoomOnlyForCurrentV2Member(t *testing.T) {
 	presence := &groupTestPresence{revision: 4, memberIDs: []uuid.UUID{userID, memberID}}
 	rooms := &groupTestRooms{}
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	pushQueue := &callPushRecorder{}
+	hub.SetCallPushQueue(pushQueue)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
 	member := &recordingClient{identity: sharedauth.Identity{UserID: memberID, DeviceID: "member-device"}, connectionID: "member-socket"}
 	hub.Add(context.Background(), client)
@@ -54,6 +56,9 @@ func TestHubStartsGroupRoomOnlyForCurrentV2Member(t *testing.T) {
 	}
 	if len(member.events) != 1 {
 		t.Fatalf("member events = %#v", member.events)
+	}
+	if len(pushQueue.jobs) != 1 || pushQueue.jobs[0].CallID != rooms.room.ID || !pushQueue.jobs[0].Group || len(pushQueue.jobs[0].Recipients) != 1 || pushQueue.jobs[0].Recipients[0] != memberID || pushQueue.jobs[0].StarterID != userID {
+		t.Fatalf("group call push job = %+v; want authorized member only, excluding starter", pushQueue.jobs)
 	}
 }
 

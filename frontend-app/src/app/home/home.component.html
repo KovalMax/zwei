@@ -98,6 +98,7 @@
         </ng-container>
         <div class="connection-banner connection-banner-failed" *ngIf="connectionState === 'failed'" role="alert"><zwei-icon name="cloud_off"></zwei-icon><span><strong>Live connection lost</strong><small>Messages will resume when the secure connection returns.</small></span><button type="button" (click)="retryConnection()">Retry now</button></div>
         <div class="connection-banner connection-banner-progress" *ngIf="connectionState === 'connecting' || connectionState === 'recovering'" role="status"><zwei-icon name="sync"></zwei-icon><span>{{ connectionState === 'recovering' ? 'Recovering conversations…' : 'Connecting securely…' }}</span></div>
+        <p class="send-status" *ngIf="pushCallNotice" role="status" aria-live="polite">{{ pushCallNotice }}</p>
         <div class="send-status" *ngIf="sendStatus">{{ sendStatus }}</div>
         <section class="group-create-panel" *ngIf="isCreatingGroup" aria-labelledby="group-create-heading">
             <div class="group-create-card">
@@ -124,7 +125,7 @@
                 <zwei-icon *ngIf="isHistoryLoading" name="hourglass_top"></zwei-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
             <div class="message-list" *ngIf="visibleMessages.length; else emptyMessages">
-                <article class="message-bubble" *ngFor="let message of visibleMessages; trackBy: trackMessage" [class.message-own]="message.kind !== 'system' && isOwnMessage(message)" [class.message-system]="message.kind === 'system'" [class.message-giphy]="isGiphyMessage(message)" [class.message-pending]="message.pending">
+                <article class="message-bubble" *ngFor="let message of visibleMessages; trackBy: trackMessage" [id]="'message-' + message.id" [class.message-highlight]="highlightedMessageID === message.id" [class.message-own]="message.kind !== 'system' && isOwnMessage(message)" [class.message-system]="message.kind === 'system'" [class.message-giphy]="isGiphyMessage(message)" [class.message-pending]="message.pending">
                     <span class="message-sender" *ngIf="message.kind !== 'system'">{{ senderName(message) }}</span>
                     <app-inline-giphy *ngIf="isGiphyMessage(message); else ordinaryMessage" [originalURL]="message.body" [enabled]="giphyEnabled" [autoLoad]="shouldAutoLoadGiphy(message)"></app-inline-giphy><ng-template #ordinaryMessage><p [class.message-single-emoji]="isSingleEmojiMessage(message)"><ng-container *ngFor="let segment of messageDisplaySegments(message)"><span [class.message-mention]="segment.mentioned" [class.message-emoji]="segment.emoji">{{ segment.text }}</span></ng-container></p></ng-template><div class="message-meta"><time [attr.datetime]="message.createdAt" [attr.title]="messageDateTimeLabel(message)">{{ messageDateLabel(message) }} · {{ message.createdAt | date:'shortTime' }}</time><span class="message-read" *ngIf="isLatestReadMessage(message)" role="img" [attr.aria-label]="readReceiptLabel(message)"><zwei-icon name="done_all"></zwei-icon></span></div><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-pending-label" *ngIf="!message.pending && message.uncertain">Delivery uncertain</span>
                 </article>

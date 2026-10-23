@@ -23,6 +23,7 @@ import (
 	httptransport "github.com/KovalMax/zwei/services/auth/internal/transport/http"
 	"github.com/KovalMax/zwei/services/internal/runtime"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
+	"github.com/KovalMax/zwei/services/shared/pushcrypto"
 )
 
 func main() {
@@ -40,13 +41,20 @@ func main() {
 	if err := db.Ping(ctx); err != nil {
 		panic(err)
 	}
-	repository := postgres.NewRepository(db)
+	pushCodec, err := pushcrypto.NewKeyring(cfg.PushEncryptionKeys, cfg.PushEncryptionCurrentVersion, cfg.PushFingerprintKey)
+	if err != nil {
+		panic(err)
+	}
+	repository := postgres.NewRepository(db, pushCodec, cfg.VAPIDKeyID)
 	passwords := password.NewBcryptHasher()
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		if err := runAdminCommand(ctx, repository, passwords, os.Args[2:]); err != nil {
 			panic(err)
 		}
 		return
+	}
+	if err := repository.EnsurePushFingerprintKeyIdentity(ctx); err != nil {
+		panic(err)
 	}
 	authService := application.NewService(repository, passwords, token.NewJWTIssuer(cfg.JWTSecret), cfg.AccessLifetime, cfg.RefreshLifetime)
 	adminService := application.NewAdminService(repository, passwords, email.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword), cfg.ActivationURL, cfg.InvitationURL)
@@ -58,7 +66,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs, origins, cfg.GiphyAPIKey)
+	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs, origins, cfg.VAPIDPublicKey, cfg.GiphyAPIKey)
 	mux := runtime.NewHealthHandler("auth")
 	handler.Register(mux)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: runtime.WithCORS(cacheControl(mux), origins)}
@@ -69,8 +77,27 @@ func main() {
 }
 
 func runAdminCommand(ctx context.Context, repository application.Repository, passwords application.PasswordHasher, args []string) error {
+	if len(args) > 0 && args[0] == "rekey-push-fingerprint-key" {
+		flags := flag.NewFlagSet("admin rekey-push-fingerprint-key", flag.ContinueOnError)
+		replicasStopped := flags.Bool("confirm-replicas-stopped", false, "confirm all Auth and Realtime replicas are stopped")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if !*replicasStopped {
+			return errors.New("re-key requires --confirm-replicas-stopped")
+		}
+		repository, ok := repository.(*postgres.Repository)
+		if !ok {
+			return errors.New("push fingerprint key re-key unavailable")
+		}
+		if err := repository.RekeyPushFingerprintKey(ctx); err != nil {
+			return err
+		}
+		fmt.Println("push subscriptions deleted and fingerprint key identity reset; users must re-enroll")
+		return nil
+	}
 	if len(args) == 0 || args[0] != "create" {
-		return errors.New("usage: service admin create [--email email --display-name name]")
+		return errors.New("usage: service admin create [--email email --display-name name] | admin rekey-push-fingerprint-key --confirm-replicas-stopped")
 	}
 	flags := flag.NewFlagSet("admin create", flag.ContinueOnError)
 	emailAddress := flags.String("email", "", "administrator email")

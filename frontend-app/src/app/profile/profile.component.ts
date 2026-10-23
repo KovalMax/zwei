@@ -1,9 +1,10 @@
-import {ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit} from '@angular/core';
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, Inject, OnInit, Optional} from '@angular/core';
 import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
 import {HostService} from '../auth/host.service';
 import {AlertMode, BrowserNotificationService} from '../notifications/notification.service';
 import {firstValueFrom} from 'rxjs';
+import {PushEnrollmentService} from '../pwa/push-enrollment.service';
 
 @Component({
     standalone: false,
@@ -20,12 +21,36 @@ export class ProfileComponent implements OnInit {
     public alertMode?: AlertMode;
     public alertSaveError = false;
     public alertSaving = false;
+    public pushSaving = false;
+    public pushError = '';
+    public pushSuccess = false;
     public readonly backRoute: string;
     public readonly backLabel: string;
 
-    constructor(private authService: AuthService, private changeDetector: ChangeDetectorRef, host: HostService, public readonly notifications: BrowserNotificationService) {
+    constructor(private authService: AuthService, private changeDetector: ChangeDetectorRef, host: HostService, public readonly notifications: BrowserNotificationService, @Optional() @Inject(PushEnrollmentService) public readonly push?: PushEnrollmentService) {
         this.backRoute = host.isAdminHost() ? '/admin' : '/home';
         this.backLabel = host.isAdminHost() ? 'Back to KYC admin' : 'Back to chats';
+    }
+
+    public async enablePush(): Promise<void> {
+        if (this.pushSaving || this.alertMode !== 'notifications' || !this.push) return;
+        this.pushSaving = true;
+        this.pushError = '';
+        this.pushSuccess = false;
+        this.changeDetector.markForCheck();
+        try {
+            await this.push.enrollFromUserGesture();
+            this.pushSuccess = true;
+        } catch (error) {
+            this.pushError = error instanceof Error && error.message === 'denied'
+                ? 'Notifications are blocked. Allow them in this browser’s site settings, then try again.'
+                : error instanceof Error && error.message === 'unsupported'
+                    ? 'Web Push is not supported by this browser.'
+                    : 'Could not enable notifications on this browser. Please try again.';
+        } finally {
+            this.pushSaving = false;
+            this.changeDetector.markForCheck();
+        }
     }
 
     public async setAlertMode(mode: AlertMode): Promise<void> {

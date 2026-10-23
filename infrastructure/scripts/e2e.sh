@@ -96,6 +96,8 @@ if [[ ! -d "$ROOT_DIR/e2e" || "$(CDPATH= cd -- "$ROOT_DIR/e2e" && pwd -P)" != "$
   printf '%s\n' 'Expected a real e2e directory inside the current repository' >&2
   exit 2
 fi
+# Keep local push encryption/fingerprint secrets stable and available to auth in both E2E modes.
+python3 "$SCRIPT_DIR/ensure-local-push-secrets.py"
 for directory in test-results visual-baselines; do
   if [[ -L "$ROOT_DIR/e2e/$directory" || ( -e "$ROOT_DIR/e2e/$directory" && ! -d "$ROOT_DIR/e2e/$directory" ) ]]; then
     printf 'Expected a real e2e/%s directory\n' "$directory" >&2

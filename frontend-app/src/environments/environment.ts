@@ -4,6 +4,9 @@
 
 export const environment = {
     production: false,
+    serviceWorkerEnabled: false,
+    serviceWorkerWorker: 'ngsw-worker.js',
+    serviceWorkerRegistrationStrategy: 'registerWhenStable:30000',
 };
 
 export const backends = {

@@ -2,7 +2,7 @@ import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, Injec
 import {BehaviorSubject, finalize, map, Observable, Subscription} from 'rxjs';
 import {Conversation, GroupConversation, GroupMember, GroupPeerReadCursor, GroupRole} from './conversation.model';
 import {compareConversationActivityDescending} from './conversation-activity';
-import {ConversationService} from './conversation.service';
+import {ConversationService, GroupProjectionNotFoundError} from './conversation.service';
 import {HomeGroupAccessContext, HomeGroupAccessFacade, HomeGroupAccessOutcome} from './home-group-access-facade.service';
 import {Message, messageDateLabel, messageDateTimeLabel, messageTextSegments, MessageMention, updateMentionRanges} from './message.model';
 import {UserSearchResult} from './user.model';
@@ -23,6 +23,7 @@ import {GroupCallSurfaceIntent} from './call-presentation/group-call-surface.com
 import {parseGiphyMedia} from './giphy-media';
 import {GiphySearchPage, GiphySearchResult, GiphySearchService} from './giphy-search.service';
 import {PwaService} from '../pwa/pwa.service';
+import {PushClickIntent, PushClickService} from '../pwa/push-click.service';
 
 const GIPHY_SEARCH_COOLDOWN_MS = 750;
 
@@ -137,6 +138,22 @@ export class HomeComponent implements OnInit, OnDestroy {
     private readonly groupPeerReadCursors = new Map<string, Map<string, GroupPeerReadCursor>>();
     private readonly ownReadSequences = new Map<string, number>();
     public showDepartedGroupStatus = false;
+    public pushCallNotice = '';
+    public highlightedMessageID?: string;
+    private pendingPushIntent?: PushClickIntent;
+    private pendingPushConversationLoadID?: string;
+    private pendingPushMessageID?: string;
+    private pendingPushRecoveryRequest?: string;
+    private pendingPushRecoveryCallID?: string;
+    private pendingPushRecoveryConversationID?: string;
+    private pendingPushGroupDiscover?: string;
+    private pendingPushGroupConversationID?: string;
+    private pendingPushRequestGeneration?: number;
+    private pushIntentGeneration = 0;
+    private pendingPushCallTimeout?: number;
+    private pushConversationLoadGeneration = 0;
+    private pushMessageScrollTimer?: number;
+    private pushMessageClearTimer?: number;
     private readonly groupAccess: HomeGroupAccessFacade;
     private readonly groupMutationSubscriptions = new Subscription();
     private readonly unreadBadgeSubscription = new Subscription();
@@ -163,10 +180,28 @@ export class HomeComponent implements OnInit, OnDestroy {
     @ViewChild('archiveModeControl') private archiveModeControl?: ElementRef<HTMLButtonElement>;
     @ViewChild(GroupMemberListComponent) private groupMemberList?: GroupMemberListComponent;
 
-    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService, @Optional() private readonly giphySearch?: GiphySearchService) {
+    constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService, @Optional() private readonly giphySearch?: GiphySearchService, @Optional() @Inject(PushClickService) private readonly pushClicks?: PushClickService) {
         this.groupAccess = groupAccess;
         this.groupAccessSubscription.add(this.groupAccess.outcomes$.subscribe(outcome => this.handleGroupAccessOutcome(outcome)));
         this.unreadBadgeSubscription.add(this.conversations.subscribe(conversations => this.pwa?.setUnreadCount(conversations.reduce((total, conversation) => total + conversation.unreadCount, 0))));
+        if (this.pushClicks) this.groupAccessSubscription.add(this.pushClicks.intents.subscribe(intent => {
+            this.pushIntentGeneration++;
+            this.clearPendingPushCallRequests();
+            this.pushConversationLoadGeneration++;
+            this.pendingPushConversationLoadID = undefined;
+            this.pendingPushIntent = intent;
+            if (this.pendingPushCallTimeout !== undefined) window.clearTimeout(this.pendingPushCallTimeout);
+            this.pendingPushCallTimeout = undefined;
+            if (intent.kind !== 'message') this.pendingPushCallTimeout = window.setTimeout(() => {
+                if (this.pendingPushIntent !== intent) return;
+                this.pendingPushIntent = undefined;
+                this.pendingPushConversationLoadID = undefined;
+                this.pendingPushCallTimeout = undefined;
+                this.pushCallNotice = 'This call notification has expired. Open Zwei to check again.';
+                this.changeDetector.markForCheck();
+            }, 30_000);
+            this.applyPushIntentIfReady();
+        }));
     }
 
     public ngOnInit(): void {
@@ -199,6 +234,7 @@ export class HomeComponent implements OnInit, OnDestroy {
                 this.replayUncertainMessages();
                 if (this.selectedConversation?.kind === 'group') this.requestGroupPresenceRefresh();
                 if (this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
+                this.applyPushIntentIfReady();
             }
             this.changeDetector.markForCheck();
         });
@@ -219,6 +255,9 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.conversationRefreshGeneration++;
         this.recoveryGeneration++;
         this.listRequests.unsubscribe();
+        if (this.pushMessageScrollTimer !== undefined) window.clearTimeout(this.pushMessageScrollTimer);
+        if (this.pushMessageClearTimer !== undefined) window.clearTimeout(this.pushMessageClearTimer);
+        if (this.pendingPushCallTimeout !== undefined) window.clearTimeout(this.pendingPushCallTimeout);
         this.groupPageRequest?.unsubscribe();
         this.groupMemberSearchGeneration++;
         this.groupMemberSearchRequest?.unsubscribe();
@@ -1221,6 +1260,51 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public handleSocketEvent(event: MessageSocketEvent): void {
+        if (event.type === 'call.recovered') {
+            if (!this.pendingPushRecoveryRequest || event.request_id !== this.pendingPushRecoveryRequest || this.pendingPushRequestGeneration !== this.pushIntentGeneration) return;
+            this.pendingPushRecoveryRequest = undefined;
+            this.pendingPushRequestGeneration = undefined;
+            if ('call' in event.payload && event.payload.status === 'ringing') {
+                const recoveredCall = event.payload.call;
+                const callMatchesIntent = recoveredCall.call_id === this.pendingPushRecoveryCallID && recoveredCall.conversation_id === this.pendingPushRecoveryConversationID;
+                this.pendingPushRecoveryCallID = undefined;
+                this.pendingPushRecoveryConversationID = undefined;
+                const conversation = callMatchesIntent ? this.conversations.getValue().find(item => item.id === recoveredCall.conversation_id && item.kind === 'direct') : undefined;
+                if (conversation && (!this.profile?.id || recoveredCall.caller_id !== this.profile.id) && Date.parse(recoveredCall.expires_at) > Date.now()) {
+                    this.call.showRecoveredRinging(recoveredCall.call_id, conversation.id, recoveredCall.caller_id);
+                    this.selectConversation(conversation, true);
+                    this.pushCallNotice = 'A call is still ringing. Choose Accept if you want to answer.';
+                } else this.pushCallNotice = 'This call is no longer available.';
+            } else this.pushCallNotice = 'This call has ended or is no longer available.';
+            this.pendingPushRecoveryCallID = undefined;
+            this.pendingPushRecoveryConversationID = undefined;
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (event.type === 'call.rejected' && this.pendingPushRecoveryRequest === event.request_id && this.pendingPushRequestGeneration === this.pushIntentGeneration) {
+            this.pendingPushRecoveryRequest = undefined;
+            this.pendingPushRequestGeneration = undefined;
+            this.pendingPushRecoveryCallID = undefined;
+            this.pendingPushRecoveryConversationID = undefined;
+            this.pushCallNotice = 'This call is no longer available.';
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (event.type === 'group.call.discovered' && this.pendingPushGroupDiscover === event.request_id && this.pendingPushRequestGeneration === this.pushIntentGeneration) {
+            this.pendingPushGroupDiscover = undefined;
+            this.pendingPushRequestGeneration = undefined;
+            const room = event.payload.room;
+            const expectedConversationID = this.pendingPushGroupConversationID;
+            this.pendingPushGroupConversationID = undefined;
+            const matchingConversation = expectedConversationID !== undefined && this.conversations.getValue().some(item => item.id === expectedConversationID && item.kind === 'group');
+            const discoveredRoomMatches = room !== null && expectedConversationID !== undefined &&
+                event.payload.conversation_id === expectedConversationID && room.conversation_id === expectedConversationID;
+            this.pushCallNotice = matchingConversation && discoveredRoomMatches && (room.status === 'ringing' || room.status === 'active')
+                ? 'A group call is available. Join from the selected conversation if you choose.'
+                : 'This group call is no longer available.';
+            this.changeDetector.markForCheck();
+            return;
+        }
         if (event.type === 'call.incoming') {
             this.selectIncomingCallConversation(event.payload.conversation_id);
             this.changeDetector.markForCheck();
@@ -1428,6 +1512,7 @@ export class HomeComponent implements OnInit, OnDestroy {
                 this.restoreSelectedConversation(projectedConversations);
                 this.selectPendingIncomingCallConversation(true);
                 this.initialConversationLoadState = 'ready';
+                this.applyPushIntentIfReady();
                 this.completeInitialRecovery();
                 this.isLoading = false;
                 this.conversationsError = false;
@@ -1450,6 +1535,138 @@ export class HomeComponent implements OnInit, OnDestroy {
             },
         });
         this.listRequests.add(request);
+    }
+
+    private applyPushIntentIfReady(): void {
+        const intent = this.pendingPushIntent;
+        if (!intent || this.initialConversationLoadState !== 'ready') return;
+        const conversation = this.conversations.getValue().find(item => item.id === intent.conversationID);
+        if (!conversation) {
+            if (this.pendingPushConversationLoadID === intent.conversationID) return;
+            this.pendingPushConversationLoadID = intent.conversationID;
+            const loadGeneration = ++this.pushConversationLoadGeneration;
+            const request = this.conversationService.getGroup(intent.conversationID).subscribe({
+                next: group => {
+                    if (loadGeneration !== this.pushConversationLoadGeneration || this.pendingPushConversationLoadID !== intent.conversationID || this.pendingPushIntent !== intent) return;
+                    this.pendingPushConversationLoadID = undefined;
+                    if (group.id !== intent.conversationID) {
+                        this.pendingPushIntent = undefined;
+                        this.pushCallNotice = 'This notification is no longer available.';
+                        this.changeDetector.markForCheck();
+                        return;
+                    }
+                    this.conversations.next([...this.conversations.getValue().filter(item => item.id !== group.id), group]);
+                    this.applyPushIntentIfReady();
+                },
+                error: (error: unknown) => {
+                    if (loadGeneration !== this.pushConversationLoadGeneration || this.pendingPushConversationLoadID !== intent.conversationID || this.pendingPushIntent !== intent) return;
+                    // A group-detail 404 is not proof that an authorized direct
+                    // conversation is unavailable: direct conversations may be archived.
+                    if (intent.kind === 'message' && error instanceof GroupProjectionNotFoundError) {
+                        this.recoverArchivedDirectPushIntent(intent, loadGeneration);
+                        return;
+                    }
+                    this.pendingPushConversationLoadID = undefined;
+                    this.pendingPushIntent = undefined;
+                    this.pushCallNotice = 'This notification is no longer available.';
+                    this.changeDetector.markForCheck();
+                },
+            });
+            this.listRequests.add(request);
+            return;
+        }
+        if (intent.kind !== 'message' && !this.socketReady) {
+            this.selectConversation(conversation, true);
+            return;
+        }
+        this.pendingPushIntent = undefined;
+        this.pendingPushConversationLoadID = undefined;
+        if (this.pendingPushCallTimeout !== undefined) window.clearTimeout(this.pendingPushCallTimeout);
+        this.pendingPushCallTimeout = undefined;
+        if (conversation.kind === 'group' && conversation.accessNeedsVerification) {
+            this.pushCallNotice = 'This notification is no longer available.';
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (this.pushMessageScrollTimer !== undefined) window.clearTimeout(this.pushMessageScrollTimer);
+        if (this.pushMessageClearTimer !== undefined) window.clearTimeout(this.pushMessageClearTimer);
+        this.highlightedMessageID = undefined;
+        this.pendingPushMessageID = intent.kind === 'message' ? intent.messageID : undefined;
+        this.selectConversation(conversation, true);
+        if (intent.kind === 'message') return;
+        if (intent.kind === 'direct-call') {
+            if (conversation.kind !== 'direct') {
+                this.pushCallNotice = 'This call is no longer available.';
+                this.changeDetector.markForCheck();
+                return;
+            }
+            const requestID = createRandomID();
+            this.pendingPushRecoveryRequest = requestID;
+            this.pendingPushRequestGeneration = this.pushIntentGeneration;
+            this.pendingPushRecoveryCallID = intent.callID;
+            this.pendingPushRecoveryConversationID = intent.conversationID;
+            if (!this.dataProvider.send({type: 'call.recover', request_id: requestID, payload: {call_id: intent.callID}})) {
+                this.pendingPushRecoveryRequest = undefined;
+                this.pendingPushRequestGeneration = undefined;
+                this.pendingPushRecoveryCallID = undefined;
+                this.pendingPushRecoveryConversationID = undefined;
+                this.pushCallNotice = 'Could not check this call. Try again from Zwei.';
+            }
+            this.changeDetector.markForCheck();
+            return;
+        }
+        if (conversation.kind !== 'group') {
+            this.pushCallNotice = 'This group call is no longer available.';
+            this.changeDetector.markForCheck();
+            return;
+        }
+        const requestID = createRandomID();
+        this.pendingPushGroupDiscover = requestID;
+        this.pendingPushRequestGeneration = this.pushIntentGeneration;
+        this.pendingPushGroupConversationID = conversation.id;
+        if (!this.dataProvider.send({type: 'group.call.discover', request_id: requestID, payload: {conversation_id: conversation.id}})) {
+            this.pendingPushGroupDiscover = undefined;
+            this.pendingPushRequestGeneration = undefined;
+            this.pendingPushGroupConversationID = undefined;
+            this.pushCallNotice = 'Could not check this group call. Try again from Zwei.';
+        }
+        this.changeDetector.markForCheck();
+    }
+
+    private recoverArchivedDirectPushIntent(intent: PushClickIntent, loadGeneration: number): void {
+        const request = this.conversationService.listDirect(true).subscribe({
+            next: archivedDirect => {
+                if (loadGeneration !== this.pushConversationLoadGeneration || this.pendingPushIntent !== intent) return;
+                const conversation = archivedDirect.find(item => item.id === intent.conversationID && item.kind !== 'group');
+                if (!conversation) {
+                    this.pendingPushConversationLoadID = undefined;
+                    this.pendingPushIntent = undefined;
+                    this.pushCallNotice = 'This notification is no longer available.';
+                    this.changeDetector.markForCheck();
+                    return;
+                }
+                this.pendingPushConversationLoadID = undefined;
+                if (this.archiveMode !== 'archived') this.changeArchiveMode('archived', false);
+                else this.loadInitialConversations(++this.conversationRefreshGeneration, 0);
+            },
+            error: () => {
+                if (loadGeneration !== this.pushConversationLoadGeneration || this.pendingPushIntent !== intent) return;
+                this.pendingPushConversationLoadID = undefined;
+                this.pendingPushIntent = undefined;
+                this.pushCallNotice = 'This notification is no longer available.';
+                this.changeDetector.markForCheck();
+            },
+        });
+        this.listRequests.add(request);
+    }
+
+    private clearPendingPushCallRequests(): void {
+        this.pendingPushRecoveryRequest = undefined;
+        this.pendingPushRecoveryCallID = undefined;
+        this.pendingPushRecoveryConversationID = undefined;
+        this.pendingPushGroupDiscover = undefined;
+        this.pendingPushGroupConversationID = undefined;
+        this.pendingPushRequestGeneration = undefined;
     }
 
     private refreshConversationsForRecovery(generation = ++this.recoveryGeneration, retriesRemaining = 2, projectionGeneration = this.groupAccess.projectionGeneration): void {
@@ -2091,6 +2308,21 @@ export class HomeComponent implements OnInit, OnDestroy {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
                 this.messages = this.mergeHistoryMessages([...history.messages].reverse());
                 this.historyCursor = history.nextCursor;
+                if (!prepend && this.pendingPushMessageID) {
+                    const target = this.messages.find(message => message.id === this.pendingPushMessageID);
+                    this.pendingPushMessageID = undefined;
+                    if (target) {
+                        this.highlightedMessageID = target.id;
+                        this.pushMessageScrollTimer = window.setTimeout(() => {
+                            this.pushMessageScrollTimer = undefined;
+                            document.getElementById(`message-${target.id}`)?.scrollIntoView({block: 'center'});
+                        }, 0);
+                        this.pushMessageClearTimer = window.setTimeout(() => {
+                            this.pushMessageClearTimer = undefined;
+                            if (this.highlightedMessageID === target.id) { this.highlightedMessageID = undefined; this.changeDetector.markForCheck(); }
+                        }, 4_000);
+                    }
+                }
                 if (!prepend && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
                 this.changeDetector.markForCheck();
                 if (!prepend) this.scrollToLatest();

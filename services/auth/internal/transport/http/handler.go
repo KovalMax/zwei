@@ -12,6 +12,7 @@ import (
 	"github.com/KovalMax/zwei/services/auth/internal/application"
 	"github.com/KovalMax/zwei/services/internal/runtime"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
+	"github.com/KovalMax/zwei/services/shared/pushcrypto"
 )
 
 type Handler struct {
@@ -20,23 +21,31 @@ type Handler struct {
 	sessions       *sharedauth.SessionValidator
 	adminIPs       *IPAllowlist
 	allowedOrigins map[string]struct{}
+	vapidPublicKey string
 	giphyAPIKey    string
 }
 
-func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}, giphyAPIKey string) *Handler {
-	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins, giphyAPIKey: giphyAPIKey}
+func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}, vapidPublicKey string, giphyAPIKey ...string) *Handler {
+	key := ""
+	if len(giphyAPIKey) > 0 {
+		key = giphyAPIKey[0]
+	}
+	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins, vapidPublicKey: vapidPublicKey, giphyAPIKey: key}
 }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
 	mux.HandleFunc("POST /api/auth/refresh", h.refresh)
 	mux.HandleFunc("POST /api/auth/logout", h.logout)
+	mux.HandleFunc("GET /api/auth/push/vapid-public-key", h.vapidPublicKeyEndpoint)
+	mux.HandleFunc("GET /api/auth/giphy-key", h.giphyKey)
+	mux.HandleFunc("POST /api/auth/push-subscription", h.storePushSubscription)
+	mux.HandleFunc("DELETE /api/auth/push-subscription", h.deletePushSubscription)
 	mux.HandleFunc("POST /api/auth/ws-ticket", h.websocketTicket)
 	mux.HandleFunc("POST /api/auth/activate", h.activate)
 	mux.HandleFunc("GET /api/auth/me", h.me)
 	mux.HandleFunc("PATCH /api/auth/me", h.updateMe)
 	mux.HandleFunc("GET /api/auth/media-policy", h.mediaPolicy)
-	mux.HandleFunc("GET /api/auth/giphy-key", h.giphyKey)
 	mux.HandleFunc("GET /api/admin/users", h.adminUsers)
 	mux.HandleFunc("GET /api/admin/me", h.adminMe)
 	mux.HandleFunc("GET /api/admin/media-sources/giphy", h.adminGiphy)
@@ -177,6 +186,79 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) vapidPublicKeyEndpoint(w http.ResponseWriter, _ *http.Request) {
+	if h.vapidPublicKey == "" {
+		errorJSON(w, http.StatusServiceUnavailable, "push is not configured")
+		return
+	}
+	if _, err := pushcrypto.VAPIDFingerprint(h.vapidPublicKey); err != nil {
+		errorJSON(w, http.StatusServiceUnavailable, "push is not configured")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]string{"public_key": h.vapidPublicKey})
+}
+
+type pushSubscriptionRequest struct {
+	Endpoint       string `json:"endpoint"`
+	ExpirationTime *int64 `json:"expirationTime"`
+	Keys           struct {
+		P256DH string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}
+
+type deletePushSubscriptionRequest struct {
+	Endpoint string `json:"endpoint"`
+}
+
+func (h *Handler) storePushSubscription(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedIdentity(w, r)
+	if !ok {
+		return
+	}
+	var request pushSubscriptionRequest
+	if !decodeJSON(w, r, &request) || request.ExpirationTime != nil && *request.ExpirationTime < 0 {
+		errorJSON(w, http.StatusBadRequest, "invalid push subscription")
+		return
+	}
+	err := h.auth.StorePushSubscription(r.Context(), identity, application.PushSubscription{
+		Endpoint: request.Endpoint, P256DH: request.Keys.P256DH, Auth: request.Keys.Auth,
+	})
+	h.pushSubscriptionError(w, err)
+}
+
+func (h *Handler) deletePushSubscription(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedIdentity(w, r)
+	if !ok {
+		return
+	}
+	var request deletePushSubscriptionRequest
+	if !decodeJSON(w, r, &request) {
+		errorJSON(w, http.StatusBadRequest, "invalid push subscription")
+		return
+	}
+	h.pushSubscriptionError(w, h.auth.DeletePushSubscription(r.Context(), identity, request.Endpoint))
+}
+
+func (h *Handler) pushSubscriptionError(w http.ResponseWriter, err error) {
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, application.ErrInvalidInput):
+		errorJSON(w, http.StatusBadRequest, "invalid push subscription")
+	case errors.Is(err, application.ErrPushSessionRevoked):
+		errorJSON(w, http.StatusUnauthorized, "session revoked")
+	case errors.Is(err, application.ErrPushUnavailable):
+		errorJSON(w, http.StatusForbidden, "push subscriptions are not enabled")
+	case errors.Is(err, application.ErrPushSubscriptionOwned):
+		errorJSON(w, http.StatusConflict, "push subscription is unavailable")
+	case errors.Is(err, application.ErrPushSubscriptionLimit):
+		errorJSON(w, http.StatusConflict, "push subscription device limit reached")
+	default:
+		errorJSON(w, http.StatusInternalServerError, "could not update push subscription")
+	}
+}
+
 func (h *Handler) writeTokens(w http.ResponseWriter, status int, tokens application.Tokens) {
 	setRefreshCookie(w, tokens.RefreshToken)
 	tokens.RefreshToken = ""
@@ -263,21 +345,6 @@ func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) {
 	runtime.WriteJSON(w, http.StatusOK, profile)
 }
 
-func (h *Handler) mediaPolicy(w http.ResponseWriter, r *http.Request) {
-	if !h.authHostAllowed(w, r) {
-		return
-	}
-	if _, ok := h.userID(w, r); !ok {
-		return
-	}
-	enabled, err := h.auth.MediaPolicy(r.Context())
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "could not load media policy")
-		return
-	}
-	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"giphy_enabled": enabled})
-}
-
 func (h *Handler) giphyKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if !h.authHostAllowed(w, r) {
@@ -301,6 +368,21 @@ func (h *Handler) giphyKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runtime.WriteJSON(w, http.StatusOK, map[string]string{"api_key": h.giphyAPIKey})
+}
+
+func (h *Handler) mediaPolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.authHostAllowed(w, r) {
+		return
+	}
+	if _, ok := h.userID(w, r); !ok {
+		return
+	}
+	enabled, err := h.auth.MediaPolicy(r.Context())
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not load media policy")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"giphy_enabled": enabled})
 }
 
 func (h *Handler) adminGiphy(w http.ResponseWriter, r *http.Request) {
@@ -342,6 +424,19 @@ func (h *Handler) userID(w http.ResponseWriter, r *http.Request) (uuid.UUID, boo
 		return uuid.Nil, false
 	}
 	return identity.UserID, true
+}
+
+func (h *Handler) authenticatedIdentity(w http.ResponseWriter, r *http.Request) (sharedauth.Identity, bool) {
+	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))
+	if err != nil {
+		errorJSON(w, http.StatusUnauthorized, "invalid access token")
+		return sharedauth.Identity{}, false
+	}
+	if identity.DeviceID == "" || identity.SessionVersion <= 0 {
+		errorJSON(w, http.StatusUnauthorized, "invalid access token")
+		return sharedauth.Identity{}, false
+	}
+	return identity, true
 }
 
 func (h *Handler) adminID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {

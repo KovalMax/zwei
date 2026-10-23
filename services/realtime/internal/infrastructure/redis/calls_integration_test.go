@@ -199,13 +199,57 @@ func TestRingingReservationRecoversAfterRecipientDisconnect(t *testing.T) {
 		t.Fatalf("ended calls = %#v, want call %s", ended, firstCallID)
 	}
 
-	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); !errors.Is(err, application.ErrCallUnavailable) {
-		t.Fatalf("retry while recipient is offline: err=%v, want unavailable rather than busy", err)
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); err != nil {
+		t.Fatalf("start call while recipient is offline: %v", err)
+	}
+	call, err := coordinator.Get(ctx, retryCallID)
+	if err != nil || call.Status != "ringing" {
+		t.Fatalf("offline recipient call = status %q, err=%v; want ringing", call.Status, err)
+	}
+}
+
+func TestOfflineRecipientDoesNotRecoverLiveRingingReservation(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	coordinator, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatalf("create coordinator: %v", err)
+	}
+	defer coordinator.Close()
+
+	callerID, recipientID := uuid.New(), uuid.New()
+	callerDevice, recipientDevice := uuid.NewString(), uuid.NewString()
+	callerConnection := callerID.String() + ":" + callerDevice
+	recipientConnection := recipientID.String() + ":" + recipientDevice
+	firstCallID, retryCallID := uuid.New(), uuid.New()
+	defer func() {
+		_ = coordinator.client.Del(ctx, callKey(firstCallID), callKey(retryCallID), callUserKey(callerID), callUserKey(recipientID), callDeviceKey(callerID, callerDevice), callDeviceKey(recipientID, recipientDevice)).Err()
+		_ = coordinator.client.ZRem(ctx, callExpiryKey(), firstCallID.String(), retryCallID.String()).Err()
+		_, _ = coordinator.Disconnect(ctx, callerID, callerConnection)
+		_, _ = coordinator.Disconnect(ctx, recipientID, recipientConnection)
+	}()
+	if _, err := coordinator.Connect(ctx, callerID, callerConnection); err != nil {
+		t.Fatalf("connect caller: %v", err)
 	}
 	if _, err := coordinator.Connect(ctx, recipientID, recipientConnection); err != nil {
-		t.Fatalf("reconnect recipient: %v", err)
+		t.Fatalf("connect recipient: %v", err)
 	}
-	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); err != nil {
-		t.Fatalf("retry after stale ringing cleanup: %v", err)
+	started, err := startAdmittedCall(ctx, coordinator, application.Call{ID: firstCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection})
+	if err != nil {
+		t.Fatalf("start initial ringing call: %v", err)
+	}
+	if _, err := coordinator.Disconnect(ctx, recipientID, recipientConnection); err != nil {
+		t.Fatalf("disconnect recipient: %v", err)
+	}
+	if _, err := startAdmittedCall(ctx, coordinator, application.Call{ID: retryCallID, ConversationID: uuid.New(), CallerID: callerID, RecipientID: recipientID, CallerDeviceID: callerDevice, CallerConnectionID: callerConnection}); !errors.Is(err, application.ErrCallBusy) {
+		t.Fatalf("retry with live caller and offline recipient: err=%v, want busy", err)
+	}
+	current, err := coordinator.Get(ctx, firstCallID)
+	if err != nil || current.Status != "ringing" || !current.ExpiresAt.Equal(started.ExpiresAt) {
+		t.Fatalf("original ringing reservation = status %q expiry %s err=%v; want unchanged ringing expiry %s", current.Status, current.ExpiresAt, err, started.ExpiresAt)
 	}
 }

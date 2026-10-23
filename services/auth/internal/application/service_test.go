@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -25,6 +26,35 @@ func TestLoginDoesNotRequireDisplayName(t *testing.T) {
 	}
 	if tokens.AccessToken != "access-token" {
 		t.Fatalf("access token = %q", tokens.AccessToken)
+	}
+}
+
+func TestPushSubscriptionRequiresVerifiedSessionDeviceAndSupportedEndpoint(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
+	identity := sharedauth.Identity{UserID: uuid.New(), SessionVersion: 7, DeviceID: uuid.NewString()}
+	subscription := PushSubscription{
+		Endpoint: "https://fcm.googleapis.com/fcm/send/token",
+		P256DH:   base64.RawURLEncoding.EncodeToString(append([]byte{4}, make([]byte, 64)...)),
+		Auth:     base64.RawURLEncoding.EncodeToString(make([]byte, 16)),
+	}
+	if err := service.StorePushSubscription(context.Background(), identity, subscription); err != nil {
+		t.Fatalf("StorePushSubscription() error = %v", err)
+	}
+	if repository.pushUserID != identity.UserID || repository.pushDeviceID.String() != identity.DeviceID || repository.pushSessionVersion != identity.SessionVersion || repository.pushSubscription != subscription {
+		t.Fatalf("stored identity/subscription = %v %v %d %#v", repository.pushUserID, repository.pushDeviceID, repository.pushSessionVersion, repository.pushSubscription)
+	}
+	for _, invalid := range []PushSubscription{
+		{Endpoint: "http://fcm.googleapis.com/send", P256DH: subscription.P256DH, Auth: subscription.Auth},
+		{Endpoint: "https://attacker.example/push", P256DH: subscription.P256DH, Auth: subscription.Auth},
+		{Endpoint: subscription.Endpoint, P256DH: string(make([]byte, 129)), Auth: subscription.Auth},
+	} {
+		if err := service.StorePushSubscription(context.Background(), identity, invalid); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("invalid subscription error = %v, want ErrInvalidInput", err)
+		}
+	}
+	if err := service.StorePushSubscription(context.Background(), sharedauth.Identity{UserID: identity.UserID}, subscription); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("identity without session/device error = %v", err)
 	}
 }
 
@@ -279,6 +309,10 @@ type fakeRepository struct {
 	resendHash           []byte
 	resendExpiresAt      time.Time
 	invitation           user.Invitation
+	pushUserID           uuid.UUID
+	pushDeviceID         uuid.UUID
+	pushSessionVersion   int64
+	pushSubscription     PushSubscription
 }
 
 func (f *fakeRepository) CreateUserWithDevice(_ context.Context, params CreateUserParams) (uuid.UUID, uuid.UUID, error) {
@@ -298,6 +332,13 @@ func (f *fakeRepository) RotateRefreshToken(context.Context, []byte) (user.Sessi
 	return user.Session{}, errors.New("not implemented")
 }
 func (f *fakeRepository) RevokeAllSessions(context.Context, uuid.UUID) error { return nil }
+func (f *fakeRepository) StorePushSubscription(_ context.Context, userID, deviceID uuid.UUID, sessionVersion int64, subscription PushSubscription) error {
+	f.pushUserID, f.pushDeviceID, f.pushSessionVersion, f.pushSubscription = userID, deviceID, sessionVersion, subscription
+	return nil
+}
+func (f *fakeRepository) DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, string) error {
+	return nil
+}
 func (f *fakeRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
 	return f.profile, nil
 }

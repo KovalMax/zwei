@@ -22,6 +22,18 @@
             <p *ngIf="alertSaving" role="status">Saving alert preference…</p>
             <p *ngIf="alertSaveError" class="profile-error" role="alert">Could not save your alert preference. Your previous preference is still selected.</p>
         </section>
+        <section *ngIf="profile && alertMode === 'notifications'" class="alert-settings" aria-labelledby="push-settings-title">
+            <h2 id="push-settings-title">This browser</h2>
+            <p *ngIf="push?.state === 'unsupported'" role="status">Web Push is not supported by this browser. Your account alert preference is unchanged.</p>
+            <p *ngIf="push?.state === 'denied'" role="status">Notifications are blocked. Allow them in this browser’s site settings, then re-enable here.</p>
+            <p *ngIf="push?.state === 'permission-required'" role="status">Enable browser notifications to receive alerts when Zwei is closed.</p>
+            <p *ngIf="push?.state === 'not-enrolled'" role="status">This browser is not currently registered to receive push notifications.</p>
+            <button *ngIf="push?.state !== 'unsupported'" type="button" [disabled]="pushSaving" (click)="enablePush()">{{ pushSaving ? 'Enabling…' : 'Enable on this browser' }}</button>
+            <p *ngIf="push?.state === 'enabled'" role="status">Push notifications are enabled on this browser. Use the button to repair or refresh this subscription.</p>
+            <p *ngIf="pushSaving" role="status">Registering this browser…</p>
+            <p *ngIf="pushSuccess" role="status">Push notifications are enabled on this browser.</p>
+            <p *ngIf="pushError" class="profile-error" role="alert">{{ pushError }}</p>
+        </section>
         <section *ngIf="profile" class="alert-settings" aria-labelledby="media-settings-title">
             <h2 id="media-settings-title">Inline media</h2>
             <p>When enabled, approved GIPHY images and GIFs in messages load automatically. Your browser contacts GIPHY, which may receive your IP address and request timing. Share-page links still require you to open GIPHY.</p>
