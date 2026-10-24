@@ -7,15 +7,17 @@ export class HostService {
         return window.location.hostname === 'kyc.chat.false.tel' || window.location.hostname === 'kyc.localhost';
     }
 
-    public authEndpoint(kind: 'login' | 'refresh' | 'logout' | 'profile' | 'media-policy' | 'activate'): string {
+    public authEndpoint(kind: 'login' | 'refresh' | 'logout' | 'profile' | 'media-policy' | 'giphy-key' | 'activate'): string {
         if (!this.isAdminHost()) {
             if (kind === 'profile') return `${backends.auth}/api/auth/me`;
             if (kind === 'media-policy') return `${backends.auth}/api/auth/media-policy`;
+            if (kind === 'giphy-key') return `${backends.auth}/api/auth/giphy-key`;
             if (kind === 'activate') return backends.activation;
             return backends[kind];
         }
         if (kind === 'profile') return `${backends.admin}/api/auth/me`;
         if (kind === 'media-policy') return `${backends.admin}/api/auth/media-policy`;
+        if (kind === 'giphy-key') return `${backends.admin}/api/auth/giphy-key`;
         if (kind === 'activate') return `${backends.activation}`;
         return backends.adminEndpoints[kind];
     }

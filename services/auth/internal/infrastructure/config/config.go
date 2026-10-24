@@ -10,6 +10,7 @@ import (
 type Config struct {
 	DatabaseURL       string
 	JWTSecret         []byte
+	GiphyAPIKey       string
 	AccessLifetime    time.Duration
 	RefreshLifetime   time.Duration
 	Port              string
@@ -40,6 +41,7 @@ func Load() (Config, error) {
 	return Config{
 		DatabaseURL:       getenv("DATABASE_URL", "postgres://messenger_user:user-password@database:5432/messenger?sslmode=disable"),
 		JWTSecret:         []byte(secret),
+		GiphyAPIKey:       os.Getenv("GIPHY_API_KEY"),
 		AccessLifetime:    access,
 		RefreshLifetime:   refresh,
 		Port:              getenv("AUTH_PORT", "8081"),

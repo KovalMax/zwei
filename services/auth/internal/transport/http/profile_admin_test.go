@@ -88,7 +88,7 @@ func authenticatedTestHandler(t *testing.T, isAdmin bool) (*application.Service,
 	service := application.NewService(repository, nil, nil, time.Minute, time.Hour)
 	admins := application.NewAdminService(repository, nil, nil, "", "")
 	reader := httpSessionReader{}
-	handler := NewHandler(service, admins, sharedauth.NewSessionValidator(reader, secret), nil, nil)
+	handler := NewHandler(service, admins, sharedauth.NewSessionValidator(reader, secret), nil, nil, "")
 	return service, repository, handler, encoded
 }
 
@@ -105,6 +105,7 @@ type httpTestRepository struct {
 	profile      user.Profile
 	isAdmin      bool
 	giphyEnabled bool
+	giphyErr     error
 }
 
 func (r *httpTestRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
@@ -125,7 +126,9 @@ func (r *httpTestRepository) UpdateProfile(_ context.Context, _ uuid.UUID, name,
 	}
 	return nil
 }
-func (r *httpTestRepository) GiphyEnabled(context.Context) (bool, error) { return r.giphyEnabled, nil }
+func (r *httpTestRepository) GiphyEnabled(context.Context) (bool, error) {
+	return r.giphyEnabled, r.giphyErr
+}
 func (r *httpTestRepository) SetGiphyEnabled(_ context.Context, enabled bool) (bool, error) {
 	r.giphyEnabled = enabled
 	return enabled, nil

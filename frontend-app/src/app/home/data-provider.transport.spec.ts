@@ -97,6 +97,21 @@ describe('DataProviderService transport', () => {
         expect(received.filter(event => event.type === 'message.created')).toHaveLength(1);
     });
 
+    it('retains the legacy sticker content type on the existing correlated message transport', () => {
+        service.getObservable().subscribe();
+        const socket = requestTicket('legacy-sticker');
+        open(socket.config);
+        socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: []}});
+        const command = {
+            type: 'message.send' as const,
+            request_id: 'legacy-sticker-request',
+            payload: {conversation_id: 'chat-1', client_message_id: 'legacy-sticker-client', body: 'cat', content_type: 'sticker' as const},
+        };
+
+        expect(service.send(command)).toBe(true);
+        expect(socket.socket.sent.at(-1)).toEqual({...command, version: WEBSOCKET_PROTOCOL_VERSION});
+    });
+
     it('sends generation-bearing group commands and blocks malformed generations before transport', () => {
         service.getObservable().subscribe();
         const socket = requestTicket('ticket-group-generation');

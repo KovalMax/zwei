@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
-APP_NAME ?= "messenger"
+APP_NAME ?= messenger
+export APP_NAME
 
 ifeq (exec,$(firstword $(MAKECMDGOALS)))
   # use the rest as arguments for "exec"

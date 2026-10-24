@@ -6,7 +6,7 @@ import { By } from '@angular/platform-browser';
 import { MatTooltip } from '@angular/material/tooltip';
 import { BehaviorSubject, EMPTY, NEVER, Observable, of, Subject, throwError, map } from 'rxjs';
 
-import { HomeComponent, STICKERS } from './home.component';
+import { HomeComponent, COMPOSER_EMOJIS } from './home.component';
 import { AppModule } from '../app.module';
 import { HomeModule } from './home.module';
 import { AuthService } from '../auth/auth.service';
@@ -23,6 +23,11 @@ import { HomeGroupAccessFacade } from './home-group-access-facade.service';
 import { HomeNotificationService } from './home-notification.service';
 import { GroupProjectionNotFoundError } from './conversation.service';
 import { PwaService } from '../pwa/pwa.service';
+import {GiphySearchPage, GiphySearchResult, GiphySearchService} from './giphy-search.service';
+
+function giphyPage(results: GiphySearchResult[], offset = 0, count = results.length, totalCount = count): GiphySearchPage {
+    return {results, offset, count, totalCount, hasMore: count > 0 && offset + count < totalCount && offset + count <= 4999};
+}
 
 describe('HomeComponent', () => {
     let component: HomeComponent;
@@ -31,7 +36,7 @@ describe('HomeComponent', () => {
     beforeEach(async () => {
         await TestBed.configureTestingModule({
             imports: [AppModule, HomeModule],
-            providers: [{provide: AuthService, useValue: {profile: () => of({id: 'test-user'})}}]
+            providers: [{provide: AuthService, useValue: {profile: () => of({id: 'test-user'}), token: new BehaviorSubject(null), mediaPolicy: () => of({giphy_enabled: false})}}]
         }).compileComponents();
     });
 
@@ -57,12 +62,42 @@ describe('HomeComponent', () => {
         auth.mediaPolicy = () => throwError(() => new Error('policy unavailable'));
         fixture.detectChanges();
         component.profile = {id: 'test-user', auto_load_approved_media: true} as Profile;
+        component.selectedConversation = conversation('policy-failure'); component.socketReady = true;
         component.messages = [{
             id: 'giphy-policy-failure', conversationId: 'policy-failure', senderId: 'peer', clientMessageId: 'client', sequence: 1,
             body: 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', createdAt: '2026-01-01T00:00:00Z',
         }];
         expect(component.giphyEnabled).toBe(false);
         expect(component.shouldAutoLoadGiphy(component.messages[0])).toBe(false);
+        const search = vi.spyOn(TestBed.inject(GiphySearchService), 'search');
+        const send = vi.spyOn(fixture.debugElement.injector.get(DataProviderService), 'send');
+        component.toggleGiphyPicker(); component.giphyQuery = 'cats'; component.searchGiphy(); component.sendSelectedGiphy();
+        expect(component.giphyPickerOpen).toBe(false);
+        expect(search).not.toHaveBeenCalled();
+        expect(send).not.toHaveBeenCalled();
+        component.ngOnDestroy();
+    });
+
+    it('clears an in-flight GIPHY search when admin policy disables media and prevents staged sends', () => {
+        const policy = new Subject<{giphy_enabled: boolean}>();
+        const auth = TestBed.inject(AuthService) as unknown as {mediaPolicy: () => Observable<{giphy_enabled: boolean}>};
+        auth.mediaPolicy = () => policy;
+        fixture.detectChanges();
+        policy.next({giphy_enabled: true});
+        component.selectedConversation = conversation('policy-toggle'); component.socketReady = true; component.toggleGiphyPicker();
+        const pending = new Subject<GiphySearchPage>();
+        const search = fixture.debugElement.injector.get(GiphySearchService);
+        vi.spyOn(search, 'search').mockReturnValue(pending);
+        const send = vi.spyOn(fixture.debugElement.injector.get(DataProviderService), 'send').mockReturnValue(true);
+        component.giphyQuery = 'cats'; component.searchGiphy();
+        expect(component.giphySearchState).toBe('loading');
+        policy.next({giphy_enabled: false});
+        pending.next(giphyPage([{id:'stale', title:'Stale', url:'https://media1.giphy.com/media/stale123/200.gif'}]));
+        component.selectGiphy({id:'stale', title:'Stale', url:'https://media1.giphy.com/media/stale123/200.gif'});
+        component.sendSelectedGiphy();
+        expect(component.giphyPickerOpen).toBe(false); expect(component.giphyResults).toEqual([]);
+        expect(component.selectedGiphy).toBeUndefined();
+        expect(send.mock.calls.some(([event]) => event.type === 'message.send')).toBe(false);
         component.ngOnDestroy();
     });
 
@@ -134,50 +169,260 @@ describe('HomeComponent', () => {
         component.ngOnDestroy();
     });
 
-    it('sends a sticker standalone without changing the composer draft', () => {
-        const send = vi.fn().mockName('send').mockReturnValue(true);
-        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn().mockName('markForCheck')} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
-        home.selectedConversation = conversation('sticker-chat');
-        home.socketReady = true;
-        home.draft = 'Hi there';
-        home.onDraftChange();
-        home.sendSticker('cat');
-        const command = vi.mocked(send).mock.calls.map(([value]) => value).find(value => value.type === 'message.send');
-        expect(command).toMatchObject({type: 'message.send', payload: {content_type: 'sticker', body: 'cat', conversation_id: 'sticker-chat'}});
-        expect(home.draft).toBe('Hi there');
-        home.ngOnDestroy();
-    });
-
-    it('exposes separate accessible emoji and sticker picker controls', () => {
+    it('keeps emoji picker while exposing only the sparkle GIPHY trigger', () => {
         fixture.detectChanges();
         const buttons = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
         expect(buttons.some(button => button.getAttribute('aria-label') === 'Open emoji picker')).toBe(true);
-        expect(buttons.some(button => button.getAttribute('aria-label') === 'Open sticker picker')).toBe(true);
+        expect(buttons.some(button => button.getAttribute('aria-label') === 'Open GIPHY picker')).toBe(true);
         expect(buttons.find(button => button.getAttribute('aria-label') === 'Open emoji picker')?.getAttribute('aria-controls')).toBe('emoji-picker');
-        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open sticker picker')?.getAttribute('aria-controls')).toBe('sticker-picker');
+        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open GIPHY picker')?.getAttribute('aria-controls')).toBe('giphy-picker');
+        expect(buttons.find(button => button.getAttribute('aria-label') === 'Open emoji picker')?.disabled).toBe(true);
+        const giphyTrigger = buttons.find(button => button.getAttribute('aria-label') === 'Open GIPHY picker');
+        expect(giphyTrigger?.disabled).toBe(true);
+        expect(giphyTrigger?.textContent?.trim()).toBe('✦');
+        expect(fixture.nativeElement.querySelector('[aria-label="Open sticker picker"]')).toBeNull();
+        expect(fixture.nativeElement.querySelector('#sticker-picker')).toBeNull();
         component.ngOnDestroy();
     });
 
-    it('uses only fixed local sticker assets and labels rendered artwork and unavailable IDs', () => {
-        expect(STICKERS).toHaveLength(12);
-        expect(STICKERS.map(sticker => sticker.asset)).toEqual([
-            'assets/stickers/hello.svg', 'assets/stickers/heart.svg', 'assets/stickers/laugh.svg', 'assets/stickers/wow.svg',
-            'assets/stickers/thanks.svg', 'assets/stickers/sorry.svg', 'assets/stickers/yes.svg', 'assets/stickers/no.svg',
-            'assets/stickers/coffee.svg', 'assets/stickers/cat.svg', 'assets/stickers/dog.svg', 'assets/stickers/celebrate.svg',
-        ]);
-        expect(component.stickerAsset('https://example.invalid/sticker.svg')).toBeUndefined();
-        expect(component.stickerLabel('unknown-wire-value')).toBe('Unavailable sticker');
+    it('closes and clears the GIPHY picker on Escape and restores focus to its trigger', () => {
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        const trigger = document.createElement('button');
+        document.body.appendChild(trigger);
+        (home as unknown as {giphyPickerTrigger?: {nativeElement: HTMLButtonElement}}).giphyPickerTrigger = {nativeElement: trigger};
+        home.giphyPickerOpen = true;
+        home.giphyQuery = 'cats';
+        home.closeGiphyPicker();
 
-        component.selectedConversation = conversation('sticker-assets');
-        component.messages = [{id: 'sticker-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'client', sequence: 1, body: 'heart', contentType: 'sticker', createdAt: '2026-01-01T00:00:00Z'}];
-        component.stickerPickerOpen = true;
+        expect(home.giphyPickerOpen).toBe(false);
+        expect(home.giphyQuery).toBe('');
+        expect(document.activeElement).toBe(trigger);
+        trigger.remove();
+        home.ngOnDestroy();
+    });
+
+    it('does not open, search, or send GIFs while administrator policy is disabled', () => {
+        const search = {search: vi.fn()} as unknown as GiphySearchService;
+        const send = vi.fn().mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, search);
+        home.selectedConversation = conversation('giphy-disabled'); home.socketReady = true; home.giphyEnabled = false;
+        home.toggleGiphyPicker(); home.giphyQuery = 'cats'; home.searchGiphy(); home.sendSelectedGiphy();
+        expect(home.giphyPickerOpen).toBe(false);
+        expect(search.search).not.toHaveBeenCalled();
+        expect(send).not.toHaveBeenCalled();
+        home.ngOnDestroy();
+    });
+
+    it('does not request a key when opening the picker and begins search only after explicit Search', () => {
+        const auth = TestBed.inject(AuthService) as unknown as {mediaPolicy: () => Observable<{giphy_enabled: boolean}>};
+        auth.mediaPolicy = () => of({giphy_enabled: true});
         fixture.detectChanges();
-        const pickerImages = Array.from(fixture.nativeElement.querySelectorAll('#sticker-picker img')) as HTMLImageElement[];
-        expect(pickerImages).toHaveLength(12);
-        expect(pickerImages[1].getAttribute('src')).toBe('assets/stickers/heart.svg');
-        expect(pickerImages[1].getAttribute('alt')).toBe('Heart');
-        expect(fixture.nativeElement.querySelector('.message-sticker img')?.getAttribute('src')).toBe('assets/stickers/heart.svg');
-        expect(fixture.nativeElement.querySelector('.message-sticker img')?.getAttribute('alt')).toBe('Heart');
+        const search = vi.spyOn(TestBed.inject(GiphySearchService), 'search').mockReturnValue(of(giphyPage([])));
+        component.selectedConversation = conversation('giphy-no-key'); component.socketReady = true;
+        component.toggleGiphyPicker();
+        expect(component.giphyPickerOpen).toBe(true);
+        expect(search).not.toHaveBeenCalled();
+        component.giphyQuery = 'cats';
+        component.searchGiphy();
+        expect(search).toHaveBeenCalledWith('cats', 0);
+        component.ngOnDestroy();
+    });
+
+    it('uses the sparkle as the only GIPHY trigger and hides legacy stickers without blanking history', () => {
+        const legacySticker: Message = {id: 'sticker-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'client', sequence: 1, body: 'heart', contentType: 'sticker', createdAt: '2026-01-01T00:00:00Z'};
+        component.selectedConversation = conversation('sticker-assets'); component.socketReady = true;
+        component.messages = [
+            legacySticker,
+            {id: 'text-message', conversationId: 'sticker-assets', senderId: 'peer', clientMessageId: 'text-client', sequence: 2, body: 'Visible text remains', createdAt: '2026-01-01T00:01:00Z'},
+        ];
+        fixture.detectChanges();
+        component.selectedConversation = conversation('sticker-assets'); component.socketReady = true; component.giphyEnabled = true;
+        fixture.detectChanges();
+
+        const sparkleTrigger = fixture.nativeElement.querySelector('button[aria-label="Open GIPHY picker"]') as HTMLButtonElement;
+        expect(sparkleTrigger.textContent.trim()).toBe('✦');
+        expect(fixture.nativeElement.querySelector('[aria-label="Open sticker picker"]')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.message-sticker')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.message-history').textContent).toContain('Visible text remains');
+        expect(fixture.nativeElement.querySelector('.message-history').textContent).not.toContain('heart');
+        component.selectedConversation = conversation('sticker-assets'); component.socketReady = true; component.giphyEnabled = true; component.giphyPickerOpen = false;
+        sparkleTrigger.disabled = false;
+        sparkleTrigger.dispatchEvent(new MouseEvent('click', {bubbles: true})); fixture.detectChanges();
+        expect(component.giphyPickerOpen).toBe(true);
+        expect(fixture.nativeElement.querySelector('#giphy-picker')).not.toBeNull();
+
+        component.messages = [legacySticker];
+        expect(component.visibleMessages).toEqual([]);
+        expect(component.onlyLegacyStickersHidden).toBe(true);
+        component.ngOnDestroy();
+    });
+
+    it('stages a GIPHY result and sends it as one correlated ordinary text message only after Send', () => {
+        const result: GiphySearchResult = {id: 'gif-1', title: 'A GIF', url: 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif'};
+        const giphySearch = {search: vi.fn().mockReturnValue(of(giphyPage([result])))} as unknown as GiphySearchService;
+        const send = vi.fn().mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, giphySearch);
+        home.selectedConversation = conversation('gif-chat'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker();
+        home.draft = 'Keep this draft';
+        home.giphyQuery = 'cats'; home.searchGiphy();
+        home.selectGiphy(result);
+        expect(home.selectedGiphy).toEqual(result);
+        expect(send.mock.calls.filter(([event]) => event.type === 'message.send')).toHaveLength(0);
+        home.sendSelectedGiphy();
+        const commands = send.mock.calls.map(([event]) => event).filter(event => event.type === 'message.send');
+        expect(commands).toHaveLength(1);
+        expect(commands[0]).toMatchObject({type: 'message.send', request_id: expect.any(String), payload: {conversation_id: 'gif-chat', body: result.url, content_type: 'text'}});
+        expect(home.draft).toBe('Keep this draft');
+        expect(home.selectedGiphy).toBeUndefined();
+        home.ngOnDestroy();
+    });
+
+    it('cancels a staged GIF without sending and exposes at least 24 emoji choices', () => {
+        const result: GiphySearchResult = {id: 'gif-1', title: 'A GIF', url: 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif'};
+        const giphySearch = {search: vi.fn().mockReturnValue(of(giphyPage([result])))} as unknown as GiphySearchService;
+        const send = vi.fn().mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, giphySearch);
+        home.selectedConversation = groupConversation('gif-group'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker(); home.giphyQuery = 'party'; home.searchGiphy(); home.selectGiphy(result);
+        home.cancelGiphySelection(); home.sendSelectedGiphy();
+        expect(send.mock.calls.filter(([event]) => event.type === 'message.send')).toHaveLength(0);
+        expect(COMPOSER_EMOJIS.length).toBeGreaterThanOrEqual(24);
+        home.ngOnDestroy();
+    });
+
+    it('exposes loading, empty, and retryable GIPHY search failure states', () => {
+        const pending = new Subject<GiphySearchPage>();
+        const giphySearch = {search: vi.fn().mockReturnValueOnce(pending).mockReturnValueOnce(throwError(() => new Error('GIPHY returned an invalid search response.')))} as unknown as GiphySearchService;
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, giphySearch);
+        home.selectedConversation = conversation('gif-search'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker(); home.giphyQuery = 'cats';
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+        home.searchGiphy(); expect(home.giphySearchState).toBe('loading');
+        pending.next(giphyPage([])); expect(home.giphySearchState).toBe('empty');
+        now.mockReturnValue(1750);
+        home.searchGiphy(); expect(home.giphySearchState).toBe('error');
+        expect(home.giphySearchError).toBe('GIPHY search failed. Try again.');
+        expect(home.giphySearchError).not.toContain('invalid search response');
+        home.ngOnDestroy();
+        now.mockRestore();
+    });
+
+    it('keeps only the newest GIPHY response and rejects stale selections for sending', () => {
+        const older = new Subject<GiphySearchPage>();
+        const newer = new Subject<GiphySearchPage>();
+        const oldResult: GiphySearchResult = {id:'old', title:'Old', url:'https://media1.giphy.com/media/old123/200.gif'};
+        const newResult: GiphySearchResult = {id:'new', title:'New', url:'https://media1.giphy.com/media/new123/200.gif'};
+        const search = vi.fn().mockReturnValueOnce(older).mockReturnValueOnce(newer);
+        const send = vi.fn().mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, {search} as unknown as GiphySearchService);
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+        home.selectedConversation = conversation('gif-race'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker();
+        home.giphyQuery = 'older'; home.searchGiphy();
+        now.mockReturnValue(1750); home.giphyQuery = 'newer'; home.searchGiphy();
+        newer.next(giphyPage([newResult])); older.next(giphyPage([oldResult]));
+        expect(home.giphyResults).toEqual([newResult]);
+        home.selectGiphy(oldResult); home.sendSelectedGiphy();
+        expect(send.mock.calls.filter(([event]) => event.type === 'message.send')).toHaveLength(0);
+        home.ngOnDestroy(); now.mockRestore();
+    });
+
+    it('appends unique GIF IDs, preserves prior results on page failure, and retries the same provider offset', () => {
+        const first: GiphySearchResult = {id:'first', title:'First', url:'https://media1.giphy.com/media/first123/200.gif'};
+        const duplicate: GiphySearchResult = {...first, title:'Duplicate'};
+        const later: GiphySearchResult = {id:'later', title:'Later', url:'https://media1.giphy.com/media/later123/200.gif'};
+        const pending = new Subject<GiphySearchPage>();
+        const search = vi.fn().mockReturnValueOnce(of(giphyPage([first], 0, 50, 100)))
+            .mockReturnValueOnce(pending).mockReturnValueOnce(throwError(() => new Error('offline')))
+            .mockReturnValueOnce(of(giphyPage([duplicate, later], 50, 2, 100)));
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef,
+            {send: vi.fn(), close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade,
+            undefined, undefined, undefined, {search} as unknown as GiphySearchService);
+        home.selectedConversation = conversation('gif-pages'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker();
+        home.giphyQuery = 'cats'; home.searchGiphy();
+        expect(search).toHaveBeenLastCalledWith('cats', 0);
+        home.loadMoreGiphy(); home.loadMoreGiphy();
+        expect(search).toHaveBeenCalledTimes(2);
+        expect(search).toHaveBeenLastCalledWith('cats', 50);
+        pending.next(giphyPage([duplicate, later], 50, 2, 100));
+        expect(home.giphyResults).toEqual([first, later]);
+        expect(home.giphyHasMore).toBe(true);
+        home.loadMoreGiphy();
+        expect(home.giphyPageError).toBe(true);
+        expect(home.giphyResults).toEqual([first, later]);
+        home.loadMoreGiphy();
+        expect(search).toHaveBeenLastCalledWith('cats', 52);
+        expect(home.giphyResults).toEqual([first, later]);
+    });
+
+    it('ends pagination from provider metadata and fences an in-flight page after picker close', () => {
+        const result: GiphySearchResult = {id:'page-one', title:'First', url:'https://media1.giphy.com/media/pageone/200.gif'};
+        const pending = new Subject<GiphySearchPage>();
+        const search = vi.fn().mockReturnValueOnce(of(giphyPage([result], 0, 50, 100))).mockReturnValueOnce(pending);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef,
+            {send: vi.fn(), close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade,
+            undefined, undefined, undefined, {search} as unknown as GiphySearchService);
+        home.selectedConversation = conversation('gif-page-end'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker();
+        home.giphyQuery = 'cats'; home.searchGiphy(); home.loadMoreGiphy(); home.closeGiphyPicker();
+        pending.next(giphyPage([], 50, 0, 100));
+        expect(home.giphyResults).toEqual([]);
+        expect(home.giphyHasMore).toBe(false);
+    });
+
+    it('clearing the GIPHY picker on close or conversation change fences pending results', () => {
+        const closedSearch = new Subject<GiphySearchPage>();
+        const switchedSearch = new Subject<GiphySearchPage>();
+        const oldResult: GiphySearchResult = {id:'stale', title:'Stale', url:'https://media1.giphy.com/media/stale123/200.gif'};
+        const search = vi.fn().mockReturnValueOnce(closedSearch).mockReturnValueOnce(switchedSearch);
+        const send = vi.fn().mockReturnValue(true);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, {search} as unknown as GiphySearchService);
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+        home.selectedConversation = conversation('gif-close'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker(); home.giphyQuery = 'close'; home.searchGiphy();
+        home.toggleGiphyPicker(); closedSearch.next(giphyPage([oldResult]));
+        expect(home.giphyResults).toEqual([]); expect(home.giphySearchState).toBe('idle');
+        now.mockReturnValue(1750); home.toggleGiphyPicker(); home.giphyQuery = 'switch'; home.searchGiphy();
+        now.mockRestore();
+        home.selectConversation(conversation('gif-switched'));
+        switchedSearch.next(giphyPage([oldResult])); home.selectGiphy(oldResult); home.sendSelectedGiphy();
+        expect(home.selectedConversation?.id).toBe('gif-switched'); expect(home.giphyResults).toEqual([]);
+        expect(send.mock.calls.filter(([event]) => event.type === 'message.send')).toHaveLength(0);
+        home.ngOnDestroy();
+    });
+
+    it('does not discard the staged GIF or composer draft when the ordinary message send fails', () => {
+        const result: GiphySearchResult = {id:'gif-failure', title:'GIF', url:'https://media1.giphy.com/media/failure123/200.gif'};
+        const search = {search: vi.fn().mockReturnValue(of(giphyPage([result])))} as unknown as GiphySearchService;
+        const send = vi.fn().mockReturnValue(false);
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, search);
+        home.selectedConversation = conversation('gif-send-failure'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker(); home.giphyQuery = 'cats'; home.searchGiphy(); home.selectGiphy(result); home.draft = 'draft stays';
+        home.sendSelectedGiphy();
+        expect(home.selectedGiphy).toEqual(result); expect(home.giphyPickerOpen).toBe(true);
+        expect(home.draft).toBe('draft stays'); expect(home.messages).toEqual([]);
+        expect(home.sendStatus).toContain('connection was lost');
+        home.ngOnDestroy();
+    });
+
+    it('applies a modest local GIPHY search cooldown to the request method', () => {
+        const search = {search: vi.fn().mockReturnValue(of(giphyPage([])))} as unknown as GiphySearchService;
+        const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, search);
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+        home.selectedConversation = conversation('gif-cooldown'); home.socketReady = true; home.giphyEnabled = true; home.toggleGiphyPicker(); home.giphyQuery = 'cats';
+        home.searchGiphy(); home.searchGiphy();
+        expect(search.search).toHaveBeenCalledTimes(1); expect(home.giphySearchCoolingDown).toBe(true);
+        now.mockReturnValue(1750); expect(home.giphySearchCoolingDown).toBe(false);
+        home.searchGiphy(); expect(search.search).toHaveBeenCalledTimes(2);
+        home.ngOnDestroy(); now.mockRestore();
+    });
+
+    it('recognizes emoji graphemes without enlarging ordinary keycap bases or mixed text', () => {
+        const emojiSamples = ['😊', '❤️', '1️⃣', '👍🏽', '🇺🇸', '👨‍👩‍👧‍👦'];
+        for (const [index, body] of emojiSamples.entries()) {
+            const message = {id:`emoji-${index}`, conversationId:'c', senderId:'u', clientMessageId:'m', sequence:1, body, createdAt:''};
+            expect(component.isSingleEmojiMessage(message), body).toBe(true);
+            expect(component.messageDisplaySegments(message).every(segment => segment.emoji), body).toBe(true);
+        }
+        for (const [index, body] of ['#', '*', '1', 'hello 😊'].entries()) {
+            const message = {id:`text-${index}`, conversationId:'c', senderId:'u', clientMessageId:'m', sequence:1, body, createdAt:''};
+            expect(component.isSingleEmojiMessage(message), body).toBe(false);
+            if (body !== 'hello 😊') expect(component.messageDisplaySegments(message).some(segment => segment.emoji), body).toBe(false);
+        }
         component.ngOnDestroy();
     });
 
@@ -2125,6 +2370,22 @@ describe('HomeComponent', () => {
         expect(historyComponent.readReceiptLabel(directMessage)).toBe('Read by peer');
     });
 
+    it('keeps the latest visible direct read marker when a newer legacy sticker is hidden', () => {
+        const direct = conversation('direct-sticker-read');
+        const visibleMessage = ownMessage(direct.id, 3);
+        const hiddenSticker: Message = {...ownMessage(direct.id, 4), body: 'heart', contentType: 'sticker'};
+        const historyComponent = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: () => undefined} as ChangeDetectorRef, {} as DataProviderService, {close: () => undefined} as CallFacade);
+        historyComponent.profile = {id: 'user-me'} as Profile;
+        historyComponent.selectedConversation = direct;
+        historyComponent.conversations.next([direct]);
+        historyComponent.messages = [visibleMessage, hiddenSticker];
+        historyComponent['peerReadSequences'].set(direct.id, hiddenSticker.sequence);
+
+        expect(historyComponent.visibleMessages).toEqual([visibleMessage]);
+        expect(historyComponent.isLatestReadMessage(visibleMessage)).toBe(true);
+        expect(historyComponent.isLatestReadMessage(hiddenSticker)).toBe(false);
+    });
+
     it('applies reconciliation account cursors monotonically without using the group scalar', () => {
         const group = groupConversation('group-read') as GroupConversation;
         group.members = [groupMember('user-me', 1), groupMember('member-a', 1), groupMember('member-b', 1)];
@@ -2955,13 +3216,13 @@ function snapshotFrom(source: Observable<Conversation[]>): Observable<{direct: C
     return source.pipe(map(items => ({direct: items.filter(item => item.kind !== 'group'), groups: {items: items.filter((item): item is GroupConversation => item.kind === 'group'), nextCursor: null}})));
 }
 
-function createHomeComponent(conversationService: ConversationService, authService: AuthService, changeDetector: ChangeDetectorRef, dataProvider: DataProviderService, call: CallFacade, notifications?: HomeNotificationService, groupCall?: GroupCallFacade, groupAccess = new HomeGroupAccessFacade(conversationService)): HomeComponent {
+function createHomeComponent(conversationService: ConversationService, authService: AuthService, changeDetector: ChangeDetectorRef, dataProvider: DataProviderService, call: CallFacade, notifications?: HomeNotificationService, groupCall?: GroupCallFacade, groupAccess = new HomeGroupAccessFacade(conversationService), giphySearch?: GiphySearchService): HomeComponent {
     const legacyTestService = conversationService as ConversationService & {list?: () => Observable<Conversation[]>};
     const serviceWithHistory = Object.assign(conversationService, {
         history: conversationService.history ?? (() => of({ messages: [] })),
         listHomeSnapshot: conversationService.listHomeSnapshot ?? (() => snapshotFrom(legacyTestService.list?.() ?? of([]))),
     });
-    return new HomeComponent(serviceWithHistory, authService, changeDetector, dataProvider, call, groupAccess, notifications, groupCall);
+    return new HomeComponent(serviceWithHistory, authService, changeDetector, dataProvider, call, groupAccess, notifications, groupCall, undefined, giphySearch);
 }
 
 function conversation(id: string): Conversation {

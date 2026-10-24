@@ -58,7 +58,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs, origins)
+	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs, origins, cfg.GiphyAPIKey)
 	mux := runtime.NewHealthHandler("auth")
 	handler.Register(mux)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: runtime.WithCORS(cacheControl(mux), origins)}

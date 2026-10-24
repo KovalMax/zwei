@@ -1,5 +1,5 @@
 import {Injectable} from '@angular/core';
-import {HttpEvent, HttpHandler, HttpHeaders, HttpInterceptor, HttpRequest, HttpResponse} from '@angular/common/http';
+import {HttpContextToken, HttpEvent, HttpHandler, HttpHeaders, HttpInterceptor, HttpRequest, HttpResponse} from '@angular/common/http';
 import {catchError, exhaustMap, take, tap} from 'rxjs/operators';
 import {HttpErrorResponse} from '@angular/common/http';
 import {PRIMARY_OUTLET, Router} from '@angular/router';
@@ -8,6 +8,8 @@ import {Observable, throwError} from 'rxjs';
 import {AuthService} from './auth.service';
 import {PwaService} from '../pwa/pwa.service';
 import {HostService} from './host.service';
+
+export const SKIP_AUTH_INTERCEPTOR = new HttpContextToken<boolean>(() => false);
 
 @Injectable()
 export class AuthInterceptorService implements HttpInterceptor {
@@ -20,6 +22,7 @@ export class AuthInterceptorService implements HttpInterceptor {
     }
 
     intercept(req: HttpRequest<unknown>, next: HttpHandler): Observable<HttpEvent<unknown>> {
+        if (req.context.get(SKIP_AUTH_INTERCEPTOR)) return next.handle(req);
         return this.authService.token.pipe(
             take(1),
             exhaustMap(token => {
