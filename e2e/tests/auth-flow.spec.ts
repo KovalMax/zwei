@@ -150,9 +150,13 @@ test('serves the browser security headers', async ({request}) => {
   const response = await request.get('/');
 
   expect(response.ok()).toBeTruthy();
-  expect(response.headers()['content-security-policy']).toContain("default-src 'self'");
-  expect(response.headers()['content-security-policy']).not.toContain('fonts.googleapis.com');
-  expect(response.headers()['content-security-policy']).not.toContain('fonts.gstatic.com');
+  const contentSecurityPolicy = response.headers()['content-security-policy'];
+  expect(contentSecurityPolicy).toContain("default-src 'self'");
+  expect(contentSecurityPolicy).not.toContain('fonts.googleapis.com');
+  expect(contentSecurityPolicy).not.toContain('fonts.gstatic.com');
+  const imageSources = contentSecurityPolicy.split(';').find(directive => directive.trim().startsWith('img-src'))?.trim().split(/\s+/) ?? [];
+  const approvedGiphySources = ['media.giphy.com', 'media0.giphy.com', 'media1.giphy.com', 'media2.giphy.com', 'media3.giphy.com', 'media4.giphy.com'].map(host => `https://${host}`);
+  expect(imageSources).toEqual(['img-src', "'self'", 'data:', ...approvedGiphySources]);
   expect(response.headers()['x-content-type-options']).toBe('nosniff');
   expect(response.headers()['x-frame-options']).toBe('DENY');
   expect(response.headers()['referrer-policy']).toBe('strict-origin-when-cross-origin');

@@ -16,7 +16,8 @@ Run commands from the repository root unless noted. The root `Makefile` delegate
 | Follow service logs | `make logs` |
 | Run one Angular spec in the already-running frontend container | `make frontend-spec SPEC=src/app/home/home.component.spec.ts` |
 | Run the production Angular build in the already-running frontend container | `make frontend-build` |
-| Run full isolated Playwright suite | `make e2e` |
+| Run full serial Playwright suite | `make e2e` |
+| Run full Playwright suite in two isolated local groups | `make e2e-parallel` |
 | Run one Playwright test through isolated setup/teardown | `make e2e-one SPEC=tests/chat-flow.spec.ts TEST='direct call offers and answers connect in the browser UI'` |
 | Run service command in a container | `make exec <service> <command...>` |
 
@@ -29,15 +30,15 @@ make frontend-build
 make -C infrastructure frontend-test
 ```
 
-For browser diagnosis, use `make e2e-one SPEC=tests/<file>.spec.ts TEST='<test title or unique title substring>'` to run matching test case(s); omitting `TEST` selects the whole spec. The title is escaped and passed only as a literal Playwright `--grep` substring, not arbitrary CLI flags, regex, or shell syntax. This still uses the full isolated E2E setup and teardown. E2E runs reset the test database and Redis DB 1 and temporarily stop/recreate development `auth`, `chat`, and `realtime`, so do not run E2E commands concurrently against the same Compose project. Preserve and inspect artifacts in `e2e/test-results/`.
+For browser diagnosis, use `make e2e-one SPEC=tests/<file>.spec.ts TEST='<test title or unique title substring>'` to run matching test case(s); omitting `TEST` selects the whole spec. The title is escaped and passed only as a literal Playwright `--grep` substring, not arbitrary CLI flags, regex, or shell syntax. `make e2e` and `make e2e-one` use the shared local Compose project, reset its test database and Redis DB 1, and temporarily stop/recreate development `auth`, `chat`, and `realtime`; do not run these commands alongside work that needs those services. For local parallel speed, use `make e2e-parallel`: it runs two file-based groups (chat-flow and remaining specs) in separate disposable Compose projects, each with its own database, Redis, Mailpit, app services, network, volumes, and output directory. It does not stop or reset the development project, publishes no group ports, and permits one parallel invocation per workspace. Preserve and inspect artifacts in `e2e/test-results/`.
 
-The E2E runner fails closed if development configuration points at the reserved `messenger_test` database or Redis DB 1, because those namespaces are reset for E2E.
+The E2E runner fails closed if development configuration points at the reserved `messenger_test` database or Redis DB 1, because those namespaces are reset for E2E. E2E `BASE_URL` and `ADMIN_BASE_URL` must remain the local HTTPS hosts; the harness rejects external overrides. `make e2e-parallel` requires Docker Compose v2.24.4 or newer for Compose override tags and fails before startup if either fixed test subnet overlaps an existing Docker network.
 
-Run `make e2e` once at final browser acceptance; a focused spec does not replace the full suite. `infrastructure/scripts/e2e.sh` owns setup/teardown: it migrates the isolated test database, flushes Redis DB 1, creates the E2E admin, runs Playwright, and then recreates the development auth/chat/realtime services. Prefer the Make targets over invoking Playwright directly.
+Run the appropriate full suite at final browser acceptance; focused specs do not replace it. The existing `infrastructure/scripts/e2e.sh` owns the serial shared-project workflow. The `infrastructure/scripts/e2e-parallel.sh` parent owns two independent projects and coordinated cleanup; each group process migrates only its own test database, flushes only its own Redis DB 1, creates its own admin, and retains separately scoped Playwright output. Prefer Make targets over invoking Playwright directly.
 
 ## When direct Docker Compose commands are appropriate
 
-Use direct Compose only when a Make target cannot express the required operation (for example, rebuilding just the copied frontend/E2E images, forcing one service recreation, or probing health). Preserve the repository topology, Compose project name, base/override/test files, artifact mount, and database/Redis isolation. Do not invent a second stack or bypass the setup in `infrastructure/scripts/e2e.sh` for focused or full E2E runs.
+Use direct Compose only when a Make target cannot express the required operation (for example, forcing one service recreation or probing health). Preserve the repository topology, project-specific files, artifact mount, and database/Redis isolation. The parallel target intentionally uses `docker-compose.e2e-parallel.yml` with two generated project names, non-overlapping subnets, internal proxy/TURN addresses, and no published host ports; do not bypass its lifecycle or clean up by broad container/image patterns.
 
 The canonical Compose files and project are:
 
@@ -47,7 +48,7 @@ docker compose -p messenger \
   -f infrastructure/docker-compose.override.yml
 ```
 
-Before browser tests whose source is copied into images:
+Before browser tests whose source is copied into images for the shared development project:
 
 ```sh
 docker compose -p messenger \
@@ -60,9 +61,9 @@ docker compose -p messenger \
   up -d --force-recreate frontend
 ```
 
-Before browser tests whose source is copied into images, rebuild frontend/E2E images and recreate frontend as shown above. Wait for Angular's `Application bundle generation complete` in frontend logs (and verify HTTPS readiness) before `make e2e-one` or `make e2e`. Both targets preserve `e2e/test-results/` screenshots/traces; inspect passing visual artifacts as well as failures. Never use the development database for browser tests.
+Before `make e2e-one` or `make e2e`, rebuild frontend/E2E images and recreate frontend as shown above when copied sources changed; wait for Angular's `Application bundle generation complete` and verify HTTPS readiness. `make e2e-parallel` builds the E2E runner and the frontend image for each project before starting groups, then builds the shared production bundle once. All targets preserve `e2e/test-results/` artifacts; inspect passing visual artifacts as well as failures. Never use the development database for browser tests.
 
-Do not stop or remove the user's existing development stack unless the requested workflow requires it. E2E cleanup restores development auth/chat/realtime services; verify their health if startup/teardown was interrupted.
+Do not stop or remove the user's existing development stack unless the requested workflow requires it. The serial `e2e` workflow restores development auth/chat/realtime services; the parallel workflow tears down only its unique E2E projects. Verify development-service health after browser runs or interrupted cleanup.
 
 ## Change discipline
 

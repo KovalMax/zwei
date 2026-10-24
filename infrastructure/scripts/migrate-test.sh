@@ -1,11 +1,14 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 set -eu
 
 NAME_PREFIX="$1"
-COMPOSE="docker compose -p $NAME_PREFIX -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml"
+COMPOSE=(docker compose -p "$NAME_PREFIX" -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml)
+if [ -n "${2:-}" ]; then
+  COMPOSE+=( -f "$2" )
+fi
 
-$COMPOSE exec -T database sh -eu -c '
+"${COMPOSE[@]}" exec -T database sh -eu -c '
 dropdb --if-exists --force -U "$POSTGRES_USER" messenger_test
 createdb -U "$POSTGRES_USER" messenger_test
 for migration in /migrations/*.sql; do

@@ -48,9 +48,10 @@ make frontend-spec SPEC=src/app/home/home.component.spec.ts
 make -C infrastructure frontend-test
 make frontend-build
 make e2e
+make e2e-parallel
 ```
 
-The Playwright suite runs in an isolated Docker Compose test environment with its own database and Redis namespace. It temporarily stops and recreates the development auth/chat/realtime services while running; do not run E2E concurrently against the same Compose project. Mailpit is available in the local stack for inspecting test activation messages. See `make help` and `make -C infrastructure help` for supported targets.
+`make e2e` runs the serial Playwright suite with a reserved test database and Redis DB in the shared local Compose project; it temporarily stops and recreates development auth/chat/realtime, so do not use it while relying on those services. For faster local feedback, `make e2e-parallel` runs two file-based Playwright groups concurrently in separate disposable Compose projects: `chat-flow` and the remaining specs. Each group has one Playwright worker and its own database, Redis, Mailpit, application services, network, volumes, and artifacts; the groups cover every discovered spec exactly once and neither stops or resets the development stack. The parallel target requires Docker Compose v2.24.4 or newer, is capped at two groups, uses additional CPU/memory, and allows only one parallel-suite invocation per workspace. It accepts only the local HTTPS test hosts `chat.localhost` and `kyc.localhost`; it refuses custom URLs to avoid sending test credentials or traffic to unintended services. Both targets use disposable E2E data, not the development database. Mailpit in the development stack remains available for inspecting development messages. See `make help` and `make -C infrastructure help` for supported targets.
 
 ## GitHub checks and releases
 

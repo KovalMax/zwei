@@ -1,0 +1,48 @@
+# Parallel E2E groups run only on their private Docker network. No group binds
+# development host ports; Compose project names scope containers and volumes.
+services:
+  traefik:
+    ports: !reset []
+    volumes: !override
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - e2e-traefik-certs:/certs:ro
+    networks:
+      messenger-network:
+        ipv4_address: ${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}
+
+  traefik-certgen:
+    volumes: !override
+      - e2e-traefik-certs:/certs
+
+  frontend:
+    ports: !reset []
+
+  database:
+    ports: !reset []
+
+  mailpit:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  coturn:
+    ports: !reset []
+    networks:
+      messenger-network:
+        ipv4_address: ${E2E_COTURN_IP:?E2E_COTURN_IP is required}
+
+  e2e:
+    image: ${E2E_RUNNER_IMAGE:?E2E_RUNNER_IMAGE is required}
+    extra_hosts: !override
+      - "host.docker.internal:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "chat.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "auth.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "api.chat.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "ws.chat.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "kyc.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "traefik.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
+      - "turn.chat.localhost:${E2E_COTURN_IP:?E2E_COTURN_IP is required}"
+
+volumes:
+  e2e-traefik-certs:

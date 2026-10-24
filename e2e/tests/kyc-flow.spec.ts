@@ -167,7 +167,18 @@ async function invitationLink(request: APIRequestContext, email: string): Promis
 async function captureTableBounds(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   const table = page.locator('.table-wrap').first();
   const rows = table.locator('tbody tr');
+  const adminScroller = page.locator('.admin-page');
+  const initialAdminScrollTop = await adminScroller.evaluate(element => element.scrollTop);
+  const initialTableScrollTop = await table.evaluate(element => element.scrollTop);
+  await adminScroller.evaluate(element => { element.scrollTop = 0; });
+  await table.evaluate(element => { element.scrollTop = 0; });
   await expect(rows.first()).toBeVisible();
+  const firstRowGeometry = await rows.first().evaluate(row => {
+    const rect = row.getBoundingClientRect();
+    return {top: rect.top, bottom: rect.bottom, viewportHeight: window.innerHeight};
+  });
+  expect(firstRowGeometry.top, `${name} first row must be fully inside the top-state viewport`).toBeGreaterThanOrEqual(0);
+  expect(firstRowGeometry.bottom, `${name} first row must be fully inside the top-state viewport`).toBeLessThanOrEqual(firstRowGeometry.viewportHeight);
   await page.screenshot({path: testInfo.outputPath(`${name}-top.png`), fullPage: false});
 
   const end = await table.evaluate(element => {
@@ -176,8 +187,64 @@ async function captureTableBounds(page: Page, testInfo: TestInfo, name: string):
   });
   expect(end.scrollTop).toBeGreaterThanOrEqual(Math.max(0, end.scrollHeight - end.clientHeight) - 1);
   await expect(rows.last()).toBeVisible();
+  // The table is internally scrollable, but the admin page can also scroll.
+  // Move the outer page only as much as needed to show the end row while
+  // keeping the table's sticky header visible in the same viewport.
+  await adminScroller.evaluate(scroller => {
+    const row = scroller.querySelector('.table-wrap tbody tr:last-child');
+    if (!row) throw new Error('KYC account table must contain a final row');
+    const scrollerRect = scroller.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const visibleTop = Math.max(0, scrollerRect.top);
+    const visibleBottom = Math.min(window.innerHeight, scrollerRect.bottom);
+    const delta = rowRect.bottom > visibleBottom
+      ? Math.ceil(rowRect.bottom - visibleBottom)
+      : rowRect.top < visibleTop ? Math.floor(rowRect.top - visibleTop) : 0;
+    scroller.scrollTop += delta;
+  });
+  const lastRowGeometry = await rows.last().evaluate(row => {
+    const rect = row.getBoundingClientRect();
+    const table = row.closest<HTMLElement>('.table-wrap');
+    if (!table) throw new Error('KYC account table row must belong to a table scrollport');
+    const tableRect = table.getBoundingClientRect();
+    const header = table.querySelector('thead th');
+    if (!header) throw new Error('KYC account table must contain a header');
+    const headerRect = header.getBoundingClientRect();
+    const borderTop = Number.parseFloat(getComputedStyle(table).borderTopWidth);
+    return {
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportHeight: window.innerHeight,
+      tableTop: tableRect.top,
+      tableBottom: tableRect.bottom,
+      tableBorderTop: borderTop,
+      tableLeft: tableRect.left,
+      tableRight: tableRect.right,
+      headerTop: headerRect.top,
+      headerBottom: headerRect.bottom,
+      tableScrollTop: table.scrollTop,
+      tableScrollHeight: table.scrollHeight,
+      tableClientHeight: table.clientHeight,
+      tableScrollWidth: table.scrollWidth,
+      tableClientWidth: table.clientWidth,
+      adminScrollTop: document.querySelector<HTMLElement>('.admin-page')?.scrollTop,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      documentClientWidth: document.documentElement.clientWidth,
+    };
+  });
+  console.log(`KYC table end geometry (${name}): ${JSON.stringify(lastRowGeometry)}`);
+  expect(lastRowGeometry.top, `${name} final row must be fully inside viewport`).toBeGreaterThanOrEqual(0);
+  expect(lastRowGeometry.bottom, `${name} final row must be fully inside viewport`).toBeLessThanOrEqual(lastRowGeometry.viewportHeight);
+  expect(lastRowGeometry.headerTop, `${name} table header must remain in viewport`).toBeGreaterThanOrEqual(0);
+  expect(lastRowGeometry.headerBottom, `${name} table header must remain in viewport`).toBeLessThanOrEqual(lastRowGeometry.viewportHeight);
+  expect(lastRowGeometry.headerTop, `${name} sticky header must remain pinned to the table scrollport`).toBeGreaterThanOrEqual(lastRowGeometry.tableTop + lastRowGeometry.tableBorderTop - 1);
+  expect(lastRowGeometry.headerTop, `${name} sticky header must remain pinned to the table scrollport`).toBeLessThanOrEqual(lastRowGeometry.tableTop + lastRowGeometry.tableBorderTop + 1);
+  expect(lastRowGeometry.tableLeft, `${name} table must remain horizontally contained`).toBeGreaterThanOrEqual(0);
+  expect(lastRowGeometry.tableRight, `${name} table must remain horizontally contained`).toBeLessThanOrEqual(lastRowGeometry.documentClientWidth);
+  expect(lastRowGeometry.tableScrollWidth, `${name} table scrollport must expose its horizontal content`).toBeGreaterThanOrEqual(lastRowGeometry.tableClientWidth);
   await page.screenshot({path: testInfo.outputPath(`${name}-end.png`), fullPage: false});
-  await table.evaluate(element => { element.scrollTop = 0; });
+  await adminScroller.evaluate((element, scrollTop) => { element.scrollTop = scrollTop; }, initialAdminScrollTop);
+  await table.evaluate((element, scrollTop) => { element.scrollTop = scrollTop; }, initialTableScrollTop);
 }
 
 async function assertPinnedTableSurfacesAreOpaque(page: Page): Promise<void> {
