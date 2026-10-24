@@ -12,6 +12,13 @@ function uniqueEmail(name: string): string {
 type BrowserNotificationRecord = {title: string; body?: string; tag?: string};
 type RenderedContrast = {foreground: string; background: string; ratio: number};
 type RenderedTextContrast = {foreground: string; background: string; ratio: number; opacity: number; disabled: boolean; visible: boolean};
+type Deferred = {promise: Promise<void>; resolve: () => void};
+
+function createDeferred(): Deferred {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>(complete => { resolve = complete; });
+  return {promise, resolve};
+}
 
 async function waitForReadableTooltip(tooltip: Locator): Promise<RenderedTextContrast> {
   const deadline = Date.now() + 5_000;
@@ -2804,7 +2811,8 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
   const suppliedRendition = 'https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExcmNlZHQwd2hybXFhOTN6Y3hndms1Z2pyZjkzeGo2Z2libTFhbm9sNCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/gh6gFVh35jyzNvHegl/giphy.gif';
   let failSuppliedRendition = false;
   let restoreGiphySource: (() => Promise<void>) | undefined;
-  const gif = Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64');
+  const gif = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" rx="12" fill="#46a7bd"/><circle cx="160" cy="90" r="45" fill="#f6c86c"/></svg>';
+  const tinyGif = Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64');
   const mockProvider = async (route: import('@playwright/test').Route): Promise<void> => {
     mediaRequests.push(route.request().url());
     if (route.request().headers().cookie || route.request().headers().authorization) credentialedProviderRequests.push(route.request().url());
@@ -2812,7 +2820,8 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
       await route.fulfill({status: 504, contentType: 'text/html', body: '<!doctype html><title>Gateway timeout</title><h1>504 Gateway Timeout</h1>'});
       return;
     }
-    await route.fulfill({status: 200, contentType: 'image/gif', headers: {'Access-Control-Allow-Origin': '*'}, body: gif});
+    const tinyRendition = route.request().url().includes('fixture=auto');
+    await route.fulfill({status: 200, contentType: tinyRendition ? 'image/gif' : 'image/svg+xml', headers: {'Access-Control-Allow-Origin': '*'}, body: tinyRendition ? tinyGif : gif});
   };
   await Promise.all([aliceContext.addCookies([{name: 'provider-session', value: 'must-not-leak', domain: 'giphy.com', path: '/', secure: true, sameSite: 'None'}]),
     bobContext.addCookies([{name: 'provider-session', value: 'must-not-leak', domain: 'giphy.com', path: '/', secure: true, sameSite: 'None'}])]);
@@ -2877,7 +2886,49 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     const loadedImage = directMedia.locator('img');
     await expect(loadedImage).toBeVisible();
     await expect.poll(() => loadedImage.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-    await bob.screenshot({path: testInfo.outputPath('giphy-media2-loaded-mobile.png')});
+    const sentMediaGeometry = await bob.evaluate(() => {
+      const image = document.querySelector<HTMLImageElement>('.message-history app-inline-giphy img');
+      const bubble = image?.closest<HTMLElement>('.message-bubble');
+      const history = document.querySelector<HTMLElement>('.message-history');
+      const composer = document.querySelector<HTMLElement>('.composer');
+      if (!image || !bubble || !history || !composer) return null;
+      const imageRect = image.getBoundingClientRect(); const bubbleRect = bubble.getBoundingClientRect();
+      const historyRect = history.getBoundingClientRect(); const composerRect = composer.getBoundingClientRect();
+      return {imageBottom: imageRect.bottom, bubbleBottom: bubbleRect.bottom, historyBottom: historyRect.bottom, composerTop: composerRect.top,
+        historyClientBottom: historyRect.top + history.clientHeight, imageWidth: imageRect.width, bubbleWidth: bubbleRect.width};
+    });
+    expect(sentMediaGeometry).not.toBeNull();
+    expect(sentMediaGeometry!.imageBottom).toBeLessThanOrEqual(sentMediaGeometry!.bubbleBottom - 10);
+    expect(sentMediaGeometry!.bubbleBottom).toBeLessThanOrEqual(sentMediaGeometry!.historyClientBottom);
+    expect(sentMediaGeometry!.composerTop - sentMediaGeometry!.historyBottom).toBeGreaterThanOrEqual(8);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(bob, theme);
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+        await bob.setViewportSize(viewport);
+        await expect(loadedImage).toBeVisible();
+        const geometry = await bob.evaluate(() => {
+          const image=document.querySelector<HTMLImageElement>('.message-history app-inline-giphy img');
+          const bubble=image?.closest<HTMLElement>('.message-bubble'); const history=document.querySelector<HTMLElement>('.message-history');
+          const composer=document.querySelector<HTMLElement>('.composer');
+          if (!image || !bubble || !history || !composer) return null;
+          const i=image.getBoundingClientRect(); const b=bubble.getBoundingClientRect(); const h=history.getBoundingClientRect(); const c=composer.getBoundingClientRect();
+          return {imageLeft:i.left,imageRight:i.right,imageBottom:i.bottom,imageWidth:i.width,imageHeight:i.height,bubbleLeft:b.left,bubbleRight:b.right,bubbleBottom:b.bottom,
+            historyClientBottom:h.top+history.clientHeight,historyBottom:h.bottom,composerTop:c.top,documentWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth,
+            bubbleBackground:getComputedStyle(bubble).backgroundColor};
+        });
+        expect(geometry).not.toBeNull();
+        expect(geometry!.imageLeft).toBeGreaterThanOrEqual(geometry!.bubbleLeft);
+        expect(geometry!.imageRight).toBeLessThanOrEqual(geometry!.bubbleRight);
+        expect(geometry!.imageWidth).toBeGreaterThan(100);
+        expect(geometry!.imageHeight).toBeGreaterThan(50);
+        expect(geometry!.imageBottom).toBeLessThanOrEqual(geometry!.bubbleBottom - 10);
+        expect(geometry!.bubbleBottom).toBeLessThanOrEqual(geometry!.historyClientBottom);
+        expect(geometry!.composerTop - geometry!.historyBottom).toBeGreaterThanOrEqual(8);
+        expect(geometry!.documentWidth).toBeLessThanOrEqual(geometry!.clientWidth + 1);
+        expect(geometry!.bubbleBackground).toBe(theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(38, 53, 70)');
+        await bob.screenshot({path:testInfo.outputPath(`giphy-loaded-latest-${theme}-${viewport.width}.png`)});
+      }
+    }
     expect(credentialedProviderRequests).toHaveLength(0);
 
     const share = 'https://giphy.com/gifs/dancing-cat-YsTs5ltWtEhnq';
@@ -3086,6 +3137,10 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
   const gifURL = 'https://media3.giphy.com/media/v1.c2FuaXRpemVkLXRva2Vu/approved42/200.gif';
   let malformedResponseSent = false;
   let searchRequests = 0;
+  const searchOffsets: number[] = [];
+  let routeSearchLimit = '';
+  let pageFailureSent = false;
+  const pageRequestGates: Array<{entered: Deferred<void>; response: Deferred<void>}> = [];
   let expectedSearchQuery = 'cats';
   let mediaPolicyMode: 'enabled' | 'disabled' | 'failure' = 'enabled';
   let mediaPolicyRequests = 0;
@@ -3102,7 +3157,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     if (mediaPolicyMode === 'failure') return route.abort();
     return route.fulfill({json: {giphy_enabled: mediaPolicyMode === 'enabled'}});
   });
-  await senderContext.route('https://api.giphy.com/v1/gifs/search**', route => {
+  await senderContext.route('https://api.giphy.com/v1/gifs/search**', async route => {
     searchRequests++;
     const headers = route.request().headers();
     expect(headers.authorization).toBeUndefined(); expect(headers.cookie).toBeUndefined(); expect(headers.referer).toBeUndefined();
@@ -3115,12 +3170,24 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
       return route.fulfill({headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {data: [{id:'malformed'}]}});
     }
     if (searchParams.get('q') === 'nothing') {
-      return route.fulfill({headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {data: []}});
+      return route.fulfill({headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {data: [], meta: {pagination: {offset: 0, count: 0, total_count: 0}}}});
     }
     if (searchParams.get('q') === 'limited') {
-      return route.fulfill({status: 429, headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {meta: {status: 429, msg: 'Rate limit exceeded'}, data: []}});
+      return route.fulfill({status: 429, headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {meta: {status: 429, msg: 'Rate limit exceeded', pagination: {offset: 0, count: 0, total_count: 0}}, data: []}});
     }
-    return route.fulfill({headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {data: [{id: 'fixture-cat', title: 'Cat GIF', rating: 'g', images: {fixed_height: {url: gifURL}}}]}});
+    const offset = Number(searchParams.get('offset'));
+    routeSearchLimit = searchParams.get('limit') ?? '';
+    searchOffsets.push(offset);
+    if (offset === 50) {
+      const requestGate = pageRequestGates.shift();
+      expect(requestGate, 'each offset=50 provider request has a prepared route-entry signal').toBeDefined();
+      requestGate?.entered.resolve();
+      await requestGate?.response.promise;
+    }
+    if (offset === 50 && !pageFailureSent) { pageFailureSent = true; return route.fulfill({status: 503, headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {message: 'temporary provider failure'}}); }
+    const pageItems = offset === 50 ? Array.from({length: 5}, (_, index) => ({id: `fixture-cat-${50 + index}`, title: `Cat GIF ${50 + index}`, rating: 'g', images: {fixed_height: {url: gifURL}}}))
+      : Array.from({length: 50}, (_, index) => ({id: `fixture-cat-${index}`, title: index === 0 ? 'Cat GIF' : `Cat GIF ${index}`, rating: 'g', images: {fixed_height: {url: gifURL}}}));
+    return route.fulfill({headers: {'access-control-allow-origin': 'https://chat.localhost'}, json: {data: pageItems, meta: {pagination: {offset, count: pageItems.length, total_count: 55}}}});
   });
   await senderContext.route('https://media3.giphy.com/**', route => route.fulfill({status: 504, body: 'media upstream timeout'}));
   const runGiphySearch = async () => {
@@ -3188,6 +3255,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
           expect(searchRequests).toBe(requestsBeforeOpening);
           expect(giphyKeyRequests).toBe(keyRequestsBeforeOpening);
         }
+        pageFailureSent = false;
         await query.fill('cats'); await runGiphySearch();
         if (theme === 'light' && viewport.width === 2560) {
           await expect(picker.getByRole('alert')).toContainText('GIPHY search failed. Try again.');
@@ -3202,31 +3270,94 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
           expectedSearchQuery = 'cats';
           await query.fill('cats'); await runGiphySearch();
         }
-        await expect(picker.getByRole('button', {name: 'Preview Cat GIF'})).toBeVisible();
-        await expect(picker.locator('.giphy-results .giphy-thumbnail-fallback')).toBeVisible();
+        await expect(picker.getByRole('button', {name: 'Preview Cat GIF', exact: true})).toBeVisible();
+        expect(searchOffsets.at(-1)).toBe(0);
+        expect(routeSearchLimit).toBe('50');
+        const results = picker.locator('.giphy-results');
+        await expect(results.locator('button')).toHaveCount(50);
+        const firstResult = results.locator('button').first();
+        const firstBaseFilter = await firstResult.evaluate(button => getComputedStyle(button).filter);
+        await firstResult.hover();
+        await expect.poll(() => firstResult.evaluate(button => getComputedStyle(button).filter)).not.toBe(firstBaseFilter);
+        await sender.screenshot({path:testInfo.outputPath(`giphy-picker-hover-${theme}-${viewport.width}.png`)});
+        await firstResult.focus();
+        const firstRing = await firstResult.evaluate(button => {
+          const r=button.getBoundingClientRect(); const s=button.parentElement as HTMLElement;
+          const style=getComputedStyle(button); const edge=parseFloat(style.outlineWidth)+parseFloat(style.outlineOffset);
+          const left=s.getBoundingClientRect().left+s.clientLeft; const top=s.getBoundingClientRect().top+s.clientTop;
+          return {left:r.left-edge,right:r.right+edge,top:r.top-edge,bottom:r.bottom+edge,scrollLeft:left,scrollRight:left+s.clientWidth,scrollTop:top,scrollBottom:top+s.clientHeight,outline:style.outlineStyle};
+        });
+        expect(firstRing.outline).toBe('solid');
+        expect(firstRing.left).toBeGreaterThanOrEqual(firstRing.scrollLeft);
+        expect(firstRing.right).toBeLessThanOrEqual(firstRing.scrollRight);
+        expect(firstRing.top).toBeGreaterThanOrEqual(firstRing.scrollTop);
+        expect(firstRing.bottom).toBeLessThanOrEqual(firstRing.scrollBottom);
+        await sender.screenshot({path:testInfo.outputPath(`giphy-picker-focus-first-${theme}-${viewport.width}.png`)});
+
+        // Hold each page response long enough to capture the actual pending UI state.
+        pageFailureSent = false;
+        const initialPageRequest = {entered: createDeferred<void>(), response: createDeferred<void>()};
+        pageRequestGates.push(initialPageRequest);
+        await results.evaluate(element => { element.scrollTop = element.scrollHeight; });
+        await initialPageRequest.entered.promise;
+        await expect(picker.getByRole('status')).toContainText('Loading more GIFs…');
+        await sender.screenshot({path:testInfo.outputPath(`giphy-pagination-loading-${theme}-${viewport.width}.png`)});
+        initialPageRequest.response.resolve();
+        await expect(picker.getByRole('alert')).toContainText('Could not load more GIFs.');
+        await expect(results.locator('button')).toHaveCount(50);
+        await sender.screenshot({path:testInfo.outputPath(`giphy-pagination-error-retry-${theme}-${viewport.width}.png`)});
+
+        const retryPageRequest = {entered: createDeferred<void>(), response: createDeferred<void>()};
+        pageRequestGates.push(retryPageRequest);
+        await picker.getByRole('button', {name:'Retry loading more'}).click();
+        await retryPageRequest.entered.promise;
+        await expect(picker.getByRole('status')).toContainText('Loading more GIFs…');
+        await sender.screenshot({path:testInfo.outputPath(`giphy-pagination-retry-loading-${theme}-${viewport.width}.png`)});
+        retryPageRequest.response.resolve();
+        await expect(results.locator('button')).toHaveCount(55);
+        await expect(picker.getByRole('status')).toContainText('End of GIPHY results.');
+        expect(searchOffsets.at(-1)).toBe(50);
+        await results.evaluate(element => { element.scrollTop = element.scrollHeight; });
+        const lastResult = results.locator('button').last();
+        await lastResult.hover(); await lastResult.focus();
+        const lastRing = await lastResult.evaluate(button => {
+          const r=button.getBoundingClientRect(); const s=button.parentElement as HTMLElement;
+          const style=getComputedStyle(button); const edge=parseFloat(style.outlineWidth)+parseFloat(style.outlineOffset);
+          const left=s.getBoundingClientRect().left+s.clientLeft; const top=s.getBoundingClientRect().top+s.clientTop;
+          return {left:r.left-edge,right:r.right+edge,top:r.top-edge,bottom:r.bottom+edge,scrollLeft:left,scrollRight:left+s.clientWidth,scrollTop:top,scrollBottom:top+s.clientHeight,outline:style.outlineStyle};
+        });
+        expect(lastRing.outline).toBe('solid');
+        expect(lastRing.left).toBeGreaterThanOrEqual(lastRing.scrollLeft);
+        expect(lastRing.right).toBeLessThanOrEqual(lastRing.scrollRight);
+        expect(lastRing.top).toBeGreaterThanOrEqual(lastRing.scrollTop);
+        expect(lastRing.bottom).toBeLessThanOrEqual(lastRing.scrollBottom);
+        await sender.screenshot({path:testInfo.outputPath(`giphy-pagination-end-${theme}-${viewport.width}.png`)});
+        await expect(picker.locator('.giphy-results .giphy-thumbnail-fallback').first()).toBeVisible();
         await expect(picker.locator('.giphy-results img')).toHaveCount(0);
         const geometry = await picker.evaluate(element => {
           const r=element.getBoundingClientRect(); const t=document.querySelector<HTMLElement>('[aria-controls="giphy-picker"]')?.getBoundingClientRect();
           const style=getComputedStyle(element); const parse=(color:string)=>color.match(/[\d.]+/g)?.slice(0,3).map(Number) ?? [0,0,0];
           const luminance=(rgb:number[])=>rgb.map(value=>value/255).map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[0.2126,0.7152,0.0722][index],0);
           const foreground=luminance(parse(style.color)); const background=luminance(parse(style.backgroundColor));
-          return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,triggerTop:t?.top ?? 0,scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth,contrast:(Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05)};
+          return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,triggerTop:t?.top ?? 0,scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth,
+            surface:style.backgroundColor,text:style.color,contrast:(Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05)};
         });
         expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
         expect(geometry.left).toBeGreaterThanOrEqual(0); expect(geometry.right).toBeLessThanOrEqual(viewport.width + 1);
         expect(geometry.top).toBeGreaterThanOrEqual(0); expect(geometry.bottom).toBeLessThanOrEqual(viewport.height + 1);
         expect(geometry.bottom).toBeLessThanOrEqual(geometry.triggerTop + 1);
         expect(geometry.contrast).toBeGreaterThanOrEqual(4.5);
-        if ((theme === 'light' && viewport.width === 1440) || (theme === 'dark' && viewport.width === 390)) await sender.screenshot({path:testInfo.outputPath(`giphy-picker-${theme}-${viewport.width}.png`)});
-        if (viewport.width === 1024) await sender.screenshot({path:testInfo.outputPath(`giphy-picker-results-${theme}-1024.png`)});
-        await sender.getByRole('button', {name: 'Preview Cat GIF'}).click();
+        expect(geometry.surface).toBe(theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(38, 53, 70)');
+        expect(geometry.text).toBe(theme === 'light' ? 'rgb(23, 32, 51)' : 'rgb(241, 245, 249)');
+        await sender.screenshot({path:testInfo.outputPath(`giphy-picker-${theme}-${viewport.width}.png`)});
+        await sender.getByRole('button', {name: 'Preview Cat GIF', exact: true}).click();
         await expect(picker.getByText('GIPHY media could not be loaded. You can still send the link or open the original GIF.')).toBeVisible();
         if (keyboardOpening) await sender.screenshot({path:testInfo.outputPath(`giphy-preview-media-failure-${theme}-${viewport.width}.png`)});
         const messageCountBeforeCancel = await sender.locator('.message-history .message-bubble').count();
         await sender.getByRole('button', {name: 'Cancel'}).click();
         await expect(sender.locator('.message-history .message-bubble')).toHaveCount(messageCountBeforeCancel);
         await query.fill('cats'); await runGiphySearch();
-        await sender.getByRole('button', {name:'Preview Cat GIF'}).click(); await sender.getByRole('button', {name:'Send', exact:true}).click();
+        await sender.getByRole('button', {name:'Preview Cat GIF', exact:true}).click(); await sender.getByRole('button', {name:'Send', exact:true}).click();
         const incomingLink = recipient.locator('.message-history').getByRole('link', {name:'Open original GIPHY link'}).last();
         const outgoingLink = sender.locator('.message-history').getByRole('link', {name:'Open original GIPHY link'}).last();
         await expect(incomingLink).toHaveAttribute('href', gifURL);
@@ -3335,7 +3466,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
       await setTheme(sender, theme);
       await sender.getByRole('button', {name:'Open GIPHY picker'}).click();
       await sender.getByRole('searchbox', {name:'Search GIPHY'}).fill('cats'); await runGiphySearch();
-      await sender.getByRole('button', {name:'Preview Cat GIF'}).click(); await sender.getByRole('button', {name:'Send', exact:true}).click();
+      await sender.getByRole('button', {name:'Preview Cat GIF', exact:true}).click(); await sender.getByRole('button', {name:'Send', exact:true}).click();
       const groupLink = sender.locator('.message-history app-inline-giphy a[href="' + gifURL + '"]').last();
       await expect(groupLink).toBeVisible();
       const groupLinkContrast = await groupLink.evaluate(element => {

@@ -9,12 +9,15 @@ app-home .giphy-search-row input { min-width: 0; flex: 1; padding: 8px; border: 
 app-home .composer-picker.giphy-picker button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--chat-line-strong); border-radius: 8px; background: var(--chat-surface-control); color: var(--chat-text-strong); cursor: pointer; }
 app-home .composer-picker.giphy-picker button:focus-visible, app-home .giphy-search-row input:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 app-home .giphy-disclosure, app-home .giphy-picker [role="status"], app-home .giphy-picker [role="alert"] { margin: 7px 0; color: var(--chat-muted); font-size: 11px; line-height: 1.4; }
-app-home .giphy-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; max-height: 260px; margin: 8px 0; overflow-y: auto; }
+app-home .giphy-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; box-sizing: border-box; max-height: 260px; margin: 8px 0; padding: 6px; overflow-y: auto; scroll-padding: 6px; }
 app-home .giphy-results button { display: grid; min-width: 0; height: 76px; padding: 2px; overflow: hidden; }
+app-home .giphy-results button:hover { box-shadow: 0 0 0 2px var(--chat-accent); filter: brightness(.94); }
 app-home .giphy-results img { display: block; width: 100%; height: 100%; object-fit: cover; }
 app-home .giphy-results .giphy-thumbnail-fallback { display: grid; width: 100%; height: 100%; place-items: center; border-radius: 5px; background: var(--chat-surface-raised); color: var(--chat-muted); font-size: 12px; font-weight: 800; letter-spacing: .08em; }
 app-home .giphy-attribution { display: block; margin-top: 8px; color: var(--chat-muted); font-size: 11px; }
 app-home .giphy-preview { display: grid; gap: 8px; overflow-wrap: anywhere; }
+app-home .giphy-preview > a { color: var(--chat-text-strong); text-decoration: underline; text-underline-offset: 2px; }
+app-home .giphy-preview > a:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 app-home .giphy-preview img { width: min(100%, 320px); max-height: 240px; object-fit: contain; }
 app-home .giphy-preview > div { display: flex; justify-content: flex-end; gap: 8px; }
 app-home .composer-picker-wrap { position: relative; flex: 0 0 auto; }

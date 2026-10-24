@@ -21,7 +21,7 @@ import {ZweiIconName} from '../shared/zwei-icon/zwei-icon.component';
 import {DirectCallSurfaceIntent} from './call-presentation/direct-call-surface.component';
 import {GroupCallSurfaceIntent} from './call-presentation/group-call-surface.component';
 import {parseGiphyMedia} from './giphy-media';
-import {GiphySearchResult, GiphySearchService} from './giphy-search.service';
+import {GiphySearchPage, GiphySearchResult, GiphySearchService} from './giphy-search.service';
 import {PwaService} from '../pwa/pwa.service';
 
 const GIPHY_SEARCH_COOLDOWN_MS = 750;
@@ -74,6 +74,11 @@ export class HomeComponent implements OnInit, OnDestroy {
     public giphyPreviewFailed = false;
     public giphySearchState: 'idle' | 'loading' | 'results' | 'empty' | 'error' = 'idle';
     public giphySearchError = '';
+    public giphyPageLoading = false;
+    public giphyPageError = false;
+    public giphyHasMore = false;
+    private giphyNextOffset = 0;
+    private giphyActiveQuery = '';
     public readonly composerEmojis = COMPOSER_EMOJIS;
     public mentionSuggestions: {userId: string; displayName: string}[] = [];
     public activeMentionIndex = 0;
@@ -752,11 +757,46 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphySearchCooldownTimer = window.setTimeout(() => this.changeDetector.markForCheck(), GIPHY_SEARCH_COOLDOWN_MS);
         this.giphySearchRequest?.unsubscribe();
         const generation = ++this.giphySearchGeneration;
+        this.giphyActiveQuery = term;
         this.giphySearchState = 'loading'; this.giphySearchError = ''; this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined;
-        this.giphySearchRequest = this.giphySearch.search(term).subscribe({
-            next: results => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled) return; this.giphyResults = results; this.giphySearchState = results.length ? 'results' : 'empty'; this.changeDetector.markForCheck(); },
+        this.giphyPageError = false; this.giphyPageLoading = false; this.giphyHasMore = false; this.giphyNextOffset = 0;
+        this.giphySearchRequest = this.giphySearch.search(term, 0).subscribe({
+            next: page => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled || !this.giphyPickerOpen) return; this.acceptGiphyPage(page, false); },
             error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.changeDetector.markForCheck(); },
         });
+    }
+
+    public loadMoreGiphy(): void {
+        if (!this.giphyHasMore || this.giphyPageLoading || !this.giphyEnabled || !this.giphyPickerOpen || !this.giphyActiveQuery || !this.giphySearch) return;
+        const offset = this.giphyNextOffset;
+        if (offset > 4999) { this.giphyHasMore = false; return; }
+        const generation = this.giphySearchGeneration;
+        this.giphyPageLoading = true; this.giphyPageError = false;
+        this.giphySearchRequest = this.giphySearch.search(this.giphyActiveQuery, offset).subscribe({
+            next: page => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled || !this.giphyPickerOpen) return; this.giphyPageLoading = false; this.acceptGiphyPage(page, true); },
+            error: () => { if (generation !== this.giphySearchGeneration) return; this.giphyPageLoading = false; this.giphyPageError = true; this.changeDetector.markForCheck(); },
+        });
+    }
+
+    public onGiphyResultsScroll(event: Event): void {
+        const region = event.currentTarget;
+        if (region instanceof HTMLElement && region.scrollHeight - region.scrollTop - region.clientHeight <= 80) this.loadMoreGiphy();
+    }
+
+    private acceptGiphyPage(page: GiphySearchPage, append: boolean): void {
+        const knownIDs = new Set(append ? this.giphyResults.map(result => result.id) : []);
+        const unique: GiphySearchResult[] = [];
+        for (const result of page.results) {
+            if (knownIDs.has(result.id)) continue;
+            knownIDs.add(result.id);
+            unique.push(result);
+        }
+        this.giphyResults = append ? [...this.giphyResults, ...unique] : unique;
+        this.giphyNextOffset = page.offset + page.count;
+        this.giphyHasMore = page.hasMore && this.giphyNextOffset <= 4999;
+        this.giphyPageError = false;
+        this.giphySearchState = this.giphyResults.length ? 'results' : 'empty';
+        this.changeDetector.markForCheck();
     }
 
     public selectGiphy(result: GiphySearchResult): void {
@@ -791,6 +831,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphySearchGeneration++;
         this.giphySearchRequest?.unsubscribe(); this.giphySearchRequest = undefined;
         this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = '';
+        this.giphyPageLoading = false; this.giphyPageError = false; this.giphyHasMore = false; this.giphyNextOffset = 0; this.giphyActiveQuery = '';
     }
 
     public onDraftChange(): void {
