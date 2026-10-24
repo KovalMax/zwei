@@ -274,7 +274,25 @@ func consumeMessagePushIntents(ctx context.Context, dispatcher *messagepush.Disp
 			err := dispatcher.Process(workCtx, 4)
 			cancel()
 			if err != nil && ctx.Err() == nil {
-				logger.Warn("message push batch failed", "reason", "internal")
+				var diagnostic *messagepush.DiagnosticError
+				if errors.As(err, &diagnostic) {
+					reason := "internal"
+					switch diagnostic.Reason {
+					case "resolve_failed", "presence_failed", "provider_failed", "internal":
+						reason = diagnostic.Reason
+					}
+					if reason == "provider_failed" && diagnostic.HTTPStatus >= 100 && diagnostic.HTTPStatus <= 599 {
+						if messagepush.IsAppleProviderCode(diagnostic.ProviderCode) {
+							logger.Warn("message push batch failed", "reason", reason, "http_status", diagnostic.HTTPStatus, "provider_code", diagnostic.ProviderCode)
+						} else {
+							logger.Warn("message push batch failed", "reason", reason, "http_status", diagnostic.HTTPStatus)
+						}
+					} else {
+						logger.Warn("message push batch failed", "reason", reason)
+					}
+				} else {
+					logger.Warn("message push batch failed", "reason", "internal")
+				}
 			}
 		}
 	}

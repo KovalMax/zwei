@@ -5,13 +5,22 @@ import {Subscription} from 'rxjs';
 import {PushSubscriptionClient} from '../auth/push-subscription.client';
 
 export type PushEnrollmentState = 'unsupported' | 'denied' | 'permission-required' | 'not-enrolled' | 'enabled';
+const SUBSCRIPTION_REQUEST_TIMEOUT_MS = 25_000;
 
 @Injectable({providedIn: 'root'})
 export class PushEnrollmentService implements OnDestroy {
     private enrolled = false;
+    private operationVersion = 0;
+    private logoutGeneration = 0;
+    private initialSubscriptionResolved = false;
+    private lateSubscription?: PushSubscription;
     private readonly subscription: Subscription;
     constructor(private readonly swPush: SwPush, private readonly client: PushSubscriptionClient) {
-        this.subscription = this.swPush.subscription.subscribe(value => { this.enrolled = value !== null; });
+        this.subscription = this.swPush.subscription.subscribe(value => {
+            const staleInitialNull = !this.initialSubscriptionResolved && value === null && this.enrolled;
+            this.initialSubscriptionResolved = true;
+            if (!staleInitialNull) this.enrolled = value !== null;
+        });
     }
     public ngOnDestroy(): void { this.subscription.unsubscribe(); }
 
@@ -24,23 +33,43 @@ export class PushEnrollmentService implements OnDestroy {
 
     /** Call directly from an explicit user gesture: browser permission is transient activation gated. */
     public async enrollFromUserGesture(): Promise<void> {
+        const operationVersion = ++this.operationVersion;
+        const logoutGeneration = this.logoutGeneration;
         if (!this.swPush.isEnabled || typeof Notification === 'undefined') throw new Error('unsupported');
         let permission = Notification.permission;
-        if (permission === 'default') permission = await Notification.requestPermission();
+        if (permission === 'default') {
+            permission = await Notification.requestPermission();
+            this.assertCurrentOperation(operationVersion);
+        }
         if (permission !== 'granted') throw new Error(permission === 'denied' ? 'denied' : 'permission-required');
         const {public_key: publicKey} = await firstValueFrom(this.client.vapidPublicKey());
+        this.assertCurrentOperation(operationVersion);
         const validKey = validateVapidKey(publicKey);
         const applicationServerKey = decodeVapidKey(validKey);
         const registration = await navigator.serviceWorker.ready;
+        this.assertCurrentOperation(operationVersion);
         const current = await registration.pushManager.getSubscription();
+        this.assertCurrentOperation(operationVersion);
         if (current && !sameBytes(current.options.applicationServerKey, applicationServerKey)) {
             await current.unsubscribe();
+            this.assertCurrentOperation(operationVersion);
         }
         let subscription = await registration.pushManager.getSubscription();
-        if (!subscription || !sameBytes(subscription.options.applicationServerKey, applicationServerKey)) {
-            if (subscription) await subscription.unsubscribe();
-            subscription = await this.swPush.requestSubscription({serverPublicKey: validKey});
+        this.assertCurrentOperation(operationVersion);
+        if (!subscription && this.lateSubscription && sameBytes(this.lateSubscription.options.applicationServerKey, applicationServerKey)) {
+            subscription = this.lateSubscription;
+            this.lateSubscription = undefined;
         }
+        if (!subscription || !sameBytes(subscription.options.applicationServerKey, applicationServerKey)) {
+            if (subscription) {
+                await subscription.unsubscribe();
+                this.assertCurrentOperation(operationVersion);
+            }
+            this.assertCurrentOperation(operationVersion);
+            subscription = await this.requestSubscription(validKey, operationVersion, logoutGeneration);
+            this.assertCurrentOperation(operationVersion);
+        }
+        this.assertCurrentOperation(operationVersion);
         if (!sameBytes(subscription.options.applicationServerKey, applicationServerKey)) throw new Error('subscription-key-mismatch');
         const wire = subscription.toJSON();
         const endpoint = wire.endpoint;
@@ -48,12 +77,50 @@ export class PushEnrollmentService implements OnDestroy {
         const auth = wire.keys?.['auth'];
         if (!endpoint || !p256dh || !auth) throw new Error('invalid-subscription');
         await firstValueFrom(this.client.save({endpoint, expirationTime: wire.expirationTime ?? null, keys: {p256dh, auth}}));
+        if (operationVersion !== this.operationVersion) {
+            if (this.wasSupersededByLogout(operationVersion, logoutGeneration)) await subscription.unsubscribe().catch(() => undefined);
+            throw new Error('push-operation-cancelled');
+        }
         this.enrolled = true;
     }
 
     /** Server logout revokes every subscription; this is best-effort local cleanup only. */
     public async unsubscribeLocal(): Promise<void> {
+        const operationVersion = ++this.operationVersion;
+        this.logoutGeneration++;
+        this.lateSubscription = undefined;
+        this.enrolled = false;
         try { await this.swPush.unsubscribe(); } catch { /* The server revocation is authoritative. */ }
+        if (operationVersion === this.operationVersion) this.enrolled = false;
+    }
+
+    private requestSubscription(serverPublicKey: string, operationVersion: number, logoutGeneration: number): Promise<PushSubscription> {
+        const request = this.swPush.requestSubscription({serverPublicKey});
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('push-service-timeout')), SUBSCRIPTION_REQUEST_TIMEOUT_MS);
+            request.then(subscription => {
+                clearTimeout(timer);
+                if (operationVersion !== this.operationVersion) {
+                    if (this.wasSupersededByLogout(operationVersion, logoutGeneration)) void subscription.unsubscribe().catch(() => undefined);
+                    else this.lateSubscription = subscription;
+                    reject(new Error('push-operation-cancelled'));
+                    return;
+                }
+                this.lateSubscription = subscription;
+                resolve(subscription);
+            }, error => {
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+    }
+
+    private assertCurrentOperation(operationVersion: number): void {
+        if (operationVersion !== this.operationVersion) throw new Error('push-operation-cancelled');
+    }
+
+    private wasSupersededByLogout(operationVersion: number, logoutGeneration: number): boolean {
+        return logoutGeneration !== this.logoutGeneration && this.operationVersion === operationVersion + 1;
     }
 }
 

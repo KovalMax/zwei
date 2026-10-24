@@ -5,18 +5,29 @@
 
 :host-context(.dark-theme) .profile-page { background: radial-gradient(circle at 75% 15%, rgba(196, 93, 63, .16) 0, transparent 28%), #182330; }
 :host-context(.dark-theme) .profile-card { border-color: #30465e; background: #202c3b; box-shadow: 0 20px 60px rgba(0, 0, 0, .22); }
-.media-preference { display:flex; align-items:flex-start; gap:10px; color:#172033; font-size:14px; font-weight:700; }
+.media-preference { display:flex; align-items:flex-start; gap:10px; font-size:14px; font-weight:700; }
 .media-preference input { width:18px; height:18px; accent-color:var(--zwei-focus); }
-.alert-settings > button { min-height: 48px; padding: 0 16px; border: 1px solid transparent; border-radius: var(--zwei-radius-control); background: var(--auth-submit); color: var(--auth-submit-text); font: 700 14px/1 'DM Sans', sans-serif; cursor: pointer; transition: background-color var(--zwei-motion-duration) ease; }
-.alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--auth-submit) 88%, var(--zwei-focus)); }
+.alert-settings > button { min-height: 48px; padding: 0 16px; border: 1px solid var(--zwei-accent); border-radius: var(--zwei-radius-control); background: var(--zwei-accent-soft); color: var(--zwei-ink); font: 700 14px/1 'DM Sans', sans-serif; cursor: pointer; }
+.alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--zwei-accent-soft) 84%, var(--zwei-accent)); }
 .alert-settings > button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
 .alert-settings > button:disabled { background: var(--auth-submit-disabled); color: var(--auth-submit-text); cursor: not-allowed; }
-:host-context(.dark-theme) .alert-settings > button:not(:disabled) { background: var(--chat-line-strong); color: var(--chat-text-strong); }
-:host-context(.dark-theme) .alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--chat-line-strong) 88%, var(--zwei-focus)); }
-:host-context(.dark-theme) .media-preference { color:#edf2fa; }
+:host-context(.dark-theme) .alert-settings > button:not(:disabled) { border-color: var(--chat-line-strong); background: var(--chat-info-surface); color: var(--chat-text-strong); }
+:host-context(.dark-theme) .alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--chat-info-surface) 84%, var(--chat-info)); }
 :host-context(.dark-theme) .back-link { color: #efaa8d; }
 :host-context(.dark-theme) .eyebrow { color: #efaa8d; }
 :host-context(.dark-theme) .profile-card h1, :host-context(.dark-theme) .profile-details dd { color: #edf2fa; }
 :host-context(.dark-theme) .profile-description, :host-context(.dark-theme) .profile-loading, :host-context(.dark-theme) .profile-details dt { color: #aebdd0; }
 :host-context(.dark-theme) .profile-details div { border-color: #30465e; }
 :host-context(.dark-theme) .alert-settings { border-color: #30465e; }:host-context(.dark-theme) .alert-settings h2 { color: #edf2fa; }:host-context(.dark-theme) .alert-settings > p, :host-context(.dark-theme) .alert-options small { color: #aebdd0; }:host-context(.dark-theme) .alert-options button { border-color: #46627e; background: #263546; color: #edf2fa; }:host-context(.dark-theme) .alert-options button.selected { border-color: #71a9e9; background: #293e55; }:host-context(.dark-theme) .radio-dot { border-color: #9ab0c8; }:host-context(.dark-theme) .selected .radio-dot { border-color: #85b9ef; }:host-context(.dark-theme) .selected .radio-dot::after { background: #85b9ef; }
+.media-disclosure-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 14px; }
+.media-disclosure-row p { min-width: 0; margin: 0; color: var(--zwei-muted); font-size: 13px; line-height: 1.45; }
+.media-info-button { display: inline-grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; padding: 0; border: 1px solid var(--zwei-card-border); border-radius: 50%; background: var(--auth-card-surface); color: var(--auth-muted); cursor: pointer; }
+.media-info-button span { display: grid; width: 16px; height: 16px; place-items: center; border: 1.5px solid currentColor; border-radius: 50%; font: 700 11px/1 'DM Sans', sans-serif; }
+.media-info-button:hover { color: var(--zwei-focus); border-color: var(--zwei-focus); }
+.media-info-button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+.media-preference { color: var(--zwei-muted); font-weight: 600; }
+:host-context(.dark-theme) .media-info-button { border-color: var(--chat-line-strong); background: var(--chat-surface-control); color: var(--chat-muted); }
+:host-context(.dark-theme) .media-info-button:hover { color: var(--chat-info); border-color: var(--chat-info); }
+:host-context(.dark-theme) .media-preference { color: var(--chat-muted); }
+::ng-deep .profile-media-disclosure-tooltip { box-sizing: border-box; max-width: min(360px, calc(100vw - 32px)) !important; white-space: normal; line-height: 1.45; }
+@media (max-width: 420px) { .alert-settings > button { max-width: 132px; padding: 6px 8px; line-height: 1.2; white-space: normal; } }

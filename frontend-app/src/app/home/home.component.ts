@@ -2296,39 +2296,44 @@ export class HomeComponent implements OnInit, OnDestroy {
         }
     }
 
-    private loadHistory(before?: string, prepend = false): void {
+    private loadHistory(before?: string, prepend = false, pushPagination?: {messageID: string; generation: number; requestedCursors: Set<string>}): void {
         if (!this.selectedConversation || (this.selectedConversation.kind === 'group' && this.selectedConversation.accessNeedsVerification)) {
             return;
         }
         const conversationID = this.selectedConversation.id;
         const historyLoadID = ++this.historyLoadID;
+        const pendingPush = pushPagination ?? (this.pendingPushMessageID ? {messageID: this.pendingPushMessageID, generation: this.pushIntentGeneration, requestedCursors: new Set<string>()} : undefined);
+        if (before && pendingPush) pendingPush.requestedCursors.add(before);
         this.isHistoryLoading = true;
         this.conversationService.history(conversationID, before).subscribe({
             next: history => {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
                 this.messages = this.mergeHistoryMessages([...history.messages].reverse());
                 this.historyCursor = history.nextCursor;
-                if (!prepend && this.pendingPushMessageID) {
-                    const target = this.messages.find(message => message.id === this.pendingPushMessageID);
+                const pushIsCurrent = pendingPush && pendingPush.generation === this.pushIntentGeneration && this.pendingPushMessageID === pendingPush.messageID;
+                const target = pushIsCurrent ? this.messages.find(message => message.id === pendingPush.messageID) : undefined;
+                if (target) {
                     this.pendingPushMessageID = undefined;
-                    if (target) {
-                        this.highlightedMessageID = target.id;
-                        this.pushMessageScrollTimer = window.setTimeout(() => {
-                            this.pushMessageScrollTimer = undefined;
-                            document.getElementById(`message-${target.id}`)?.scrollIntoView({block: 'center'});
-                        }, 0);
-                        this.pushMessageClearTimer = window.setTimeout(() => {
-                            this.pushMessageClearTimer = undefined;
-                            if (this.highlightedMessageID === target.id) { this.highlightedMessageID = undefined; this.changeDetector.markForCheck(); }
-                        }, 4_000);
+                    this.highlightPushMessage(target.id);
+                } else if (pushIsCurrent) {
+                    const nextCursor = history.nextCursor;
+                    if (nextCursor && !pendingPush.requestedCursors.has(nextCursor)) {
+                        this.loadHistory(nextCursor, true, pendingPush);
+                    } else {
+                        this.pendingPushMessageID = undefined;
+                        this.pushCallNotice = 'This message is no longer available.';
                     }
                 }
                 if (!prepend && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
                 this.changeDetector.markForCheck();
-                if (!prepend) this.scrollToLatest();
+                if (!prepend && !pushIsCurrent) this.scrollToLatest();
             },
             error: () => {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
+                if (pendingPush && pendingPush.generation === this.pushIntentGeneration && this.pendingPushMessageID === pendingPush.messageID) {
+                    this.pendingPushMessageID = undefined;
+                    this.pushCallNotice = 'This message is no longer available.';
+                }
                 this.isHistoryLoading = false;
                 this.changeDetector.markForCheck();
             },
@@ -2336,6 +2341,18 @@ export class HomeComponent implements OnInit, OnDestroy {
                 if (this.isCurrentHistoryLoad(historyLoadID, conversationID)) this.isHistoryLoading = false;
             },
         });
+    }
+
+    private highlightPushMessage(messageID: string): void {
+        this.highlightedMessageID = messageID;
+        this.pushMessageScrollTimer = window.setTimeout(() => {
+            this.pushMessageScrollTimer = undefined;
+            document.getElementById(`message-${messageID}`)?.scrollIntoView({block: 'center'});
+        }, 0);
+        this.pushMessageClearTimer = window.setTimeout(() => {
+            this.pushMessageClearTimer = undefined;
+            if (this.highlightedMessageID === messageID) { this.highlightedMessageID = undefined; this.changeDetector.markForCheck(); }
+        }, 4_000);
     }
 
     private isCurrentHistoryLoad(historyLoadID: number, conversationID: string): boolean {

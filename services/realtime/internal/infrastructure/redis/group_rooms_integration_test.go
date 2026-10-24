@@ -678,8 +678,8 @@ func TestDirectCallAndGroupJoinReservationRace(t *testing.T) {
 			outcomes <- outcome{operation: "direct", err: acquireErr}
 			return
 		}
-		defer directCoordinator.ReleaseCallAdmission(ctx, []uuid.UUID{userID, recipientID}, token)
 		_, startErr := directCoordinator.Start(ctx, application.Call{ID: callID, ConversationID: uuid.New(), CallerID: userID, RecipientID: recipientID, CallerDeviceID: deviceID, CallerConnectionID: connectionID}, token)
+		directCoordinator.ReleaseCallAdmission(ctx, []uuid.UUID{userID, recipientID}, token)
 		outcomes <- outcome{operation: "direct", err: startErr}
 	}()
 	go func() {
@@ -690,8 +690,8 @@ func TestDirectCallAndGroupJoinReservationRace(t *testing.T) {
 			outcomes <- outcome{operation: "group", err: acquireErr}
 			return
 		}
-		defer groupCoordinator.ReleaseCallAdmission(ctx, []uuid.UUID{joiningParticipant.UserID}, token)
 		_, joinErr := groupCoordinator.JoinGroupRoom(ctx, roomID, joiningParticipant, 9, token)
+		groupCoordinator.ReleaseCallAdmission(ctx, []uuid.UUID{joiningParticipant.UserID}, token)
 		outcomes <- outcome{operation: "group", err: joinErr}
 	}()
 	<-ready

@@ -84,6 +84,25 @@ func (r *MessagePushOutbox) Claim(ctx context.Context, limit int) ([]MessagePush
 	return events, nil
 }
 
+// PurgeProcessed removes only terminal outbox rows older than the retention
+// period. The batch is selected with SKIP LOCKED so concurrent dispatchers do
+// not contend, and unprocessed claims are never eligible for deletion.
+func (r *MessagePushOutbox) PurgeProcessed(ctx context.Context, limit int) error {
+	if limit < 1 || limit > 100 {
+		return nil
+	}
+	_, err := r.db.Exec(ctx, `WITH expired AS (
+		SELECT id FROM message_push_outbox
+		WHERE processed_at IS NOT NULL AND processed_at < now() - interval '30 days'
+		  AND (claim_token IS NULL OR claim_expires_at <= now())
+		ORDER BY processed_at, id
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1
+	)
+	DELETE FROM message_push_outbox event USING expired WHERE event.id = expired.id`, limit)
+	return err
+}
+
 func (r *MessagePushOutbox) Resolve(ctx context.Context, event messagepush.Intent) (string, []messagepush.Subscription, bool, error) {
 	var name string
 	var eligible bool

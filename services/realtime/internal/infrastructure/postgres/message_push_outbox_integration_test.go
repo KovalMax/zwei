@@ -138,6 +138,71 @@ func TestMessagePushClaimIsIsolatedAndStaleClaimsCannotComplete(t *testing.T) {
 	}
 }
 
+func TestPurgeProcessedDeletesOnlyOldTerminalRowsInBoundedBatches(t *testing.T) {
+	db, ctx := isolatedPushDB(t)
+	_, err := db.Exec(ctx, `CREATE TABLE message_push_outbox (
+		id uuid PRIMARY KEY, processed_at timestamptz, claim_token uuid,
+		claim_expires_at timestamptz, message_id uuid NOT NULL
+	);
+	CREATE TABLE messages (id uuid PRIMARY KEY);
+	CREATE TABLE push_subscriptions (id uuid PRIMARY KEY);
+	CREATE INDEX message_push_outbox_processed_retention_idx
+		ON message_push_outbox(processed_at, id) WHERE processed_at IS NOT NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID, secondOldID, recentID, pendingID, activeClaimID, terminalActiveClaimID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	messageID, subscriptionID := uuid.New(), uuid.New()
+	if _, err := db.Exec(ctx, `INSERT INTO messages VALUES($1)`, messageID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO push_subscriptions VALUES($1)`, subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO message_push_outbox(id,processed_at,message_id) VALUES
+		($1,now()-interval '32 days',$7),($2,now()-interval '31 days',$7),
+		($3,now()-interval '30 days'+interval '1 second',$7),($4,NULL,$7),($5,NULL,$7),($6,now()-interval '32 days',$7)`,
+		oldID, secondOldID, recentID, pendingID, activeClaimID, terminalActiveClaimID, messageID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE message_push_outbox SET claim_token=$2, claim_expires_at=now()+interval '1 minute' WHERE id=$1 OR id=$3`, activeClaimID, uuid.New(), terminalActiveClaimID); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewMessagePushOutbox(db, nil)
+	if err := repo.PurgeProcessed(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	var oldExists, secondOldExists, recentExists, pendingExists, activeClaimExists, terminalActiveClaimExists bool
+	for id, exists := range map[uuid.UUID]*bool{
+		oldID: &oldExists, secondOldID: &secondOldExists, recentID: &recentExists,
+		pendingID: &pendingExists, activeClaimID: &activeClaimExists, terminalActiveClaimID: &terminalActiveClaimExists,
+	} {
+		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM message_push_outbox WHERE id=$1)`, id).Scan(exists); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if oldExists == secondOldExists || !recentExists || !pendingExists || !activeClaimExists || !terminalActiveClaimExists {
+		t.Fatalf("after one-row batch: old=%t second_old=%t recent=%t pending=%t active_claim=%t terminal_active_claim=%t", oldExists, secondOldExists, recentExists, pendingExists, activeClaimExists, terminalActiveClaimExists)
+	}
+	if err := repo.PurgeProcessed(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM message_push_outbox WHERE id=$1 OR id=$2)`, oldID, secondOldID).Scan(&oldExists); err != nil || oldExists {
+		t.Fatalf("eligible terminal rows remain=%t err=%v", oldExists, err)
+	}
+	for table, id := range map[string]uuid.UUID{"messages": messageID, "push_subscriptions": subscriptionID} {
+		var exists bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE id=$1)`, id).Scan(&exists); err != nil || !exists {
+			t.Fatalf("%s row exists=%t err=%v", table, exists, err)
+		}
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := repo.PurgeProcessed(canceled, 100); err == nil {
+		t.Fatal("PurgeProcessed with canceled context succeeded")
+	}
+}
+
 func TestResolveDecryptsOnlyEligibleRecipientSubscriptions(t *testing.T) {
 	db, ctx := isolatedPushDB(t)
 	_, err := db.Exec(ctx, `CREATE TABLE users(id uuid PRIMARY KEY,display_name text NOT NULL,alert_mode text NOT NULL); CREATE TABLE messages(id uuid PRIMARY KEY,conversation_id uuid NOT NULL,sender_id uuid NOT NULL,sequence bigint NOT NULL,expires_at timestamptz); CREATE TABLE conversation_members(conversation_id uuid,user_id uuid,active boolean NOT NULL,visible_from_sequence bigint NOT NULL); CREATE TABLE devices(id uuid PRIMARY KEY,user_id uuid NOT NULL,revoked_at timestamptz); CREATE TABLE push_subscriptions(id uuid PRIMARY KEY,user_id uuid NOT NULL,device_id uuid NOT NULL,encryption_version text NOT NULL,encrypted_subscription bytea NOT NULL,endpoint_fingerprint bytea NOT NULL,vapid_key_id text,created_at timestamptz NOT NULL DEFAULT now());`)

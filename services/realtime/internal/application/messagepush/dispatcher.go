@@ -3,6 +3,8 @@ package messagepush
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +30,7 @@ type Subscription struct {
 
 type Repository interface {
 	Claim(context.Context, int) ([]Intent, error)
+	PurgeProcessed(context.Context, int) error
 	Resolve(context.Context, Intent) (string, []Subscription, bool, error)
 	DeleteSubscription(context.Context, uuid.UUID, []byte) error
 	Complete(context.Context, Intent) error
@@ -41,6 +44,36 @@ type Sender interface {
 	Send(context.Context, []byte, Subscription) (int, error)
 }
 
+// ProviderError is the bounded provider diagnostic contract shared by adapters.
+// Code is meaningful only when it is one of the documented Apple values below.
+type ProviderError struct{ Code string }
+
+func (e *ProviderError) Error() string { return "push provider rejected request" }
+
+func IsAppleProviderCode(code string) bool {
+	switch code {
+	case "BadAuthorizationHeader", "BadVapidPublicKey", "VapidPkHashMismatch", "BadJwtToken", "BadWebPushRequest", "BadWebPushTopic", "BadPath", "MethodNotAllowed", "PayloadTooLarge", "IdleTimeout":
+		return true
+	default:
+		return false
+	}
+}
+
+// DiagnosticError carries only bounded failure metadata suitable for logs.
+// It deliberately does not retain the adapter or repository error.
+type DiagnosticError struct {
+	Reason       string
+	HTTPStatus   int
+	ProviderCode string
+}
+
+func (e *DiagnosticError) Error() string {
+	if e.HTTPStatus >= 100 && e.HTTPStatus <= 599 {
+		return e.Reason + ": " + strconv.Itoa(e.HTTPStatus)
+	}
+	return e.Reason
+}
+
 type Dispatcher struct {
 	repository Repository
 	presence   Presence
@@ -48,6 +81,7 @@ type Dispatcher struct {
 }
 
 const messagePushWorkers = 4
+const processedRetentionBatchSize = 100
 
 type notificationPayload struct {
 	Notification struct {
@@ -79,44 +113,50 @@ func (d *Dispatcher) Process(ctx context.Context, limit int) error {
 	if err != nil {
 		return err
 	}
-	if len(events) == 0 {
-		return nil
-	}
-	workers := min(len(events), messagePushWorkers)
-	work := make(chan Intent, len(events))
-	for _, event := range events {
-		work <- event
-	}
-	close(work)
 	var firstErr error
-	var errMu sync.Mutex
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for range workers {
-		go func() {
-			defer wg.Done()
-			for event := range work {
-				if err := d.processOne(ctx, event); err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
+	if len(events) > 0 {
+		workers := min(len(events), messagePushWorkers)
+		work := make(chan Intent, len(events))
+		for _, event := range events {
+			work <- event
+		}
+		close(work)
+		var errMu sync.Mutex
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for range workers {
+			go func() {
+				defer wg.Done()
+				for event := range work {
+					if err := d.processOne(ctx, event); err != nil {
+						errMu.Lock()
+						if firstErr == nil {
+							firstErr = err
+						}
+						errMu.Unlock()
 					}
-					errMu.Unlock()
 				}
-			}
-		}()
+			}()
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return firstErr
+	purgeErr := d.repository.PurgeProcessed(ctx, processedRetentionBatchSize)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return purgeErr
 }
 
 func (d *Dispatcher) processOne(ctx context.Context, event Intent) error {
 	_, subscriptions, eligible, err := d.repository.Resolve(ctx, event)
 	if err != nil {
-		return d.retry(ctx, event)
+		return d.retryWithDiagnostic(ctx, event, &DiagnosticError{Reason: "resolve_failed"})
 	}
 	if !eligible {
 		return d.repository.Complete(ctx, event)
@@ -124,7 +164,17 @@ func (d *Dispatcher) processOne(ctx context.Context, event Intent) error {
 	if len(subscriptions) == 0 {
 		return d.repository.Complete(ctx, event)
 	}
+	// Presence is account-scoped. Check it once before fan-out so a later
+	// lookup failure cannot leave a partially sent multi-device notification.
+	online, err := d.presence.Online(ctx, []uuid.UUID{event.RecipientID})
+	if err != nil {
+		return d.retryWithDiagnostic(ctx, event, &DiagnosticError{Reason: "presence_failed"})
+	}
+	if online[event.RecipientID] {
+		return d.repository.Complete(ctx, event)
+	}
 	failed := false
+	var diagnostic *DiagnosticError
 	for _, initialSubscription := range subscriptions {
 		if ctx.Err() != nil {
 			return d.retry(ctx, event)
@@ -137,6 +187,9 @@ func (d *Dispatcher) processOne(ctx context.Context, event Intent) error {
 				return d.retry(ctx, event)
 			}
 			failed = true
+			if diagnostic == nil {
+				diagnostic = &DiagnosticError{Reason: "resolve_failed"}
+			}
 			continue
 		}
 		if !eligible {
@@ -159,10 +212,6 @@ func (d *Dispatcher) processOne(ctx context.Context, event Intent) error {
 		subscription, found := findSubscription(currentSubscriptions, initialSubscription.ID)
 		if !found {
 			continue
-		}
-		online, err := d.presence.Online(ctx, []uuid.UUID{event.RecipientID})
-		if err != nil || online[event.RecipientID] {
-			return d.repository.Complete(ctx, event)
 		}
 		subscription.TTL = ttlSeconds
 		var envelope notificationPayload
@@ -190,9 +239,22 @@ func (d *Dispatcher) processOne(ctx context.Context, event Intent) error {
 			continue
 		}
 		failed = true
+		if diagnostic == nil {
+			diagnostic = &DiagnosticError{Reason: "provider_failed"}
+			if status >= 100 && status <= 599 {
+				diagnostic.HTTPStatus = status
+			}
+			var providerError *ProviderError
+			if errors.As(sendErr, &providerError) && IsAppleProviderCode(providerError.Code) {
+				diagnostic.ProviderCode = providerError.Code
+			}
+		}
 	}
 	if failed {
-		return d.retry(ctx, event)
+		if diagnostic == nil {
+			diagnostic = &DiagnosticError{Reason: "internal"}
+		}
+		return d.retryWithDiagnostic(ctx, event, diagnostic)
 	}
 	return d.repository.Complete(ctx, event)
 }
@@ -204,6 +266,13 @@ func (d *Dispatcher) retry(ctx context.Context, event Intent) error {
 	retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	return d.repository.Retry(retryCtx, event)
+}
+
+func (d *Dispatcher) retryWithDiagnostic(ctx context.Context, event Intent, diagnostic *DiagnosticError) error {
+	if err := d.retry(ctx, event); err != nil {
+		return err
+	}
+	return diagnostic
 }
 
 func findSubscription(subscriptions []Subscription, id uuid.UUID) (Subscription, bool) {

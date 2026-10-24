@@ -5,6 +5,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -32,15 +34,18 @@ type providerFake struct {
 	status        int
 	err           error
 	called, block bool
+	authorization string
+	body          string
 }
 
 func (p *providerFake) Do(req *http.Request) (*http.Response, error) {
 	p.called = true
+	p.authorization = req.Header.Get("Authorization")
 	if p.block {
 		<-req.Context().Done()
 		return nil, req.Context().Err()
 	}
-	if req.URL.Host != "fcm.googleapis.com" {
+	if req.URL.Host != "fcm.googleapis.com" && req.URL.Host != "web.push.apple.com" {
 		return nil, io.ErrUnexpectedEOF
 	}
 	if req.Header.Get("Authorization") == "" {
@@ -52,7 +57,114 @@ func (p *providerFake) Do(req *http.Request) (*http.Response, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
-	return &http.Response{StatusCode: p.status, Body: io.NopCloser(strings.NewReader("provider response must stay private")), Header: make(http.Header), Request: req}, nil
+	body := p.body
+	if body == "" {
+		body = "provider response must stay private"
+	}
+	return &http.Response{StatusCode: p.status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: req}, nil
+}
+
+func TestParseAppleProviderReasonIsAllowlistedAndBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		oversized  bool
+		want       string
+	}{
+		{"valid", `{"reason":"BadAuthorizationHeader"}`, false, "BadAuthorizationHeader"},
+		{"bad-jwt-token", `{"reason":"BadJwtToken"}`, false, "BadJwtToken"},
+		{"unknown", `{"reason":"account-secret-value"}`, false, ""},
+		{"malformed", `not-json`, false, ""},
+		{"oversized", `{"reason":"BadAuthorizationHeader"}`, true, ""},
+		{"body-over-limit", strings.Repeat(" ", maxAppleErrorBody+1), false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseAppleProviderReason([]byte(tc.body), tc.oversized)
+			if (ok && got != tc.want) || (!ok && tc.want != "") {
+				t.Fatalf("parseAppleProviderReason() = %q, %t; want %q", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestSenderDoesNotInterpretNonAppleProviderBody(t *testing.T) {
+	pub, priv := vapidKeys(t)
+	sender, err := New(pub, priv, "mailto:ops@example.test", resolverFake{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.client = &providerFake{status: 403, body: `{"reason":"VapidPkHashMismatch"}`}
+	sub := messagepush.Subscription{Endpoint: "https://fcm.googleapis.com/send/opaque", P256DH: pub, Auth: base64.RawURLEncoding.EncodeToString(make([]byte, 16)), TTL: 60}
+	payload := []byte(`{"notification":{"tag":"message-11111111-1111-4111-8111-111111111111","data":{"kind":"message","conversation_id":"22222222-2222-4222-8222-222222222222","message_id":"11111111-1111-4111-8111-111111111111"}}}`)
+	status, err := sender.Send(context.Background(), payload, sub)
+	if status != 403 || err != nil {
+		t.Fatalf("Send() = %d, %v; want generic status-only result", status, err)
+	}
+}
+
+func TestSenderReturnsTypedAllowlistedAppleProviderReason(t *testing.T) {
+	pub, priv := vapidKeys(t)
+	sender, err := New(pub, priv, "mailto:ops@example.test", resolverFake{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.client = &providerFake{status: 403, body: `{"reason":"VapidPkHashMismatch"}`}
+	sub := messagepush.Subscription{Endpoint: "https://web.push.apple.com/send/opaque", P256DH: pub, Auth: base64.RawURLEncoding.EncodeToString(make([]byte, 16)), TTL: 60}
+	payload := []byte(`{"notification":{"tag":"message-11111111-1111-4111-8111-111111111111","data":{"kind":"message","conversation_id":"22222222-2222-4222-8222-222222222222","message_id":"11111111-1111-4111-8111-111111111111"}}}`)
+	status, err := sender.Send(context.Background(), payload, sub)
+	var providerError *messagepush.ProviderError
+	if status != 403 || !errors.As(err, &providerError) || providerError.Code != "VapidPkHashMismatch" {
+		t.Fatalf("Send() = %d, %v; want typed allowlisted Apple reason", status, err)
+	}
+}
+
+func TestSenderNormalizesVAPIDSubjectInGeneratedJWT(t *testing.T) {
+	pub, priv := vapidKeys(t)
+	payload := []byte(`{"notification":{"tag":"message-11111111-1111-4111-8111-111111111111","data":{"kind":"message","conversation_id":"22222222-2222-4222-8222-222222222222","message_id":"11111111-1111-4111-8111-111111111111"}}}`)
+	sub := messagepush.Subscription{Endpoint: "https://fcm.googleapis.com/fcm/send/opaque", P256DH: pub, Auth: base64.RawURLEncoding.EncodeToString(make([]byte, 16)), TTL: 60}
+	for _, tc := range []struct{ configured, expected string }{
+		{"mailto:ops@example.test", "mailto:ops@example.test"},
+		{"https://push.example.test/contact", "https://push.example.test/contact"},
+	} {
+		t.Run(tc.configured, func(t *testing.T) {
+			sender, err := New(pub, priv, tc.configured, resolverFake{})
+			if err != nil {
+				t.Fatal("valid VAPID subject rejected")
+			}
+			provider := &providerFake{status: 201}
+			sender.client = provider
+			if _, err := sender.Send(context.Background(), payload, sub); err != nil {
+				t.Fatalf("send failed: %v", err)
+			}
+			parts := strings.Fields(provider.authorization)
+			if len(parts) < 2 || parts[0] != "vapid" {
+				t.Fatalf("unexpected authorization scheme")
+			}
+			var token string
+			for _, field := range strings.Split(strings.Join(parts[1:], " "), ",") {
+				key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+				if ok && key == "t" {
+					token = value
+				}
+			}
+			segments := strings.Split(token, ".")
+			if len(segments) != 3 {
+				t.Fatalf("generated VAPID token missing")
+			}
+			claims, err := base64.RawURLEncoding.DecodeString(segments[1])
+			if err != nil {
+				t.Fatalf("decode VAPID claims: %v", err)
+			}
+			var claim struct {
+				Subject string `json:"sub"`
+			}
+			if err := json.Unmarshal(claims, &claim); err != nil {
+				t.Fatalf("decode VAPID claims: %v", err)
+			}
+			if claim.Subject != tc.expected {
+				t.Fatalf("VAPID sub=%q, want %q", claim.Subject, tc.expected)
+			}
+		})
+	}
 }
 
 func vapidKeys(t *testing.T) (string, string) {
@@ -94,10 +206,18 @@ func TestSenderAcceptsProviderSuccessAndSanitizesErrors(t *testing.T) {
 	if err != nil || status != 201 || !provider.called {
 		t.Fatalf("accepted provider status=%d err=%v called=%t", status, err, provider.called)
 	}
+	provider.status = 503
+	status, err = sender.Send(context.Background(), payload, sub)
+	if err != nil || status != 503 {
+		t.Fatalf("provider failure status=%d err=%v, want status 503 without raw error", status, err)
+	}
 	provider.err = io.ErrUnexpectedEOF
-	_, err = sender.Send(context.Background(), payload, sub)
+	status, err = sender.Send(context.Background(), payload, sub)
 	if err == nil || strings.Contains(err.Error(), "fcm") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("provider error leaked details: %v", err)
+	}
+	if status != 0 {
+		t.Fatalf("transport failure status=%d, want no provider response status", status)
 	}
 }
 

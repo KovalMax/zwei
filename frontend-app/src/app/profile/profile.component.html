@@ -28,15 +28,18 @@
             <p *ngIf="push?.state === 'denied'" role="status">Notifications are blocked. Allow them in this browser’s site settings, then re-enable here.</p>
             <p *ngIf="push?.state === 'permission-required'" role="status">Enable browser notifications to receive alerts when Zwei is closed.</p>
             <p *ngIf="push?.state === 'not-enrolled'" role="status">This browser is not currently registered to receive push notifications.</p>
-            <button *ngIf="push?.state !== 'unsupported'" type="button" [disabled]="pushSaving" (click)="enablePush()">{{ pushSaving ? 'Enabling…' : 'Enable on this browser' }}</button>
+            <button *ngIf="push?.state !== 'unsupported'" type="button" [disabled]="pushSaving" [attr.aria-label]="pushSaving ? 'Enabling…' : push?.state === 'enabled' ? 'Refresh browser subscription' : 'Enable on this browser'" (click)="enablePush()">{{ pushSaving ? 'Enabling…' : push?.state === 'enabled' ? 'Refresh browser subscription' : 'Enable on this browser' }}</button>
             <p *ngIf="push?.state === 'enabled'" role="status">Push notifications are enabled on this browser. Use the button to repair or refresh this subscription.</p>
             <p *ngIf="pushSaving" role="status">Registering this browser…</p>
-            <p *ngIf="pushSuccess" role="status">Push notifications are enabled on this browser.</p>
+            <p *ngIf="pushSuccess && push?.state !== 'enabled'" role="status">Push notifications are enabled on this browser.</p>
             <p *ngIf="pushError" class="profile-error" role="alert">{{ pushError }}</p>
         </section>
         <section *ngIf="profile" class="alert-settings" aria-labelledby="media-settings-title">
             <h2 id="media-settings-title">Inline media</h2>
-            <p>When enabled, approved GIPHY images and GIFs in messages load automatically. Your browser contacts GIPHY, which may receive your IP address and request timing. Share-page links still require you to open GIPHY.</p>
+            <div class="media-disclosure-row">
+                <p>Choose whether approved GIPHY media loads automatically in messages.</p>
+                <button class="media-info-button" type="button" aria-label="GIPHY loading privacy details" matTooltip="When enabled, approved GIPHY images and GIFs in messages load automatically. Your browser contacts GIPHY, which may receive your IP address and request timing. Share-page links still require you to open GIPHY." matTooltipClass="profile-media-disclosure-tooltip" matTooltipPosition="above"><span aria-hidden="true">i</span></button>
+            </div>
             <label class="media-preference"><input type="checkbox" [checked]="profile.auto_load_approved_media" [disabled]="mediaSaving" (change)="setMediaAutoLoad(readChecked($event))"> Automatically load approved GIPHY images and GIFs</label>
             <p *ngIf="mediaSaving" role="status">Saving media preference…</p>
             <p *ngIf="mediaSaveError" class="profile-error" role="alert">Could not save this preference. Your previous setting was restored.</p>

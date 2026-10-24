@@ -26,6 +26,8 @@ import (
 
 var ErrConfiguration = errors.New("invalid web push configuration")
 
+const maxAppleErrorBody = 1024
+
 type Resolver interface {
 	LookupIP(context.Context, string, string) ([]net.IP, error)
 }
@@ -46,6 +48,9 @@ func New(publicKey, privateKey, subject string, resolver Resolver) (*Sender, err
 	}
 	if !validVAPIDPair(publicKey, privateKey) || !validSubject(subject) {
 		return nil, ErrConfiguration
+	}
+	if strings.HasPrefix(subject, "mailto:") {
+		subject = strings.TrimPrefix(subject, "mailto:")
 	}
 	transport := &http.Transport{
 		Proxy:                 nil,
@@ -98,8 +103,30 @@ func (s *Sender) Send(ctx context.Context, payload []byte, subscription messagep
 		return 0, errors.New("push provider request failed")
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxAppleErrorBody+1))
+	oversized := len(body) > maxAppleErrorBody
+	if readErr != nil {
+		return response.StatusCode, nil
+	}
+	if strings.EqualFold(parsed.Hostname(), "web.push.apple.com") && response.StatusCode >= 400 && response.StatusCode != 404 && response.StatusCode != 410 {
+		if code, ok := parseAppleProviderReason(body, oversized); ok {
+			return response.StatusCode, &messagepush.ProviderError{Code: code}
+		}
+	}
 	return response.StatusCode, nil
+}
+
+func parseAppleProviderReason(body []byte, oversized bool) (string, bool) {
+	if oversized || len(body) > maxAppleErrorBody {
+		return "", false
+	}
+	var response struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || !messagepush.IsAppleProviderCode(response.Reason) {
+		return "", false
+	}
+	return response.Reason, true
 }
 
 func messageTopic(payload []byte) (string, error) {

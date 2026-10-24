@@ -62,6 +62,95 @@ describe('HomeComponent', () => {
         home.ngOnDestroy();
     });
 
+    it('loads cursor pages until a pushed message is found and highlights it', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const firstPage = Array.from({length: 20}, (_, index) => ownMessage(snapshot.id, index + 21));
+        const target = {...ownMessage(snapshot.id, 1), id: targetID};
+        const history = vi.fn((conversationID: string, before?: string) => before === undefined
+            ? of({messages: firstPage, nextCursor: 'older-page'})
+            : of({messages: [target], nextCursor: undefined}));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history.mock.calls).toEqual([[snapshot.id, undefined], [snapshot.id, 'older-page']]);
+        expect(home.messages.map(message => message.id)).toContain(targetID);
+        expect(home.highlightedMessageID).toBe(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('shows a safe unavailable notice when history is exhausted before a pushed message is found', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const history = vi.fn().mockReturnValue(of({messages: [ownMessage(snapshot.id, 1)], nextCursor: undefined}));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history).toHaveBeenCalledTimes(1);
+        expect(home.pushCallNotice).toBe('This message is no longer available.');
+        expect(home.highlightedMessageID).toBeUndefined();
+        expect(home.pushCallNotice).not.toContain(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('stops push-history pagination when the service repeats a cursor', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const history = vi.fn((_conversationID: string, before?: string) => before === undefined
+            ? of({messages: [ownMessage(snapshot.id, 2)], nextCursor: 'same-cursor'})
+            : of({messages: [ownMessage(snapshot.id, 1)], nextCursor: 'same-cursor'}));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history).toHaveBeenCalledTimes(2);
+        expect(home.pushCallNotice).toBe('This message is no longer available.');
+        expect(home.pushCallNotice).not.toContain(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('stops push-history pagination and shows a safe notice when an older page fails', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const history = vi.fn((_conversationID: string, before?: string) => before === undefined
+            ? of({messages: [ownMessage(snapshot.id, 2)], nextCursor: 'older-page'})
+            : throwError(() => new Error('history unavailable')));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history.mock.calls).toEqual([[snapshot.id, undefined], [snapshot.id, 'older-page']]);
+        expect(home.pushCallNotice).toBe('This message is no longer available.');
+        expect(home.pushCallNotice).not.toContain(targetID);
+        home.ngOnDestroy();
+    });
+
     it('loads an absent group from the authorized group endpoint before selecting a push target', () => {
         const intents = new Subject<PushClickIntent>();
         const {home, history, getGroup} = pushIntentHome(intents);
@@ -81,7 +170,7 @@ describe('HomeComponent', () => {
     it('routes an archived direct-message push into Archived without restoring it', () => {
         const intents = new Subject<PushClickIntent>();
         const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
-        const history = vi.fn().mockReturnValue(of({messages: []}));
+        const history = vi.fn().mockReturnValue(of({messages: [{...ownMessage(snapshot.id, 1), id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'}]}));
         const listDirect = vi.fn().mockReturnValue(of([snapshot]));
         const getGroup = vi.fn().mockReturnValue(throwError(() => new GroupProjectionNotFoundError()));
         const listHomeSnapshot = vi.fn((archived: boolean) => of({direct: archived ? [snapshot] : [], groups: {items: [], nextCursor: null}}));
@@ -148,7 +237,7 @@ describe('HomeComponent', () => {
         const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
         const getGroup = vi.fn().mockReturnValue(throwError(() => new GroupProjectionNotFoundError()));
         const listDirect = vi.fn().mockReturnValue(fallback);
-        const history = vi.fn().mockReturnValue(of({messages: []}));
+        const history = vi.fn().mockReturnValue(of({messages: [{...ownMessage(current.id, 1), id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'}]}));
         const conversationService = {getGroup, listDirect, history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [current], groups: {items: [group], nextCursor: null}}))} as unknown as ConversationService;
         const home = createHomeComponent(conversationService, {profile: () => of({id: 'user'})} as unknown as AuthService,
             {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,

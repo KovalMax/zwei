@@ -44,6 +44,8 @@ export class ProfileComponent implements OnInit {
         } catch (error) {
             this.pushError = error instanceof Error && error.message === 'denied'
                 ? 'Notifications are blocked. Allow them in this browser’s site settings, then try again.'
+                : error instanceof Error && error.message === 'push-service-timeout'
+                    ? 'This browser’s push service did not respond. Try a supported browser such as Safari or Google Chrome, then retry.'
                 : error instanceof Error && error.message === 'unsupported'
                     ? 'Web Push is not supported by this browser.'
                     : 'Could not enable notifications on this browser. Please try again.';
