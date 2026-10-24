@@ -99,6 +99,7 @@ services:
       KYC_BASIC_AUTH_USER: ${KYC_BASIC_AUTH_USER}
       KYC_BASIC_AUTH_PASSWORD: ${KYC_BASIC_AUTH_PASSWORD}
       NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED}
+      GIPHY_LIVE_E2E: ${GIPHY_LIVE_E2E:-}
       PLAYWRIGHT_HOST_RESOLVER_RULES: ${PLAYWRIGHT_HOST_RESOLVER_RULES:-MAP *.localhost host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
