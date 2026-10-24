@@ -51,6 +51,10 @@ migrate: check_dist_files ## - Run PostgreSQL migrations inside the database con
 e2e: check_dist_files ## - Run Playwright tests against an isolated PostgreSQL schema
 	@bash scripts/e2e.sh $(APP_NAME)
 
+.PHONY: e2e-parallel
+e2e-parallel: check_dist_files ## - Run two isolated Playwright groups concurrently (local)
+	@bash scripts/e2e-parallel.sh $(APP_NAME)
+
 .PHONY: e2e-one
 e2e-one: check_dist_files ## - Run one Playwright test title against the isolated test database/Redis
 	@bash scripts/e2e.sh $(APP_NAME) test "$${SPEC:-}" "$${TEST:-}"

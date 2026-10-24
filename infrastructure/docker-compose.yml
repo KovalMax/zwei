@@ -99,6 +99,7 @@ services:
       KYC_BASIC_AUTH_USER: ${KYC_BASIC_AUTH_USER}
       KYC_BASIC_AUTH_PASSWORD: ${KYC_BASIC_AUTH_PASSWORD}
       NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED}
+      PLAYWRIGHT_HOST_RESOLVER_RULES: ${PLAYWRIGHT_HOST_RESOLVER_RULES:-MAP *.localhost host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "chat.localhost:host-gateway"
@@ -207,4 +208,4 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: ${E2E_NETWORK_SUBNET:-172.30.0.0/24}

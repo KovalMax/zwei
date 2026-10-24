@@ -15,7 +15,7 @@ description: Use when verifying a Zwei change, reviewing maintainability, prepar
 
 Angular 22 discovers `src/**/*.spec.ts` directly. The Karma target loads `src/polyfills.ts` and `zone.js/testing`; do not restore the removed Webpack `require.context` bootstrap. Component smoke tests import `AppModule` to obtain the production provider graph, but feature work must add focused behavior tests with deterministic mocks.
 
-For frontend/E2E source copied into Docker images, rebuild `frontend` and `e2e`, recreate the frontend service, and wait for Angular compilation before `make e2e`. The isolated E2E Compose overlay uses PostgreSQL `messenger_test` and Redis DB 1; `e2e.sh` clears only DB 1 before each suite so persisted development rate-limit/ticket keys cannot make a subsequent run flaky.
+For frontend/E2E source copied into Docker images on the shared local stack, rebuild `frontend` and `e2e`, recreate the frontend service, and wait for Angular compilation before `make e2e` / `make e2e-one`. Those legacy targets use the reserved `messenger_test` database and Redis DB 1, and temporarily stop/recreate development auth/chat/realtime. For fast local full-suite feedback, use `make e2e-parallel`: it builds the E2E runner and frontend images for both isolated projects, compiles one production bundle, then runs two file-based Playwright groups in separate disposable Compose projects with one worker per group. The chat-flow spec runs in one project; the other project receives the remaining discovered specs from a shared assignment list used by both validation and execution. Each project has its own database, Redis DB 1, Mailpit, app services, named volumes, non-overlapping subnet, static proxy/Coturn addresses, and per-run artifact directory; the overlay publishes no host ports and the runner does not stop development services. The parallel target requires Docker Compose v2.24.4 or newer, validates the local E2E HTTPS hosts, rejects subnet conflicts, and permits one invocation per workspace. Do not increase workers within either project without separately proving resource and state safety.
 
 ## Verification Order
 
@@ -50,7 +50,7 @@ For rate-limit or edge changes, include a running HTTPS verification that assert
 
 ## Local Docker commands and hosted CI
 
-Use Docker-backed Make targets for all local application, build, and test commands; do not require host Go or Node/npm. `make format`, `make lint`, `make test`, `make frontend-spec`, `make -C infrastructure frontend-test`, `make frontend-build`, `make e2e`, and `make e2e-one` run through the local Compose services. Use `make exec <service> <command...>` for checks without a dedicated target. Preserve the isolated E2E database/Redis setup and service teardown behavior.
+Use Docker-backed Make targets for all local application, build, and test commands; do not require host Go or Node/npm. `make format`, `make lint`, `make test`, `make frontend-spec`, `make -C infrastructure frontend-test`, `make frontend-build`, `make e2e`, `make e2e-one`, and `make e2e-parallel` run through Docker Compose. Use `make exec <service> <command...>` for checks without a dedicated target. Preserve the serial E2E lifecycle and the parallel target's project, subnet, image, artifact, and cleanup ownership; never reset a shared database/Redis while another run uses it.
 
 The following are commands run by GitHub-hosted workflows, not the supported host-local workflow:
 

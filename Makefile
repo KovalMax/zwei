@@ -60,6 +60,10 @@ test: ## - Run Go tests in containers
 e2e: ## - Run Playwright browser E2E tests in Docker
 	make -C infrastructure e2e
 
+.PHONY: e2e-parallel
+e2e-parallel: ## - Run two isolated Playwright groups concurrently in Docker
+	make -C infrastructure e2e-parallel
+
 .PHONY: e2e-one
 e2e-one: ## - Run one Playwright test in a spec through isolated setup (SPEC=tests/...spec.ts TEST='test title')
 	$(MAKE) -C infrastructure e2e-one
