@@ -42,4 +42,35 @@ describe('InlineGiphyComponent', () => {
         expect(fixture.nativeElement.textContent).toContain('share links open on GIPHY');
     });
 
+    it('keeps send-independent media failure visible with the original URL available', () => {
+        fixture.componentRef.setInput('autoLoad', true);
+        fixture.detectChanges();
+        const image = fixture.nativeElement.querySelector('img') as HTMLImageElement;
+        image.dispatchEvent(new Event('error'));
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[role="status"]')?.textContent).toContain('Media could not be loaded');
+        expect((fixture.nativeElement.querySelector('a') as HTMLAnchorElement).href).toBe(fixture.componentInstance.originalURL);
+        expect(fixture.nativeElement.querySelector('img')).toBeNull();
+    });
+
+    it('offers an explicit retry after an image failure without retrying automatically', () => {
+        fixture.componentRef.setInput('autoLoad', true);
+        fixture.detectChanges();
+        const image = fixture.nativeElement.querySelector('img') as HTMLImageElement;
+        image.dispatchEvent(new Event('error'));
+        fixture.detectChanges();
+        const retry = fixture.nativeElement.querySelector('button[aria-label="Retry loading GIPHY media"]') as HTMLButtonElement;
+        expect(retry).not.toBeNull();
+        expect(fixture.nativeElement.querySelector('img')).toBeNull();
+
+        retry.click();
+        fixture.detectChanges();
+        const retriedImage = fixture.nativeElement.querySelector('img') as HTMLImageElement;
+        expect(retriedImage).not.toBeNull();
+        retriedImage.dispatchEvent(new Event('error'));
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelectorAll('img')).toHaveLength(0);
+        expect(fixture.nativeElement.querySelectorAll('button[aria-label="Retry loading GIPHY media"]')).toHaveLength(1);
+    });
+
 });

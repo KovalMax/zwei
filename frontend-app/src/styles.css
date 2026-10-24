@@ -9,6 +9,7 @@
 @import "@fontsource/manrope/latin-600.css";
 @import "@fontsource/manrope/latin-700.css";
 @import "./app/home/home-call-minimized.css";
+@import "./app/home/home-messaging-media.css";
 app-home .archive-mode-tabs { display: flex; gap: 4px; margin: 10px 8px 2px; padding: 3px; border-radius: 11px; background: var(--chat-surface-raised); }
 app-home .archive-mode-tabs button { flex: 1; min-height: 44px; border: 0; border-radius: 8px; background: transparent; color: var(--chat-muted); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 app-home .archive-mode-tabs button.active { background: color-mix(in srgb, var(--chat-accent) 18%, var(--chat-surface)); box-shadow: inset 0 0 0 1px var(--chat-accent); color: var(--chat-text-strong); }
@@ -118,6 +119,7 @@ html, body {
     --chat-system-text: #edf2fa;
     --chat-system-border: #30465e;
     --chat-message-own: #2d5c45;
+    --chat-message-link-own: #fff;
     --chat-message-sender: #8dde88;
     --chat-message-read: #c9f196;
     --chat-message-time-own: #b9d6c2;
@@ -196,6 +198,7 @@ html.dark-theme, body.dark-theme {
     --chat-system-text: #4c6077;
     --chat-system-border: #cfd9e8;
     --chat-message-sender: #287a3c;
+    --chat-message-link-own: #172033;
     --chat-message-read: #286b3d;
     --chat-message-time-own: #286b3d;
     --chat-message-mention: #2456a7;
