@@ -189,6 +189,21 @@ jobs:
           headers="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --dump-header - --output /dev/null https://chat.false.tel/ | tr -d '\r')"
           printf '%s\n' "$headers" | grep -Fqi 'permissions-policy: geolocation=(), microphone=(self), camera=()'
           printf '%s\n' "$headers" | grep -Fqi 'content-security-policy:'
+          csp="$(printf '%s\n' "$headers" | awk 'tolower($1) == "content-security-policy:" { $1=""; sub(/^[[:space:]]+/, ""); if (found) result=result "\n"; result=result $0; found=1 } END { print result }')"
+          connect_src="$(printf '%s' "$csp" | tr ';' '\n' | awk 'tolower($1) == "connect-src" { if (found) duplicate=1; found=1; $1=""; sub(/^[[:space:]]+/, ""); directive=$0 } END { if (!found || duplicate) exit 1; print directive }' || true)"
+          if [ -z "$connect_src" ]; then
+            echo 'The deployed CSP must contain exactly one connect-src directive.' >&2
+            exit 1
+          fi
+          for origin in https://media.giphy.com https://media0.giphy.com https://media1.giphy.com https://media2.giphy.com https://media3.giphy.com https://media4.giphy.com; do
+            case " $connect_src " in
+              *" $origin "*) ;;
+              *)
+              echo "The deployed CSP connect-src is missing $origin." >&2
+              exit 1
+              ;;
+            esac
+          done
           if printf '%s\n' "$headers" | grep -Fqi 'fonts.googleapis.com'; then
             echo 'The deployed CSP still permits the removed Google Fonts origin.' >&2
             exit 1
