@@ -44,7 +44,7 @@ describe('HomeNotificationService', () => {
         expect(notifications.setMode).toHaveBeenCalledWith('notifications');
     });
 
-    it('suppresses foreground selected and own messages but alerts for other/background messages', () => {
+    it('plays page-context sounds for other/background messages but leaves notifications to the service worker', () => {
         events.next(message('conversation-selected', 'user-peer'));
         expect(notifications.playMessageSound).not.toHaveBeenCalled();
 
@@ -58,19 +58,17 @@ describe('HomeNotificationService', () => {
         events.next(message('conversation-selected', 'user-me'));
 
         expect(notifications.playMessageSound).toHaveBeenCalledTimes(2);
-        expect(notifications.showMessageNotification).toHaveBeenCalledTimes(1);
-        expect(notifications.showMessageNotification).toHaveBeenCalledWith('conversation-selected');
+        expect(notifications.showMessageNotification).not.toHaveBeenCalled();
     });
 
-    it('starts an incoming-call ringtone and stops it on terminal state', () => {
+    it('keeps incoming-call ringtone lifecycle in the page without creating browser notifications', () => {
         documentStub.background = true;
         callState.next({ ...callState.value, phase: 'incoming', callID: 'call-1', statusLabel: 'Incoming audio call.' });
         notifications.startCallRingtone.mockClear();
         events.next({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.incoming', payload: callPayload('call-1') } as MessageSocketEvent);
 
         expect(notifications.startCallRingtone).not.toHaveBeenCalled();
-        expect(notifications.showCallNotification).toHaveBeenCalledTimes(1);
-        expect(notifications.showCallNotification).toHaveBeenCalledWith('call-1');
+        expect(notifications.showCallNotification).not.toHaveBeenCalled();
 
         callState.next({ ...callState.value, phase: 'ended', statusLabel: 'Call ended.' });
         events.next({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.ended', payload: callPayload('call-1') } as MessageSocketEvent);

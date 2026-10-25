@@ -171,3 +171,4 @@
 
 .group-create-card input::placeholder { color: var(--chat-placeholder); opacity: 1; }
 :host-context(.light-theme) .group-create-card form > p { color: #6b2525; }
+.message-highlight { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }

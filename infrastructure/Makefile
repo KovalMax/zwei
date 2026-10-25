@@ -38,6 +38,7 @@ support-export: ## - Export bounded realtime logs for one support UUID (SUPPORT_
 check_dist_files:
 	cp -n .env.dist .env || true
 	cp -n docker-compose.override.dist.yml docker-compose.override.yml || true
+	@python3 scripts/ensure-local-push-secrets.py
 
 .PHONY: trust-local-ca
 trust-local-ca: ## - Trust the Docker-generated local CA on macOS

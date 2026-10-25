@@ -32,7 +32,6 @@ type Handler struct {
 	tickets              TicketConsumer
 	origins              map[string]struct{}
 	context              context.Context
-	protocol             int
 	sessionCheckInterval time.Duration
 }
 
@@ -41,11 +40,7 @@ type TicketConsumer interface {
 }
 
 func NewHandler(ctx context.Context, hub *application.Hub, sessions *sharedauth.SessionValidator, tickets TicketConsumer, origins map[string]struct{}) *Handler {
-	return NewVersionedHandler(ctx, hub, sessions, tickets, origins, application.ProtocolVersion)
-}
-
-func NewVersionedHandler(ctx context.Context, hub *application.Hub, sessions *sharedauth.SessionValidator, tickets TicketConsumer, origins map[string]struct{}, protocol int) *Handler {
-	return &Handler{context: ctx, hub: hub, sessions: sessions, tickets: tickets, origins: origins, protocol: protocol, sessionCheckInterval: pingInterval}
+	return &Handler{context: ctx, hub: hub, sessions: sessions, tickets: tickets, origins: origins, sessionCheckInterval: pingInterval}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +71,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16), closeRequest: make(chan struct{}, 1), budget: budget, connectionID: connectionID, protocol: h.protocol, sessions: h.sessions, sessionCheckInterval: h.sessionCheckInterval}
+	client := &client{socket: socket, identity: identity, hub: h.hub, send: make(chan []byte, 16), closeRequest: make(chan struct{}, 1), budget: budget, connectionID: connectionID, protocol: application.ProtocolVersion, sessions: h.sessions, sessionCheckInterval: h.sessionCheckInterval}
 	h.hub.Add(r.Context(), client)
 	go client.writePump(h.context)
 	client.readPump(h.context)

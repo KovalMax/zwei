@@ -40,9 +40,9 @@ import {SharedModule} from './shared/shared.module';
         ReactiveFormsModule,
         HttpClientModule,
         SharedModule,
-        ServiceWorkerModule.register('ngsw-worker.js', {
-            enabled: environment.production,
-            registrationStrategy: 'registerWhenStable:30000',
+        ServiceWorkerModule.register(environment.serviceWorkerWorker ?? 'ngsw-worker.js', {
+            enabled: environment.production || environment.serviceWorkerEnabled === true,
+            registrationStrategy: environment.serviceWorkerRegistrationStrategy ?? 'registerWhenStable:30000',
         }),
     ],
     providers: [

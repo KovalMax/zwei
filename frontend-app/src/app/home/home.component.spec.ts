@@ -5,6 +5,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { By } from '@angular/platform-browser';
 import { MatTooltip } from '@angular/material/tooltip';
 import { BehaviorSubject, EMPTY, NEVER, Observable, of, Subject, throwError, map } from 'rxjs';
+import {PushClickIntent, PushClickService} from '../pwa/push-click.service';
 
 import { HomeComponent, COMPOSER_EMOJIS } from './home.component';
 import { AppModule } from '../app.module';
@@ -47,6 +48,384 @@ describe('HomeComponent', () => {
 
     it('should create', () => {
         expect(component).toBeTruthy();
+    });
+
+    it('routes a validated message intent only through the authorized Home conversation snapshot', () => {
+        const intents = new Subject<PushClickIntent>();
+        const {home, snapshot, history, send} = pushIntentHome(intents);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
+        expect(home.selectedConversation?.id).toBe(snapshot.id);
+        expect(history).toHaveBeenCalledWith(snapshot.id, undefined);
+        expect(send).not.toHaveBeenCalled();
+        home.ngOnDestroy();
+    });
+
+    it('loads cursor pages until a pushed message is found and highlights it', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const firstPage = Array.from({length: 20}, (_, index) => ownMessage(snapshot.id, index + 21));
+        const target = {...ownMessage(snapshot.id, 1), id: targetID};
+        const history = vi.fn((conversationID: string, before?: string) => before === undefined
+            ? of({messages: firstPage, nextCursor: 'older-page'})
+            : of({messages: [target], nextCursor: undefined}));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history.mock.calls).toEqual([[snapshot.id, undefined], [snapshot.id, 'older-page']]);
+        expect(home.messages.map(message => message.id)).toContain(targetID);
+        expect(home.highlightedMessageID).toBe(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('shows a safe unavailable notice when history is exhausted before a pushed message is found', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const history = vi.fn().mockReturnValue(of({messages: [ownMessage(snapshot.id, 1)], nextCursor: undefined}));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history).toHaveBeenCalledTimes(1);
+        expect(home.pushCallNotice).toBe('This message is no longer available.');
+        expect(home.highlightedMessageID).toBeUndefined();
+        expect(home.pushCallNotice).not.toContain(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('stops push-history pagination when the service repeats a cursor', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const history = vi.fn((_conversationID: string, before?: string) => before === undefined
+            ? of({messages: [ownMessage(snapshot.id, 2)], nextCursor: 'same-cursor'})
+            : of({messages: [ownMessage(snapshot.id, 1)], nextCursor: 'same-cursor'}));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history).toHaveBeenCalledTimes(2);
+        expect(home.pushCallNotice).toBe('This message is no longer available.');
+        expect(home.pushCallNotice).not.toContain(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('stops push-history pagination and shows a safe notice when an older page fails', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        const history = vi.fn((_conversationID: string, before?: string) => before === undefined
+            ? of({messages: [ownMessage(snapshot.id, 2)], nextCursor: 'older-page'})
+            : throwError(() => new Error('history unavailable')));
+        const service = {history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+
+        expect(history.mock.calls).toEqual([[snapshot.id, undefined], [snapshot.id, 'older-page']]);
+        expect(home.pushCallNotice).toBe('This message is no longer available.');
+        expect(home.pushCallNotice).not.toContain(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('loads an absent group from the authorized group endpoint before selecting a push target', () => {
+        const intents = new Subject<PushClickIntent>();
+        const {home, history, getGroup} = pushIntentHome(intents);
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        getGroup.mockReturnValue(of(group));
+        home.conversations.next([]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: group.id, messageID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
+
+        expect(getGroup).toHaveBeenCalledWith(group.id);
+        expect(home.selectedConversation?.id).toBe(group.id);
+        expect(history).toHaveBeenCalledWith(group.id, undefined);
+        home.ngOnDestroy();
+    });
+
+    it('routes an archived direct-message push into Archived without restoring it', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const history = vi.fn().mockReturnValue(of({messages: [{...ownMessage(snapshot.id, 1), id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'}]}));
+        const listDirect = vi.fn().mockReturnValue(of([snapshot]));
+        const getGroup = vi.fn().mockReturnValue(throwError(() => new GroupProjectionNotFoundError()));
+        const listHomeSnapshot = vi.fn((archived: boolean) => of({direct: archived ? [snapshot] : [], groups: {items: [], nextCursor: null}}));
+        const conversationService = {history, listDirect, getGroup, listHomeSnapshot} as unknown as ConversationService;
+        const home = createHomeComponent(conversationService, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
+
+        expect(getGroup).toHaveBeenCalledWith(snapshot.id);
+        expect(listDirect).toHaveBeenCalledWith(true);
+        expect(home.archiveMode).toBe('archived');
+        expect(home.selectedConversation?.id).toBe(snapshot.id);
+        expect(listHomeSnapshot).toHaveBeenCalledWith(true);
+        expect(history).toHaveBeenCalledWith(snapshot.id, undefined);
+        home.ngOnDestroy();
+    });
+
+    it('keeps an absent archived direct push unavailable without changing archive mode', () => {
+        const intents = new Subject<PushClickIntent>();
+        const getGroup = vi.fn().mockReturnValue(throwError(() => new GroupProjectionNotFoundError()));
+        const listDirect = vi.fn().mockReturnValue(of([]));
+        const conversationService = {getGroup, listDirect, history: vi.fn(), listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(conversationService, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: '22222222-2222-4222-8222-222222222222', messageID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
+
+        expect(listDirect).toHaveBeenCalledWith(true);
+        expect(home.archiveMode).toBe('active');
+        expect(home.selectedConversation).toBeUndefined();
+        expect(home.pushCallNotice).toBe('This notification is no longer available.');
+        home.ngOnDestroy();
+    });
+
+    it('keeps an archived direct push safely unavailable when the archive lookup fails', () => {
+        const intents = new Subject<PushClickIntent>();
+        const getGroup = vi.fn().mockReturnValue(throwError(() => new GroupProjectionNotFoundError()));
+        const listDirect = vi.fn().mockReturnValue(throwError(() => new Error('archive lookup failed')));
+        const conversationService = {getGroup, listDirect, history: vi.fn(), listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(conversationService, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: '22222222-2222-4222-8222-222222222222', messageID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
+
+        expect(listDirect).toHaveBeenCalledWith(true);
+        expect(home.archiveMode).toBe('active');
+        expect(home.selectedConversation).toBeUndefined();
+        expect(home.pushCallNotice).toBe('This notification is no longer available.');
+        home.ngOnDestroy();
+    });
+
+    it('ignores a late archived-direct fallback after a newer push intent', () => {
+        const intents = new Subject<PushClickIntent>();
+        const fallback = new Subject<Conversation[]>();
+        const archived = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+        const current = {...conversation('33333333-3333-4333-8333-333333333333'), kind: 'direct' as const};
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        const getGroup = vi.fn().mockReturnValue(throwError(() => new GroupProjectionNotFoundError()));
+        const listDirect = vi.fn().mockReturnValue(fallback);
+        const history = vi.fn().mockReturnValue(of({messages: [{...ownMessage(current.id, 1), id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'}]}));
+        const conversationService = {getGroup, listDirect, history, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [current], groups: {items: [group], nextCursor: null}}))} as unknown as ConversationService;
+        const home = createHomeComponent(conversationService, {profile: () => of({id: 'user'})} as unknown as AuthService,
+            {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService,
+            {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([current, group]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'message', conversationID: archived.id, messageID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
+        expect(listDirect).toHaveBeenCalledWith(true);
+        intents.next({kind: 'message', conversationID: current.id, messageID: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'});
+        expect(home.selectedConversation?.id).toBe(current.id);
+
+        fallback.next([archived]);
+
+        expect(home.archiveMode).toBe('active');
+        expect(home.selectedConversation?.id).toBe(current.id);
+        expect(history).toHaveBeenCalledWith(current.id, undefined);
+        expect(home.pushCallNotice).toBe('');
+        home.ngOnDestroy();
+    });
+
+    it('recovers a direct call from the correlated ringing projection without auto-answer', () => {
+        const intents = new Subject<PushClickIntent>();
+        const {home, snapshot, send, showRecoveredRinging} = pushIntentHome(intents);
+        home.profile = {id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'} as Profile;
+        home.conversations.next([snapshot]);
+        home.socketReady = true;
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'direct-call', callID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversationID: snapshot.id});
+        const request = send.mock.calls.find(([event]) => event.type === 'call.recover')?.[0];
+        expect(request?.type).toBe('call.recover');
+        expect(send.mock.calls.some(([event]) => event.type === 'call.accept')).toBe(false);
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.recovered', request_id: request.request_id, payload: {status: 'ringing', call: {call_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversation_id: snapshot.id, caller_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'ringing', expires_at: '2099-01-01T00:00:00Z'}}});
+        expect(showRecoveredRinging).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', snapshot.id, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+        expect(send.mock.calls.some(([event]) => event.type === 'call.accept')).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it('ignores a late direct-call recovery after a newer push intent and continues the new group intent', () => {
+        const intents = new Subject<PushClickIntent>();
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        const {home, snapshot, send, showRecoveredRinging} = pushIntentHome(intents);
+        home.profile = {id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'} as Profile;
+        home.conversations.next([snapshot, group]);
+        home.socketReady = true;
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'direct-call', callID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversationID: snapshot.id});
+        const oldRecovery = send.mock.calls.map(([event]) => event).find(event => event.type === 'call.recover');
+        expect(oldRecovery?.type).toBe('call.recover');
+
+        intents.next({kind: 'group-call', conversationID: group.id});
+        const discover = send.mock.calls.map(([event]) => event).find(event => event.type === 'group.call.discover');
+        expect(discover?.type).toBe('group.call.discover');
+        const noticeBeforeLateReply = home.pushCallNotice;
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.recovered', request_id: oldRecovery.request_id, payload: {status: 'ringing', call: {call_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversation_id: snapshot.id, caller_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'ringing', expires_at: '2099-01-01T00:00:00Z'}}});
+
+        expect(home.pushCallNotice).toBe(noticeBeforeLateReply);
+        expect(showRecoveredRinging).not.toHaveBeenCalled();
+        expect(home.selectedConversation?.id).toBe(group.id);
+        expect(discover?.type).toBe('group.call.discover');
+
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discover.request_id, payload: {conversation_id: group.id, room: {room_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', conversation_id: group.id, membership_revision: 1, generation: 2, state_revision: 3, status: 'ringing', expires_at: '2099-01-01T00:00:00Z', participants: []}}});
+        expect(send.mock.calls.map(([event]) => event.type).filter(type => type === 'call.recover' || type === 'group.call.discover' || type === 'group.call.sync')).toEqual(['call.recover', 'group.call.discover']);
+        expect(home.pushCallNotice).toBe('A group call is available. Join from the selected conversation if you choose.');
+        expect(send.mock.calls.some(([event]) => event.type === 'group.call.join' || event.type === 'group.call.accept')).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it('ignores a late group discovery after a newer direct-call push intent', () => {
+        const intents = new Subject<PushClickIntent>();
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        const {home, snapshot, send, showRecoveredRinging} = pushIntentHome(intents);
+        home.profile = {id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'} as Profile;
+        home.conversations.next([snapshot, group]);
+        home.socketReady = true;
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+
+        intents.next({kind: 'group-call', conversationID: group.id});
+        const oldDiscover = send.mock.calls.map(([event]) => event).find(event => event.type === 'group.call.discover');
+        expect(oldDiscover?.type).toBe('group.call.discover');
+        intents.next({kind: 'direct-call', callID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversationID: snapshot.id});
+        const recover = send.mock.calls.map(([event]) => event).find(event => event.type === 'call.recover');
+        expect(recover?.type).toBe('call.recover');
+
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: oldDiscover.request_id, payload: {conversation_id: group.id, room: {room_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', conversation_id: group.id, membership_revision: 1, generation: 2, state_revision: 3, status: 'ringing', expires_at: '2099-01-01T00:00:00Z', participants: []}}});
+
+        expect(send.mock.calls.map(([event]) => event.type)).not.toContain('group.call.sync');
+        expect(home.pushCallNotice).toBe('');
+        expect(home.selectedConversation?.id).toBe(snapshot.id);
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.recovered', request_id: recover.request_id, payload: {status: 'ringing', call: {call_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversation_id: snapshot.id, caller_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'ringing', expires_at: '2099-01-01T00:00:00Z'}}});
+        expect(showRecoveredRinging).toHaveBeenCalledOnce();
+        home.ngOnDestroy();
+    });
+
+    it('retains call-click recovery until the socket is ready, then sends it once', () => {
+        const intents = new Subject<PushClickIntent>();
+        const {home, snapshot, send} = pushIntentHome(intents);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'direct-call', callID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', conversationID: snapshot.id});
+        expect(send).not.toHaveBeenCalled();
+        expect(home.selectedConversation?.id).toBe(snapshot.id);
+        home.socketReady = true;
+        (home as unknown as {applyPushIntentIfReady: () => void}).applyPushIntentIfReady();
+        (home as unknown as {applyPushIntentIfReady: () => void}).applyPushIntentIfReady();
+        expect(send.mock.calls.filter(([event]) => event.type === 'call.recover')).toHaveLength(1);
+        home.ngOnDestroy();
+    });
+
+    it('retains group-call discovery until the socket is ready without joining', () => {
+        const intents = new Subject<PushClickIntent>();
+        const {home, send} = pushIntentHome(intents);
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        home.conversations.next([group]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'group-call', conversationID: group.id});
+        expect(send).not.toHaveBeenCalled();
+        home.socketReady = true;
+        (home as unknown as {applyPushIntentIfReady: () => void}).applyPushIntentIfReady();
+        (home as unknown as {applyPushIntentIfReady: () => void}).applyPushIntentIfReady();
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(1);
+        expect(send.mock.calls.some(([event]) => event.type === 'group.call.join' || event.type === 'group.call.accept')).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it('discovers a live group-call click without joining or answering', () => {
+        const intents = new Subject<PushClickIntent>();
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        const {home, send} = pushIntentHome(intents);
+        home.profile = {id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'} as Profile;
+        home.conversations.next([group]);
+        home.socketReady = true;
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'group-call', conversationID: group.id});
+        const discover = send.mock.calls.map(([event]) => event).find(event => event.type === 'group.call.discover');
+        expect(discover?.type).toBe('group.call.discover');
+        expect(send.mock.calls.some(([event]) => event.type === 'group.call.join' || event.type === 'group.call.accept')).toBe(false);
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discover.request_id, payload: {conversation_id: group.id, room: {room_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', conversation_id: group.id, membership_revision: 1, generation: 2, state_revision: 3, status: 'ringing', expires_at: '2099-01-01T00:00:00Z', participants: [{user_id: 'private-user', device_id: 'private-device'}]}}});
+        expect(send.mock.calls.map(([event]) => event.type).filter(type => type.startsWith('group.call.'))).toEqual(['group.call.discover']);
+        expect(home.pushCallNotice).toBe('A group call is available. Join from the selected conversation if you choose.');
+        expect(send.mock.calls.some(([event]) => event.type === 'group.call.join')).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it.each(['active', 'ended'] as const)('handles a discovered %s group room without syncing', status => {
+        const intents = new Subject<PushClickIntent>();
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        const {home, send} = pushIntentHome(intents);
+        home.conversations.next([group]);
+        home.socketReady = true;
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'group-call', conversationID: group.id});
+        const discover = send.mock.calls.map(([event]) => event).find(event => event.type === 'group.call.discover');
+        expect(discover?.type).toBe('group.call.discover');
+        if (!discover || discover.type !== 'group.call.discover') throw new Error('Expected group call discovery');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discover.request_id, payload: {conversation_id: group.id, room: {room_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', conversation_id: group.id, membership_revision: 1, generation: 2, state_revision: 3, status, expires_at: '2099-01-01T00:00:00Z', participants: []}}});
+        expect(home.pushCallNotice).toBe(status === 'ended' ? 'This group call is no longer available.' : 'A group call is available. Join from the selected conversation if you choose.');
+        expect(send.mock.calls.map(([event]) => event.type).filter(type => type.startsWith('group.call.'))).toEqual(['group.call.discover']);
+        expect(send.mock.calls.some(([event]) => event.type === 'group.call.join' || event.type === 'group.call.accept')).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it.each([
+        {description: 'no room', room: null, responseConversationID: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'},
+        {description: 'wrong response conversation', roomConversationID: 'other-group', responseConversationID: 'other-group'},
+        {description: 'wrong room conversation', roomConversationID: 'other-group', responseConversationID: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'},
+    ])('shows unavailable for group-call discovery with $description', ({room, roomConversationID, responseConversationID}) => {
+        const intents = new Subject<PushClickIntent>();
+        const group = groupConversation('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+        const {home, send} = pushIntentHome(intents);
+        home.conversations.next([group]);
+        home.socketReady = true;
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'group-call', conversationID: group.id});
+        const discover = send.mock.calls.map(([event]) => event).find(event => event.type === 'group.call.discover');
+        expect(discover?.type).toBe('group.call.discover');
+        if (!discover || discover.type !== 'group.call.discover') throw new Error('Expected group call discovery');
+        const discoveredRoom = room === null ? null : {
+            room_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', conversation_id: roomConversationID ?? group.id,
+            membership_revision: 1, generation: 2, state_revision: 3, status: 'active' as const,
+            expires_at: '2099-01-01T00:00:00Z', participants: [],
+        };
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discover.request_id, payload: {conversation_id: responseConversationID, room: discoveredRoom}});
+        expect(home.pushCallNotice).toBe('This group call is no longer available.');
+        expect(send.mock.calls.map(([event]) => event.type).filter(type => type.startsWith('group.call.'))).toEqual(['group.call.discover']);
+        expect(send.mock.calls.some(([event]) => event.type === 'group.call.join' || event.type === 'group.call.accept')).toBe(false);
+        home.ngOnDestroy();
     });
 
     it('forwards the aggregate conversation unread count to the PWA facade', () => {
@@ -3216,13 +3595,27 @@ function snapshotFrom(source: Observable<Conversation[]>): Observable<{direct: C
     return source.pipe(map(items => ({direct: items.filter(item => item.kind !== 'group'), groups: {items: items.filter((item): item is GroupConversation => item.kind === 'group'), nextCursor: null}})));
 }
 
-function createHomeComponent(conversationService: ConversationService, authService: AuthService, changeDetector: ChangeDetectorRef, dataProvider: DataProviderService, call: CallFacade, notifications?: HomeNotificationService, groupCall?: GroupCallFacade, groupAccess = new HomeGroupAccessFacade(conversationService), giphySearch?: GiphySearchService): HomeComponent {
+function createHomeComponent(conversationService: ConversationService, authService: AuthService, changeDetector: ChangeDetectorRef, dataProvider: DataProviderService, call: CallFacade, notifications?: HomeNotificationService, groupCall?: GroupCallFacade, groupAccess = new HomeGroupAccessFacade(conversationService), giphySearch?: GiphySearchService, pushClicks: PushClickService = {intents: new Subject<never>()} as unknown as PushClickService): HomeComponent {
     const legacyTestService = conversationService as ConversationService & {list?: () => Observable<Conversation[]>};
     const serviceWithHistory = Object.assign(conversationService, {
         history: conversationService.history ?? (() => of({ messages: [] })),
         listHomeSnapshot: conversationService.listHomeSnapshot ?? (() => snapshotFrom(legacyTestService.list?.() ?? of([]))),
     });
-    return new HomeComponent(serviceWithHistory, authService, changeDetector, dataProvider, call, groupAccess, notifications, groupCall, undefined, giphySearch);
+    return new HomeComponent(serviceWithHistory, authService, changeDetector, dataProvider, call, groupAccess, notifications, groupCall, undefined, giphySearch, pushClicks);
+}
+
+function pushIntentHome(intents: Subject<PushClickIntent>): {home: HomeComponent; snapshot: Conversation; history: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn>; showRecoveredRinging: ReturnType<typeof vi.fn>; getGroup: ReturnType<typeof vi.fn>} {
+    const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
+    const history = vi.fn().mockReturnValue(of({messages: []}));
+    const send = vi.fn().mockReturnValue(true);
+    const showRecoveredRinging = vi.fn();
+    const getGroup = vi.fn();
+    const conversationService = {history, getGroup, listHomeSnapshot: vi.fn().mockReturnValue(of({direct: [snapshot], groups: {items: [], nextCursor: null}}))} as unknown as ConversationService;
+    const auth = {profile: () => of({id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'})} as unknown as AuthService;
+    const dataProvider = {send, close: vi.fn()} as unknown as DataProviderService;
+    const call = {state: {phase: 'idle'}, showRecoveredRinging, close: vi.fn()} as unknown as CallFacade;
+    const home = createHomeComponent(conversationService, auth, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, dataProvider, call, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+    return {home, snapshot, history, send, showRecoveredRinging, getGroup};
 }
 
 function conversation(id: string): Conversation {

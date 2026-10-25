@@ -26,6 +26,7 @@
                         "tsConfig": "tsconfig.app.json",
                         "aot": true,
                         "assets": [
+                            {"glob": "ngsw-worker-e2e.js", "input": "public", "output": ""},
                             "src/assets",
                             "src/manifest.webmanifest"
                         ],
@@ -79,6 +80,14 @@
                                     "maximumError": "36kb"
                                 }
                             ]
+                        },
+                        "e2e": {
+                            "fileReplacements": [
+                                {"replace": "src/environments/environment.ts", "with": "src/environments/environment.e2e.ts"}
+                            ],
+                            "serviceWorker": "ngsw-config.json",
+                            "optimization": false,
+                            "sourceMap": true
                         }
                     }
                 },
@@ -89,6 +98,9 @@
                         "allowedHosts": true
                     },
                     "configurations": {
+                        "e2e": {
+                            "buildTarget": "messenger:build:e2e"
+                        },
                         "production": {
                             "buildTarget": "messenger:build:production"
                         }

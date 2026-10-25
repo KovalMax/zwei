@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,10 +47,23 @@ func TestSenderRejectsClientMessageIDReuseAcrossConversations(t *testing.T) {
 	if first.ContentType != "text" {
 		t.Fatalf("default content type = %q, want text", first.ContentType)
 	}
+	var intents int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM message_push_outbox WHERE message_id = $1 AND recipient_id = $2 AND event_type = 'message.push'`, first.ID, firstRecipientID).Scan(&intents); err != nil {
+		t.Fatalf("count recipient push intents: %v", err)
+	}
+	if intents != 1 {
+		t.Fatalf("recipient push intents = %d, want one", intents)
+	}
 
 	replayed, created, err := sender.Send(ctx, request)
 	if err != nil || created || replayed.ID != first.ID {
 		t.Fatalf("same-conversation retry = (%+v, %t, %v), want original message", replayed, created, err)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM message_push_outbox WHERE message_id = $1 AND recipient_id = $2`, first.ID, firstRecipientID).Scan(&intents); err != nil {
+		t.Fatalf("count push intents after idempotent retry: %v", err)
+	}
+	if intents != 1 {
+		t.Fatalf("push intents after idempotent retry = %d, want one", intents)
 	}
 	if _, err := db.Exec(ctx, `UPDATE messages SET expires_at = now() - interval '1 second' WHERE id = $1`, first.ID); err != nil {
 		t.Fatalf("expire message: %v", err)
@@ -61,6 +75,67 @@ func TestSenderRejectsClientMessageIDReuseAcrossConversations(t *testing.T) {
 	request.ConversationID = secondConversationID
 	if _, created, err := sender.Send(ctx, request); !errors.Is(err, ErrClientMessageIDConflict) || created {
 		t.Fatalf("cross-conversation reuse error = %v, created = %t, want %v and false", err, created, ErrClientMessageIDConflict)
+	}
+}
+
+func TestSenderRollsBackMessageDeliveryUnreadAndPushIntentTogether(t *testing.T) {
+	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	senderID, recipientID, conversationID, deviceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	if _, err := db.Exec(ctx, `INSERT INTO users(id,email,password_hash,display_name) VALUES($1,$2,'integration','Sender'),($3,$4,'integration','Recipient')`, senderID, senderID.String()+"@push-atomic.integration.test", recipientID, recipientID.String()+"@push-atomic.integration.test"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(context.Background(), `DELETE FROM users WHERE id=ANY($1)`, []uuid.UUID{senderID, recipientID})
+	}()
+	insertConversation(t, ctx, db, conversationID, senderID, recipientID)
+	if _, err := db.Exec(ctx, `INSERT INTO devices(id,user_id,client_device_id) VALUES($1,$2,'push-atomic-device')`, deviceID, recipientID); err != nil {
+		t.Fatal(err)
+	}
+	triggerName := "reject_push_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	functionName := triggerName + "_fn"
+	_, err = db.Exec(ctx, `CREATE FUNCTION `+functionName+`() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected intent failure'; END $$`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(context.Background(), `DROP TRIGGER IF EXISTS `+triggerName+` ON message_push_outbox`)
+		_, _ = db.Exec(context.Background(), `DROP FUNCTION IF EXISTS `+functionName+`()`)
+	}()
+	triggerSQL := `CREATE TRIGGER ` + triggerName + ` BEFORE INSERT ON message_push_outbox FOR EACH ROW WHEN (NEW.sender_id = '` + senderID.String() + `'::uuid) EXECUTE FUNCTION ` + functionName + `()`
+	if _, err = db.Exec(ctx, triggerSQL); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = NewSender(db, "push-atomic-test-key").Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "atomic-push-failure", Body: "private content"})
+	if !errors.Is(err, ErrPersistence) {
+		t.Fatalf("send error=%v, want persistence failure", err)
+	}
+	checks := []struct {
+		label, query string
+		args         []any
+	}{
+		{"message", `SELECT count(*) FROM messages WHERE sender_id=$1 AND client_message_id='atomic-push-failure'`, []any{senderID}},
+		{"delivery", `SELECT count(*) FROM message_delivery WHERE device_id=$1`, []any{deviceID}},
+		{"push intent", `SELECT count(*) FROM message_push_outbox WHERE sender_id=$1`, []any{senderID}},
+		{"unread state", `SELECT count(*) FROM user_read_cursors WHERE user_id=$1 AND conversation_id=$2`, []any{recipientID, conversationID}},
+	}
+	for _, check := range checks {
+		var count int
+		if err := db.QueryRow(ctx, check.query, check.args...).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", check.label, err)
+		}
+		if count != 0 {
+			t.Errorf("%s rows after transactional failure=%d, want zero", check.label, count)
+		}
 	}
 }
 

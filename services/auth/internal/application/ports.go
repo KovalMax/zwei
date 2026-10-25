@@ -17,6 +17,8 @@ type Repository interface {
 	CreateSession(context.Context, uuid.UUID, uuid.UUID, []byte, int64, time.Time) error
 	RotateRefreshToken(context.Context, []byte) (user.Session, error)
 	RevokeAllSessions(context.Context, uuid.UUID) error
+	StorePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, PushSubscription) error
+	DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, string) error
 	Profile(context.Context, uuid.UUID) (user.Profile, error)
 	UpdateProfile(context.Context, uuid.UUID, *string, *string, *string, *bool) error
 	GiphyEnabled(context.Context) (bool, error)
@@ -31,6 +33,12 @@ type Repository interface {
 	ListInvitations(context.Context) ([]user.Invitation, error)
 	RevokeInvitation(context.Context, uuid.UUID) error
 	CreateAdmin(context.Context, string, string, string) error
+}
+
+type PushSubscription struct {
+	Endpoint string
+	P256DH   string
+	Auth     string
 }
 
 type CreateUserParams struct {

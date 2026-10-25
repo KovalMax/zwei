@@ -39,6 +39,20 @@ describe('AuthService', () => {
         expect(service.token.value?.expires_in).toBeGreaterThan(Date.now());
     });
 
+    it('retains the current token on the revoke request and clears it locally before completion', () => {
+        service.acceptToken({token_type: 'Bearer', access_token: 'logout-access', expires_in: 900});
+        let completed = false;
+        service.logout().subscribe(() => completed = true);
+        const request = http.expectOne(backends.logout);
+        expect(request.request.method).toBe('POST');
+        expect(request.request.withCredentials).toBe(true);
+        expect(request.request.headers.get('Authorization')).toBe('Bearer logout-access');
+        expect(service.token.value).toBeNull();
+        expect(completed).toBe(false);
+        request.flush(null);
+        expect(completed).toBe(true);
+    });
+
     it('updates account profile fields through the authenticated profile endpoint', () => {
         let updatedProfile: unknown;
         service.updateProfile({alert_mode: 'sounds'}).subscribe(profile => updatedProfile = profile);

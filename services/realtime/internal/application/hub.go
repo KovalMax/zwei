@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/KovalMax/zwei/services/realtime/internal/application/callpush"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 	"github.com/KovalMax/zwei/services/shared/messaging"
 )
@@ -40,7 +41,7 @@ type CallLogger interface {
 }
 
 const (
-	ProtocolVersion            = 1
+	ProtocolVersion            = 2
 	ReconciliationMessageLimit = 100
 	groupCallOperationTimeout  = 5 * time.Second
 	groupCallStartTimeout      = 3 * time.Second
@@ -170,10 +171,14 @@ type Hub struct {
 	calls            CallCoordinator
 	turn             TURNCredentialIssuer
 	logger           CallLogger
+	now              func() time.Time
+	callPush         callpush.Enqueuer
 	mu               sync.RWMutex
 	clients          map[string]Client
 	groupOrder       [64]chan struct{}
 }
+
+func (h *Hub) SetCallPushQueue(queue callpush.Enqueuer) { h.callPush = queue }
 
 // RequestError preserves client correlation data when a command is rejected.
 type RequestError struct {
@@ -211,7 +216,7 @@ func NewHubWithGroupCallAuthorizer(sender *messaging.Sender, presence PresenceRe
 	if resolver, ok := presence.(TypingRecipientResolver); ok {
 		typingRecipients = resolver
 	}
-	hub := &Hub{sender: sender, presence: presence, typingRecipients: typingRecipients, groupCallAuth: authorizer, coord: coord, delivery: delivery, cursors: cursors, reconcile: reconcile, calls: calls, turn: turn, logger: logger, clients: make(map[string]Client)}
+	hub := &Hub{sender: sender, presence: presence, typingRecipients: typingRecipients, groupCallAuth: authorizer, coord: coord, delivery: delivery, cursors: cursors, reconcile: reconcile, calls: calls, turn: turn, logger: logger, now: time.Now, clients: make(map[string]Client)}
 	for index := range hub.groupOrder {
 		hub.groupOrder[index] = make(chan struct{}, 1)
 	}
@@ -530,11 +535,11 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return &RequestError{Err: errors.New("unsupported event")}
 	}
-	if request.Version != protocolVersion {
+	if protocolVersion != ProtocolVersion || request.Version != ProtocolVersion {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported protocol version")}
 	}
 	var supportRef uuid.UUID
-	if (request.Type == "call.start" && (protocolVersion == 1 || protocolVersion == 2) || request.Type == "group.call.start" && protocolVersion == 2) && request.RequestID != "" && request.Payload.ConversationID != uuid.Nil {
+	if (request.Type == "call.start" || request.Type == "group.call.start") && request.RequestID != "" && request.Payload.ConversationID != uuid.Nil {
 		supportRef = uuid.New()
 		defer func() {
 			if result == nil {
@@ -606,7 +611,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if request.Type == "call.signal" && !validCallSignal(request.Payload.Signal) {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported call signal")}
 	}
-	if request.Type == "call.start" || request.Type == "call.accept" || request.Type == "call.decline" || request.Type == "call.cancel" || request.Type == "call.end" || request.Type == "call.signal" {
+	if request.Type == "call.start" || request.Type == "call.accept" || request.Type == "call.decline" || request.Type == "call.cancel" || request.Type == "call.end" || request.Type == "call.signal" || request.Type == "call.recover" {
 		if request.RequestID == "" {
 			return &RequestError{Err: errors.New("call request ID is required")}
 		}
@@ -920,6 +925,7 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 	commandLeaseDone := false
 	var activeMemberIDs []uuid.UUID
 	var localDelivery *GroupRoomChange
+	var callPushJob *callpush.Job
 	if eventType != "group.call.start" {
 		commandLease, err = h.groupCallAuth.BeginGroupCall(ctx, conversationID, identity.UserID)
 		if err != nil {
@@ -1028,6 +1034,14 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 			leaseDone = err == nil
 			if err != nil {
 				cleanupAttempt("lease commit or fanout failure")
+			} else {
+				recipients := make([]uuid.UUID, 0, len(memberIDs))
+				for _, memberID := range memberIDs {
+					if memberID != identity.UserID {
+						recipients = append(recipients, memberID)
+					}
+				}
+				callPushJob = &callpush.Job{CallID: room.ID, ConversationID: room.ConversationID, StarterID: identity.UserID, Group: true, Recipients: recipients, ExpiresAt: room.ExpiresAt}
 			}
 		}
 	case "group.call.join":
@@ -1170,6 +1184,9 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 	}
 	if err == nil && localDelivery != nil {
 		h.deliverGroupRoomLockedContext(ctx, *localDelivery)
+	}
+	if err == nil && callPushJob != nil && h.callPush != nil {
+		h.callPush.Enqueue(*callPushJob)
 	}
 	operationSupportRef := supportRef
 	if operationSupportRef == uuid.Nil {
@@ -1607,10 +1624,6 @@ func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventTyp
 		if recipientErr != nil {
 			return &RequestError{RequestID: requestID, Err: errors.New("conversation not found")}
 		}
-		online, onlineErr := h.coord.Online(ctx, []uuid.UUID{recipientID})
-		if onlineErr != nil || !online[recipientID] {
-			return &RequestError{RequestID: requestID, Err: errors.New("recipient is offline")}
-		}
 		admission, admissionOK := h.coord.(CallAdmissionCoordinator)
 		if !admissionOK {
 			err = ErrCallUnavailable
@@ -1631,7 +1644,28 @@ func (h *Hub) handleCall(ctx context.Context, client Client, requestID, eventTyp
 		}
 		if err == nil {
 			h.publishCall(ctx, CallChange{Type: "started", Call: call})
+			if h.callPush != nil {
+				h.callPush.Enqueue(callpush.Job{CallID: call.ID, ConversationID: call.ConversationID, StarterID: call.CallerID, Recipients: []uuid.UUID{call.RecipientID}, ExpiresAt: call.ExpiresAt})
+			}
 		}
+	case "call.recover":
+		call, err = h.calls.Get(ctx, callID)
+		if err != nil && !errors.Is(err, ErrCallNotFound) {
+			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+		}
+		recovery := CallRecovery{Status: CallRecoveryMissed}
+		if err == nil && call.RecipientID == identity.UserID && call.Status == CallRinging && h.now().Before(call.ExpiresAt) {
+			recovery.Status = CallRecoveryRinging
+			recovery.Call = &CallRecoveryProjection{
+				CallID:         call.ID,
+				ConversationID: call.ConversationID,
+				CallerID:       call.CallerID,
+				Status:         call.Status,
+				ExpiresAt:      call.ExpiresAt,
+			}
+		}
+		client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "call.recovered", RequestID: requestID, Payload: recovery})
+		return nil
 	case "call.accept":
 		call, err = h.calls.Accept(ctx, callID, identity.UserID, identity.DeviceID, clientConnectionID(client))
 		if err == nil {

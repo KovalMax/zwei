@@ -2,20 +2,79 @@ package postgres
 
 import (
 	"context"
+	"crypto/subtle"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/KovalMax/zwei/services/auth/internal/application"
 	"github.com/KovalMax/zwei/services/auth/internal/domain/user"
+	"github.com/KovalMax/zwei/services/shared/pushcrypto"
 )
 
-type Repository struct{ db *pgxpool.Pool }
+type Repository struct {
+	db         *pgxpool.Pool
+	codec      *pushcrypto.Codec
+	vapidKeyID string
+}
 
-func NewRepository(db *pgxpool.Pool) *Repository { return &Repository{db: db} }
+func NewRepository(db *pgxpool.Pool, codec *pushcrypto.Codec, vapidKeyID ...string) *Repository {
+	r := &Repository{db: db, codec: codec}
+	if len(vapidKeyID) > 0 {
+		r.vapidKeyID = vapidKeyID[0]
+	}
+	return r
+}
+
+// EnsurePushFingerprintKeyIdentity fixes the durable identity of the key used
+// to index push endpoints. A mismatch is intentionally generic and never
+// includes either key identity.
+func (r *Repository) EnsurePushFingerprintKeyIdentity(ctx context.Context) error {
+	return ensurePushFingerprintKeyIdentity(ctx, r.db, r.codec.FingerprintKeyID())
+}
+
+func ensurePushFingerprintKeyIdentity(ctx context.Context, db interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, keyID [32]byte) error {
+	if _, err := db.Exec(ctx, `INSERT INTO push_fingerprint_key_identity (singleton, key_id) VALUES (true, $1) ON CONFLICT (singleton) DO NOTHING`, keyID[:]); err != nil {
+		return errors.New("push fingerprint key identity check failed")
+	}
+	var stored []byte
+	if err := db.QueryRow(ctx, `SELECT key_id FROM push_fingerprint_key_identity WHERE singleton = true`).Scan(&stored); err != nil {
+		return errors.New("push fingerprint key identity check failed")
+	}
+	if len(stored) != len(keyID) || subtle.ConstantTimeCompare(stored, keyID[:]) != 1 {
+		return errors.New("push fingerprint key identity mismatch")
+	}
+	return nil
+}
+
+// RekeyPushFingerprintKey is an explicitly destructive operator action. The
+// caller must stop every Auth and Realtime replica before invoking it.
+func (r *Repository) RekeyPushFingerprintKey(ctx context.Context) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return errors.New("push fingerprint key re-key failed")
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `DELETE FROM push_subscriptions`); err != nil {
+		return errors.New("push fingerprint key re-key failed")
+	}
+	keyID := r.codec.FingerprintKeyID()
+	if _, err = tx.Exec(ctx, `INSERT INTO push_fingerprint_key_identity (singleton, key_id) VALUES (true, $1) ON CONFLICT (singleton) DO UPDATE SET key_id = EXCLUDED.key_id`, keyID[:]); err != nil {
+		return errors.New("push fingerprint key re-key failed")
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return errors.New("push fingerprint key re-key failed")
+	}
+	return nil
+}
 
 func (r *Repository) CreateUserWithDevice(ctx context.Context, params application.CreateUserParams) (uuid.UUID, uuid.UUID, error) {
 	tx, err := r.db.Begin(ctx)
@@ -76,10 +135,113 @@ func (r *Repository) RotateRefreshToken(ctx context.Context, tokenHash []byte) (
 }
 
 func (r *Repository) RevokeAllSessions(ctx context.Context, userID uuid.UUID) error {
-	if _, err := r.db.Exec(ctx, `UPDATE users SET session_version = session_version + 1, updated_at = now() WHERE id = $1`, userID); err != nil {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	_, _ = r.db.Exec(ctx, `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, userID)
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE users SET session_version = session_version + 1, updated_at = now() WHERE id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM push_subscriptions WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *Repository) StorePushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, subscription application.PushSubscription) error {
+	version, ciphertext, fingerprint, err := r.codec.Seal(pushcrypto.Subscription{Endpoint: subscription.Endpoint, P256DH: subscription.P256DH, Auth: subscription.Auth})
+	if err != nil {
+		return err
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockPushAccount(ctx, tx, userID, sessionVersion, true); err != nil {
+		return err
+	}
+	if err := validatePushDevice(ctx, tx, userID, deviceID); err != nil {
+		return err
+	}
+	var existing bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = $1 AND device_id = $2)`, userID, deviceID).Scan(&existing); err != nil {
+		return err
+	}
+	if !existing {
+		var count int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE user_id = $1`, userID).Scan(&count); err != nil {
+			return err
+		}
+		if count >= maxPushSubscriptionsPerAccount {
+			return application.ErrPushSubscriptionLimit
+		}
+	}
+	result, err := tx.Exec(ctx, `INSERT INTO push_subscriptions (user_id, device_id, endpoint_fingerprint, encryption_version, encrypted_subscription, vapid_key_id) VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')) ON CONFLICT (device_id) DO UPDATE SET endpoint_fingerprint = EXCLUDED.endpoint_fingerprint, encryption_version = EXCLUDED.encryption_version, encrypted_subscription = EXCLUDED.encrypted_subscription, vapid_key_id = EXCLUDED.vapid_key_id, updated_at = now() WHERE push_subscriptions.user_id = EXCLUDED.user_id AND NOT EXISTS (SELECT 1 FROM push_subscriptions other WHERE other.endpoint_fingerprint = EXCLUDED.endpoint_fingerprint AND other.device_id <> EXCLUDED.device_id)`, userID, deviceID, fingerprint, version, ciphertext, r.vapidKeyID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return application.ErrPushSubscriptionOwned
+		}
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return application.ErrPushSubscriptionOwned
+	}
+	return tx.Commit(ctx)
+}
+
+const maxPushSubscriptionsPerAccount = 20
+
+func (r *Repository) DeletePushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, endpoint string) error {
+	fingerprint := r.codec.Fingerprint(endpoint)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockPushAccount(ctx, tx, userID, sessionVersion, false); err != nil {
+		return err
+	}
+	if err := validatePushDevice(ctx, tx, userID, deviceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM push_subscriptions WHERE user_id = $1 AND device_id = $2 AND endpoint_fingerprint = $3`, userID, deviceID, fingerprint); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func lockPushAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID, sessionVersion int64, requireNotifications bool) error {
+	var currentVersion int64
+	var alertMode string
+	if err := tx.QueryRow(ctx, `SELECT session_version, alert_mode FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&currentVersion, &alertMode); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return application.ErrPushSessionRevoked
+		}
+		return err
+	}
+	if currentVersion != sessionVersion {
+		return application.ErrPushSessionRevoked
+	}
+	if requireNotifications && alertMode != "notifications" {
+		return application.ErrPushUnavailable
+	}
+	return nil
+}
+
+func validatePushDevice(ctx context.Context, tx pgx.Tx, userID, deviceID uuid.UUID) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL)`, deviceID, userID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return application.ErrPushSessionRevoked
+	}
 	return nil
 }
 

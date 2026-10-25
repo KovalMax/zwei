@@ -2,6 +2,10 @@ import {ComponentFixture, TestBed} from '@angular/core/testing';
 
 import {HeaderComponent} from './header.component';
 import {AppModule} from '../../app.module';
+import {AuthService} from '../../auth/auth.service';
+import {Router} from '@angular/router';
+import {Subject} from 'rxjs';
+import {PushEnrollmentService} from '../../pwa/push-enrollment.service';
 
 describe('HeaderComponent', () => {
     let component: HeaderComponent;
@@ -32,6 +36,24 @@ describe('HeaderComponent', () => {
         expect(icon.getAttribute('src')).toBe('assets/zwei-brand-mark.svg');
         expect(icon.getAttribute('alt')).toBe('');
         expect(brand.textContent?.trim()).toBe('zwei');
+    });
+
+    it('waits for server logout before best-effort local push unsubscribe and login navigation', async () => {
+        const auth = TestBed.inject(AuthService);
+        const push = TestBed.inject(PushEnrollmentService);
+        const router = TestBed.inject(Router);
+        const revoke = new Subject<void>();
+        vi.spyOn(auth, 'logout').mockReturnValue(revoke.asObservable());
+        const unsubscribe = vi.spyOn(push, 'unsubscribeLocal').mockResolvedValue();
+        const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+
+        component.onLogout();
+        expect(unsubscribe).not.toHaveBeenCalled();
+        expect(navigate).not.toHaveBeenCalled();
+        revoke.next();
+        revoke.complete();
+        await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(['login']));
+        expect(unsubscribe).toHaveBeenCalledOnce();
     });
 
     it('leaves account menu placement to the Material trigger in mobile and desktop viewports', () => {

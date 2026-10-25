@@ -7,7 +7,8 @@ export class HostService {
         return window.location.hostname === 'kyc.chat.false.tel' || window.location.hostname === 'kyc.localhost';
     }
 
-    public authEndpoint(kind: 'login' | 'refresh' | 'logout' | 'profile' | 'media-policy' | 'giphy-key' | 'activate'): string {
+    public authEndpoint(kind: 'login' | 'refresh' | 'logout' | 'profile' | 'media-policy' | 'giphy-key' | 'activate' | 'push-vapid-key' | 'push-subscription'): string {
+        if (kind === 'push-vapid-key' || kind === 'push-subscription') return `${backends.auth}/api/auth/${kind === 'push-vapid-key' ? 'push/vapid-public-key' : 'push-subscription'}`;
         if (!this.isAdminHost()) {
             if (kind === 'profile') return `${backends.auth}/api/auth/me`;
             if (kind === 'media-policy') return `${backends.auth}/api/auth/media-policy`;

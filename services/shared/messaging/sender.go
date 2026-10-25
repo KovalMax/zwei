@@ -159,6 +159,17 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	if _, err = tx.Exec(ctx, `INSERT INTO user_read_cursors (user_id, conversation_id, last_read_sequence, unread_count) SELECT m.user_id, $1, m.visible_from_sequence - 1, 1 FROM conversation_members m WHERE m.conversation_id = $1 AND m.active AND m.user_id <> $2 ON CONFLICT (user_id, conversation_id) DO UPDATE SET unread_count = user_read_cursors.unread_count + 1, updated_at = now()`, request.ConversationID, request.SenderID); err != nil {
 		return Message{}, false, ErrPersistence
 	}
+	// Push intents carry only opaque IDs. Their 24-hour window is also capped by
+	// the message's retention expiry; creation is atomic with message delivery.
+	if _, err = tx.Exec(ctx, `INSERT INTO message_push_outbox
+		(message_id, conversation_id, sender_id, recipient_id, expires_at)
+		SELECT $1, $2, $3, member.user_id,
+			LEAST(COALESCE($4::timestamptz, now() + interval '24 hours'), now() + interval '24 hours')
+		FROM conversation_members member
+		WHERE member.conversation_id = $2 AND member.active AND member.user_id <> $3
+		ON CONFLICT (message_id, recipient_id, event_type) DO NOTHING`, result.ID, request.ConversationID, request.SenderID, expires); err != nil {
+		return Message{}, false, ErrPersistence
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return Message{}, false, ErrPersistence
 	}

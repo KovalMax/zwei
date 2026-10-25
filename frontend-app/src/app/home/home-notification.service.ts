@@ -23,10 +23,7 @@ export class HomeNotificationService implements OnDestroy {
             else this.notifications.stopCallRingtone();
         }));
         this.subscriptions.add(this.notifications.permissionChanges.subscribe(() => {
-            if (this.call.state.phase === 'incoming') {
-                this.notifications.startCallRingtone();
-                if (this.isBackgroundTab() && this.call.state.callID) this.notifications.showCallNotification(this.call.state.callID);
-            }
+            if (this.call.state.phase === 'incoming') this.notifications.startCallRingtone();
         }));
     }
 
@@ -44,16 +41,12 @@ export class HomeNotificationService implements OnDestroy {
             this.handleMessage(event.payload);
             return;
         }
-        if (event.type === 'call.incoming') {
-            if (this.call.state.phase === 'incoming' && this.isBackgroundTab()) this.notifications.showCallNotification(event.payload.call_id);
-        }
     }
 
     private handleMessage(payload: {conversation_id: string; sender_id: string}): void {
         if (!this.userID || payload.sender_id === this.userID) return;
         const background = this.isBackgroundTab();
         if (background || payload.conversation_id !== this.selectedConversationID) this.notifications.playMessageSound();
-        if (background) this.notifications.showMessageNotification(payload.conversation_id);
     }
 
     private isBackgroundTab(): boolean {

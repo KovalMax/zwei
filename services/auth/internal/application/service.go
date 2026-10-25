@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/mail"
+	"net/url"
 	"strings"
 	"time"
 
@@ -17,10 +18,14 @@ import (
 )
 
 var (
-	ErrInvalidInput    = errors.New("invalid input")
-	ErrCredentials     = errors.New("invalid credentials")
-	ErrRefreshToken    = errors.New("invalid refresh token")
-	ErrAccountInactive = errors.New("account is not active")
+	ErrInvalidInput          = errors.New("invalid input")
+	ErrCredentials           = errors.New("invalid credentials")
+	ErrRefreshToken          = errors.New("invalid refresh token")
+	ErrAccountInactive       = errors.New("account is not active")
+	ErrPushUnavailable       = errors.New("push subscription unavailable")
+	ErrPushSessionRevoked    = errors.New("push subscription session revoked")
+	ErrPushSubscriptionOwned = errors.New("push subscription already owned")
+	ErrPushSubscriptionLimit = errors.New("push subscription device limit reached")
 )
 
 type Service struct {
@@ -121,6 +126,53 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (Tokens, err
 
 func (s *Service) Logout(ctx context.Context, userID uuid.UUID) error {
 	return s.repository.RevokeAllSessions(ctx, userID)
+}
+
+func (s *Service) StorePushSubscription(ctx context.Context, identity sharedauth.Identity, subscription PushSubscription) error {
+	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.DeviceID == "" || !validPushSubscription(subscription) {
+		return ErrInvalidInput
+	}
+	deviceID, err := uuid.Parse(identity.DeviceID)
+	if err != nil || deviceID == uuid.Nil {
+		return ErrInvalidInput
+	}
+	return s.repository.StorePushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, subscription)
+}
+
+func (s *Service) DeletePushSubscription(ctx context.Context, identity sharedauth.Identity, endpoint string) error {
+	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.DeviceID == "" || !validPushEndpoint(endpoint) {
+		return ErrInvalidInput
+	}
+	deviceID, err := uuid.Parse(identity.DeviceID)
+	if err != nil || deviceID == uuid.Nil {
+		return ErrInvalidInput
+	}
+	return s.repository.DeletePushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, endpoint)
+}
+
+func validPushSubscription(subscription PushSubscription) bool {
+	if len(subscription.P256DH) == 0 || len(subscription.P256DH) > 128 || len(subscription.Auth) == 0 || len(subscription.Auth) > 64 || !validPushEndpoint(subscription.Endpoint) {
+		return false
+	}
+	publicKey, publicErr := base64.RawURLEncoding.DecodeString(subscription.P256DH)
+	authSecret, authErr := base64.RawURLEncoding.DecodeString(subscription.Auth)
+	return publicErr == nil && len(publicKey) == 65 && publicKey[0] == 4 && authErr == nil && len(authSecret) == 16
+}
+
+func validPushEndpoint(raw string) bool {
+	if len(raw) == 0 || len(raw) > 2048 {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" || parsed.Hostname() == "" || parsed.Port() != "" && parsed.Port() != "443" {
+		return false
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com":
+		return true
+	default:
+		return false
+	}
 }
 func (s *Service) Profile(ctx context.Context, userID uuid.UUID) (user.Profile, error) {
 	return s.repository.Profile(ctx, userID)

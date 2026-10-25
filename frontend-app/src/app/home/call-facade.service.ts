@@ -103,6 +103,14 @@ export class CallFacade implements OnDestroy {
     public get selectedOutputDeviceID(): string { return this.state.selectedOutputDeviceID || ''; }
     public get outputSelectionSupported(): boolean { return this.state.outputSelectionSupported === true; }
 
+    /** Displays a server-revalidated ringing projection only; it never accepts or requests media. */
+    public showRecoveredRinging(callID: string, conversationID: string, callerID: string): void {
+        if (!callID || !conversationID || !callerID || !this.canStart()) return;
+        this.beginCallGeneration();
+        this.clearDismissTimer();
+        this.setState({...idleState, phase: 'incoming', role: 'recipient', callID, conversationID, peerID: callerID, muted: false, statusLabel: 'Incoming audio call. Choose Accept to answer.'});
+    }
+
     public get screenShareQuality(): ScreenShareQuality { return this.state.screenShareQuality; }
     public screenShareSupported(): boolean { return typeof navigator.mediaDevices?.getDisplayMedia === 'function'; }
     public setScreenShareAudioEnabled(enabled: boolean): void {
@@ -376,6 +384,7 @@ export class CallFacade implements OnDestroy {
     public ngOnDestroy(): void { this.close(); }
 
     private handleEvent(event: CallSocketEvent): void {
+        if (event.type === 'call.recovered') return;
         if (event.type === 'call.rejected') {
             this.prunePendingRequests();
             const request = event.request_id ? this.pendingRequestGenerations.get(event.request_id) : undefined;

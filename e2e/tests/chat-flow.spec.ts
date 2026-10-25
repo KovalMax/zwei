@@ -516,6 +516,62 @@ async function currentUserID(context: import('@playwright/test').BrowserContext,
   return (await response.json() as {id: string}).id;
 }
 
+async function dispatchServiceWorkerNotificationClick(page: Page, notificationData: unknown): Promise<{clients: number; message: unknown}> {
+  return page.evaluate(async data => {
+    const deadline = Date.now() + 10_000;
+    let registration: ServiceWorkerRegistration | undefined;
+    while (Date.now() < deadline) {
+      registration = await navigator.serviceWorker.getRegistration('/');
+      if (registration?.active?.state === 'activated') break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    // ng serve does not emit Angular's generated worker registration bootstrap.
+    // Register the standalone fixture through the browser API when the app has
+    // not registered a worker itself, then exercise the real worker client path.
+    if (!registration) {
+      const fixture = await fetch('/ngsw-worker-e2e.js', {cache: 'no-store'});
+      if (!fixture.ok) throw new Error(`E2E worker fixture was not served at /ngsw-worker-e2e.js: HTTP ${fixture.status}`);
+      registration = await navigator.serviceWorker.register('/ngsw-worker-e2e.js', {scope: '/'});
+    }
+    const activationDeadline = Date.now() + 10_000;
+    while (registration.active?.state !== 'activated' && Date.now() < activationDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const worker = registration?.active;
+    if (!worker || worker.state !== 'activated') {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      const diagnostics = registrations.map(item => ({scope: item.scope, active: item.active?.state, activeScript: item.active?.scriptURL, installing: item.installing?.state, waiting: item.waiting?.state}));
+      throw new Error(`E2E service worker did not activate within 10 seconds: ${JSON.stringify({requestedRegistration: registration && {scope: registration.scope, active: registration.active?.state, activeScript: registration.active?.scriptURL, installing: registration.installing?.state, waiting: registration.waiting?.state}, registrations: diagnostics, controller: navigator.serviceWorker.controller?.scriptURL})}`);
+    }
+    const channel = new MessageChannel();
+    const notificationMessage = new Promise<unknown>((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('E2E NOTIFICATION_CLICK client message timed out')), 3_000);
+      const listener = (event: MessageEvent): void => {
+        if (!event.data || event.data.type !== 'NOTIFICATION_CLICK') return;
+        navigator.serviceWorker.removeEventListener('message', listener);
+        window.clearTimeout(timeout);
+        resolve(event.data);
+      };
+      navigator.serviceWorker.addEventListener('message', listener);
+    });
+    const acknowledged = new Promise<number>((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('E2E service worker click acknowledgement timed out')), 3_000);
+      channel.port1.onmessage = event => {
+        window.clearTimeout(timeout);
+        const result = event.data as {type?: string; clients?: number};
+        if (result.type !== 'ZWEI_E2E_NOTIFICATION_CLICK_ACK' || typeof result.clients !== 'number') {
+          reject(new Error('E2E service worker returned an invalid acknowledgement'));
+          return;
+        }
+        resolve(result.clients);
+      };
+    });
+    worker.postMessage({type: 'ZWEI_E2E_NOTIFICATION_CLICK', notificationData: data}, [channel.port2]);
+    const [clients, message] = await Promise.all([acknowledged, notificationMessage]);
+    return {clients, message};
+  }, notificationData);
+}
+
 async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
   const isLight = await page.locator('html').evaluate(element => element.classList.contains('light-theme'));
   if (isLight === (theme === 'light')) return;
@@ -4773,93 +4829,19 @@ test('register, create conversation, and deliver a message', async ({ browser },
    await bob.goto('/profile');
   await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await expect(alice.getByRole('heading', {name: 'Bob'})).toBeVisible();
+  await expect(alice.getByText('Offline', {exact: true})).toBeVisible();
   const startOfflineCall = alice.getByRole('button', {name: 'Start audio call'});
   await expect(startOfflineCall).toBeEnabled();
   await startOfflineCall.click();
-    const offlineCallNotice = alice.getByText('Call unavailable: recipient is offline', {exact: true});
-   const offlineCallStatus = alice.getByRole('alert', {name: 'Call status', exact: true});
-  // The notice auto-dismisses at 5 seconds; observe it before its expiry rather
-  // than using an assertion timeout equal to the notice's lifetime.
-   await expect(offlineCallNotice).toHaveCount(1, {timeout: 4_000});
-   await expect(offlineCallNotice).toBeVisible({timeout: 4_000});
-   await expect(offlineCallStatus).toBeVisible();
-   await expect(alice.locator('app-direct-call-surface')).toHaveCount(0);
-    await expect(offlineCallNotice).toHaveCount(1);
-  const offlineCopyButton = offlineCallStatus.getByRole('button', {name: 'Copy support reference'});
-  await expect(offlineCopyButton).toBeVisible();
-  await alice.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
-    configurable: true,
-    value: {writeText: async () => { throw new Error('clipboard denied'); }},
-  }));
-  await offlineCopyButton.click();
-  const offlineCopyFailure = offlineCallStatus.getByRole('status').filter({hasText: 'Could not copy support reference'});
-  await expect(offlineCopyFailure).toBeVisible();
-  const offlineManualReference = offlineCallStatus.getByLabel('Support reference, select and copy manually', {exact: true});
-  await expect(offlineManualReference).toBeVisible();
-  await expect(offlineManualReference).toHaveText(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-  await expect(offlineManualReference).toHaveAttribute('tabindex', '0');
-  expect(await offlineManualReference.evaluate(element => getComputedStyle(element).userSelect)).toBe('text');
-  // Acceptance matrix: server rejection/manual-copy fallback at desktop 1440px and mobile 390x844.
-  for (const theme of ['light', 'dark'] as const) {
-    await setTheme(alice, theme);
-    for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
-      await alice.setViewportSize(viewport);
-    const noticeGeometry = await offlineCallStatus.evaluate(status => {
-      const bounds = (selector: string): DOMRect | undefined => status.querySelector<HTMLElement>(selector)?.getBoundingClientRect();
-      const notice = status.getBoundingClientRect();
-      const messageElement = status.querySelector<HTMLElement>('.call-terminal-message');
-      const copy = bounds('app-copy-support-reference');
-      const copyButton = bounds('app-copy-support-reference button');
-      const failure = bounds('.support-reference-feedback');
-      const reference = bounds('.support-reference-manual');
-      return {
-        notice: {left: notice.left, right: notice.right, top: notice.top, bottom: notice.bottom},
-        message: messageElement && {left: messageElement.getBoundingClientRect().left, right: messageElement.getBoundingClientRect().right, top: messageElement.getBoundingClientRect().top, bottom: messageElement.getBoundingClientRect().bottom, scrollWidth: messageElement.scrollWidth, clientWidth: messageElement.clientWidth, scrollHeight: messageElement.scrollHeight, clientHeight: messageElement.clientHeight},
-        copy: copy && {left: copy.left, right: copy.right, top: copy.top, bottom: copy.bottom},
-        copyButton: copyButton && {left: copyButton.left, right: copyButton.right, top: copyButton.top, bottom: copyButton.bottom, width: copyButton.width, scrollWidth: (status.querySelector<HTMLElement>('app-copy-support-reference button'))?.scrollWidth, clientWidth: (status.querySelector<HTMLElement>('app-copy-support-reference button'))?.clientWidth},
-        failure: failure && {left: failure.left, right: failure.right, top: failure.top, bottom: failure.bottom},
-        reference: reference && {left: reference.left, right: reference.right, top: reference.top, bottom: reference.bottom, scrollWidth: status.querySelector<HTMLElement>('.support-reference-manual')?.scrollWidth, clientWidth: status.querySelector<HTMLElement>('.support-reference-manual')?.clientWidth},
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-      };
-    });
-    expect(noticeGeometry.scrollWidth, `Offline notice overflows at ${viewport.width}px`).toBeLessThanOrEqual(noticeGeometry.clientWidth + 1);
-    expect(noticeGeometry.copy).toBeDefined();
-    expect(noticeGeometry.message).toBeDefined();
-    expect(noticeGeometry.copyButton).toBeDefined();
-    expect(noticeGeometry.failure).toBeDefined();
-    expect(noticeGeometry.reference).toBeDefined();
-    expect(noticeGeometry.message?.left).toBeGreaterThanOrEqual((noticeGeometry.notice.left ?? 0) - 1);
-    expect(noticeGeometry.message?.right).toBeLessThanOrEqual((noticeGeometry.notice.right ?? 0) + 1);
-    expect(noticeGeometry.message?.scrollWidth).toBeLessThanOrEqual((noticeGeometry.message?.clientWidth ?? 0) + 1);
-    expect(noticeGeometry.message?.scrollHeight).toBeLessThanOrEqual((noticeGeometry.message?.clientHeight ?? 0) + 1);
-    if (viewport.width <= 600) {
-      expect(noticeGeometry.message?.bottom, `Mobile offline message must occupy its own readable row: ${JSON.stringify(noticeGeometry)}`).toBeLessThanOrEqual((noticeGeometry.copy?.top ?? 0) + 1);
-    } else {
-      expect(noticeGeometry.message?.bottom, `Desktop offline message must occupy its own row before copy control: ${JSON.stringify(noticeGeometry)}`).toBeLessThanOrEqual((noticeGeometry.copy?.top ?? 0) + 1);
-    }
-    expect(noticeGeometry.copyButton?.width).toBeGreaterThanOrEqual(44);
-    expect(noticeGeometry.copyButton?.width).toBeLessThanOrEqual(45);
-    expect(noticeGeometry.copyButton?.scrollWidth).toBeLessThanOrEqual((noticeGeometry.copyButton?.clientWidth ?? 0) + 1);
-    expect(noticeGeometry.copyButton?.left).toBeGreaterThanOrEqual((noticeGeometry.notice.left ?? 0) - 1);
-    expect(noticeGeometry.copyButton?.right).toBeLessThanOrEqual((noticeGeometry.notice.right ?? 0) + 1);
-    expect(noticeGeometry.failure?.left).toBeGreaterThanOrEqual((noticeGeometry.notice.left ?? 0) - 1);
-    expect(noticeGeometry.failure?.right).toBeLessThanOrEqual((noticeGeometry.notice.right ?? 0) + 1);
-    expect(noticeGeometry.reference?.left).toBeGreaterThanOrEqual((noticeGeometry.notice.left ?? 0) - 1);
-    expect(noticeGeometry.reference?.right).toBeLessThanOrEqual((noticeGeometry.notice.right ?? 0) + 1);
-    expect((noticeGeometry.reference?.right ?? 0) - (noticeGeometry.reference?.left ?? 0)).toBeGreaterThanOrEqual(160);
-    expect(noticeGeometry.reference?.scrollWidth).toBeLessThanOrEqual((noticeGeometry.reference?.clientWidth ?? 0) + 1);
-    expect(noticeGeometry.failure?.bottom).toBeLessThanOrEqual((noticeGeometry.reference?.top ?? 0) + 1);
-    expect(noticeGeometry.reference?.bottom).toBeLessThanOrEqual((noticeGeometry.notice.bottom ?? 0) + 1);
-      await alice.screenshot({path: testInfo.outputPath(`direct-call-recipient-offline-support-reference-${theme}-${viewport.width}.png`), fullPage: false});
-      if (theme === 'dark' && viewport.width === 390) await alice.screenshot({path: testInfo.outputPath('direct-call-recipient-offline-support-reference-mobile.png'), fullPage: false});
-    }
-  }
-  await alice.setViewportSize(desktop.viewport);
-  await alice.screenshot({path: testInfo.outputPath('direct-call-recipient-offline-notice.png'), fullPage: false});
-  // The manual-copy checks consume part of the fixed five-second lifetime, so
-  // retain the original bounded auto-dismiss wait rather than restarting it.
-  await expect(offlineCallNotice).not.toBeVisible({timeout: 7_000});
+  await expect(alice.getByText('Ringing...', {exact: true})).toBeVisible({timeout: 10_000});
+  await expect(alice.locator('app-direct-call-surface')).toBeVisible();
+  await expect(alice.getByRole('button', {name: 'Cancel', exact: true})).toBeVisible();
+  await alice.screenshot({path: testInfo.outputPath('direct-call-recipient-offline-ringing.png'), fullPage: false});
+  // Offline direct calls are allowed to ring (including the separate push
+  // recovery flow); cancel here so the long messaging scenario owns no call.
+  await alice.getByRole('button', {name: 'Cancel', exact: true}).click();
+  await expect(alice.getByRole('status', {name: 'Call status', exact: true}).getByText('Call cancelled.', {exact: true})).toBeVisible();
+  await expect(alice.locator('app-direct-call-surface')).toHaveCount(0);
   await bob.goto('/home');
   await expect(bob.getByRole('heading', {name: 'Chats'})).toBeVisible();
   await bob.getByPlaceholder('Name or email').fill(aliceEmail);
@@ -4937,6 +4919,378 @@ test('register, create conversation, and deliver a message', async ({ browser },
 
   } finally {
     await Promise.allSettled([aliceContext.close(), bobContext.close(), charlieContext.close()]);
+  }
+});
+
+test('message push click selects an authorized conversation and highlights the target message', async ({browser}, testInfo) => {
+  test.setTimeout(120_000);
+  const senderEmail = uniqueEmail('push-message-sender');
+  const recipientEmail = uniqueEmail('push-message-recipient');
+  const senderContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const recipientContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const sender = await senderContext.newPage();
+  const recipient = await recipientContext.newPage();
+
+  try {
+    await register(sender, senderEmail, 'Push Sender');
+    await register(recipient, recipientEmail, 'Push Recipient');
+    const token = await authenticatedToken(recipientContext, recipientEmail, 'push-message-recipient');
+    const headers = {Authorization: `${token.token_type} ${token.access_token}`};
+    const senderID = await userID(recipientContext, token, senderEmail);
+    const created = await recipientContext.request.post(`${chatBase}/api/chat/conversations`, {headers, data: {other_user_id: senderID}});
+    expect(created.status()).toBe(201);
+    const conversation = await created.json() as {id: string};
+    const targetBody = `Push target ${Date.now()}`;
+    const sent = await recipientContext.request.post(`${chatBase}/api/chat/conversations/${conversation.id}/messages`, {
+      headers,
+      data: {client_message_id: crypto.randomUUID(), body: targetBody},
+    });
+    expect(sent.status()).toBe(201);
+    const target = await sent.json() as {id: string};
+    const recipientConversations = await recipientContext.request.get(`${chatBase}/api/chat/conversations`, {headers});
+    expect(recipientConversations.status()).toBe(200);
+    expect((await recipientConversations.json() as Array<{id: string; other_user_id?: string; other_display_name?: string}>)).toContainEqual(expect.objectContaining({id: conversation.id, other_user_id: senderID, other_display_name: 'Push Sender'}));
+
+    await recipient.reload(); // Memory-only access token is cleared; the HttpOnly refresh cookie survives.
+    await expect(recipient).toHaveURL(/\/home$/);
+    const malformedClients = await dispatchServiceWorkerNotificationClick(recipient, {kind: 'message', conversation_id: conversation.id, message_id: 'not-a-uuid'});
+    expect(malformedClients.clients).toBeGreaterThan(0);
+    expect(malformedClients.message).toEqual({type: 'NOTIFICATION_CLICK', data: expect.objectContaining({action: '', notification: {data: {kind: 'message', conversation_id: conversation.id, message_id: 'not-a-uuid'}}})});
+    await expect(recipient).toHaveURL(/\/home$/);
+    await expect(recipient.locator('.chat-empty')).toBeVisible();
+    // Let the Angular worker client initialize against the newly activated fixture.
+    await recipient.reload();
+    await expect(recipient).toHaveURL(/\/home$/);
+
+    const clients = await dispatchServiceWorkerNotificationClick(recipient, {
+      kind: 'message', conversation_id: conversation.id, message_id: target.id,
+      onActionClick: {default: {operation: 'focusLastFocusedOrOpen', url: '/home'}},
+    });
+    expect(clients.clients).toBeGreaterThan(0);
+    expect(clients.message).toEqual({type: 'NOTIFICATION_CLICK', data: expect.objectContaining({action: '', notification: {data: expect.objectContaining({kind: 'message', conversation_id: conversation.id, message_id: target.id})}})});
+    const selected = recipient.locator('.person-option.selected');
+    await expect(selected).toContainText('Push Sender', {timeout: 10_000});
+    const targetArticle = recipient.locator(`#message-${target.id}`);
+    await expect(targetArticle).toContainText(targetBody, {timeout: 10_000});
+    await expect(targetArticle).toHaveClass(/message-highlight/);
+    await expect(targetArticle).toBeInViewport();
+    const geometry = await targetArticle.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth, left: box.left, right: box.right, highlight: getComputedStyle(element).outlineStyle};
+    });
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    expect(geometry.left).toBeGreaterThanOrEqual(0);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    expect(geometry.highlight).not.toBe('none');
+    await recipient.screenshot({path: testInfo.outputPath('push-message-authorized-target-highlighted.png'), fullPage: false});
+
+    // A failed refresh must not dispatch the click intent or navigate to its conversation.
+    await recipient.route('**/api/auth/refresh', route => route.fulfill({status: 503, contentType: 'application/json', body: '{"error":"refresh unavailable"}'}));
+    await recipient.reload();
+    await expect(recipient).toHaveURL(/\/(sign-in|login)$/);
+    const failedRefreshURL = recipient.url();
+    const failedRefreshClients = await dispatchServiceWorkerNotificationClick(recipient, {kind: 'message', conversation_id: conversation.id, message_id: target.id});
+    expect(failedRefreshClients.clients).toBeGreaterThan(0);
+    await expect(recipient).toHaveURL(failedRefreshURL);
+    await expect(recipient.locator('.chat-panel')).toHaveCount(0);
+  } finally {
+    await Promise.allSettled([senderContext.close(), recipientContext.close()]);
+  }
+});
+
+test('archived direct-message push click opens Archived without unarchiving', async ({browser}, testInfo) => {
+  test.setTimeout(120_000);
+  const recipientEmail = uniqueEmail('push-archived-recipient');
+  const peerEmail = uniqueEmail('push-archived-peer');
+  const context = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const page = await context.newPage();
+  const peerContext = await browser.newContext();
+  const peerPage = await peerContext.newPage();
+  try {
+    await register(page, recipientEmail, 'Archived Push Peer');
+    await register(peerPage, peerEmail, 'Archived Push Sender');
+    const token = await authenticatedToken(context, recipientEmail, 'push-archived-recipient');
+    const headers = {Authorization: `${token.token_type} ${token.access_token}`};
+    const peerID = await userID(context, token, peerEmail);
+    const created = await context.request.post(`${chatBase}/api/chat/conversations`, {headers, data: {other_user_id: peerID}});
+    expect(created.status()).toBe(201);
+    const conversation = await created.json() as {id: string};
+    const targetBody = `Archived push target ${Date.now()}`;
+    const sent = await context.request.post(`${chatBase}/api/chat/conversations/${conversation.id}/messages`, {
+      headers, data: {client_message_id: crypto.randomUUID(), body: targetBody},
+    });
+    expect(sent.status()).toBe(201);
+    const target = await sent.json() as {id: string};
+    const archived = await context.request.put(`${chatBase}/api/chat/conversations/${conversation.id}/archive`, {headers});
+    expect(archived.status()).toBe(204);
+    const activeList = await context.request.get(`${chatBase}/api/chat/conversations`, {headers});
+    expect((await activeList.json() as Array<{id: string}>).some(item => item.id === conversation.id)).toBe(false);
+
+    await page.reload();
+    await expect(page).toHaveURL(/\/home$/);
+    await page.reload(); // Allow Angular's worker client to initialize after refresh restoration.
+    await expect(page.locator('.chat-empty')).toBeVisible();
+    const click = await dispatchServiceWorkerNotificationClick(page, {kind: 'message', conversation_id: conversation.id, message_id: target.id});
+    expect(click.clients).toBeGreaterThan(0);
+
+    const targetArticle = page.locator(`#message-${target.id}`);
+    await expect(targetArticle).toContainText(targetBody, {timeout: 10_000});
+    await expect(targetArticle).toHaveClass(/message-highlight/);
+    await expect(page.locator('.archive-mode-tabs button.active')).toHaveText('Archived');
+    await expect(page.locator('.person-option.selected')).toContainText('Archived Push Sender');
+
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(page, theme);
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await page.setViewportSize(viewport);
+        await expect(targetArticle).toBeInViewport();
+        const geometry = await page.evaluate(() => {
+          const article = document.querySelector<HTMLElement>('.message-highlight');
+          const box = article?.getBoundingClientRect();
+          return {scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth,
+            left: box?.left ?? -1, right: box?.right ?? Infinity, outline: article ? getComputedStyle(article).outlineStyle : 'none'};
+        });
+        expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        expect(geometry.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(geometry.outline).not.toBe('none');
+        await page.screenshot({path: testInfo.outputPath(`push-archived-direct-${theme}-${viewport.width}.png`), fullPage: false});
+      }
+    }
+
+    const stillArchived = await context.request.get(`${chatBase}/api/chat/conversations?archived=true`, {headers});
+    expect(stillArchived.status()).toBe(200);
+    expect((await stillArchived.json() as Array<{id: string}>).some(item => item.id === conversation.id)).toBe(true);
+    await page.reload();
+    await page.getByRole('button', {name: 'Archived'}).click();
+    await expect(page.locator('.person-option')).toContainText('Archived Push Sender');
+    const reloadArchived = await context.request.get(`${chatBase}/api/chat/conversations?archived=true`, {headers});
+    expect((await reloadArchived.json() as Array<{id: string}>).some(item => item.id === conversation.id)).toBe(true);
+    const reloadActive = await context.request.get(`${chatBase}/api/chat/conversations`, {headers});
+    expect((await reloadActive.json() as Array<{id: string}>).some(item => item.id === conversation.id)).toBe(false);
+  } finally {
+    await Promise.allSettled([context.close(), peerContext.close()]);
+  }
+});
+
+test('direct-call push click restores an offline recipient to ringing without answering', async ({browser}, testInfo) => {
+  test.setTimeout(105_000);
+  const callerEmail = uniqueEmail('push-direct-caller');
+  const recipientEmail = uniqueEmail('push-direct-recipient');
+  const callerContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const recipientContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const caller = await callerContext.newPage();
+  let recipient = await recipientContext.newPage();
+  const callIDPromise = new Promise<string>(resolve => {
+    caller.on('websocket', socket => socket.on('framereceived', frame => {
+      if (typeof frame.payload !== 'string') return;
+      try {
+        const event: unknown = JSON.parse(frame.payload);
+        if (!isRecord(event) || event.type !== 'call.ringing' || !isRecord(event.payload) || typeof event.payload.call_id !== 'string') return;
+        resolve(event.payload.call_id);
+      } catch { /* Other realtime frames are unrelated to this call ID. */ }
+    }));
+  });
+
+  const installCommandTypeRecorder = async (page: Page): Promise<void> => {
+    await page.addInitScript(() => {
+      const commandTypes: string[] = [];
+      Object.defineProperty(window, '__directCallPushCommandTypes', {configurable: true, value: commandTypes});
+      const originalSend = WebSocket.prototype.send;
+      WebSocket.prototype.send = function(data: Parameters<WebSocket['send']>[0]): void {
+        if (typeof data === 'string') {
+          try {
+            const command = JSON.parse(data) as {type?: string};
+            if (typeof command.type === 'string') commandTypes.push(command.type);
+          } catch { /* Do not record frame content. */ }
+        }
+        originalSend.call(this, data);
+      };
+    });
+  };
+
+  try {
+    await Promise.all([installCommandTypeRecorder(caller), installCommandTypeRecorder(recipient)]);
+    await register(caller, callerEmail, 'Push Call Caller');
+    await register(recipient, recipientEmail, 'Push Call Recipient');
+    await Promise.all([waitForLiveConnection(caller), waitForLiveConnection(recipient)]);
+
+    await caller.getByPlaceholder('Name or email').fill(recipientEmail);
+    await caller.locator('.search-result').filter({hasText: recipientEmail}).click();
+    await expect(caller.getByRole('button', {name: 'Start audio call'})).toBeEnabled();
+    await recipient.getByPlaceholder('Name or email').fill(callerEmail);
+    await recipient.locator('.search-result').filter({hasText: callerEmail}).click();
+    await expect(recipient.getByPlaceholder('Write a message…')).toBeEnabled();
+
+    const callerToken = await authenticatedToken(callerContext, callerEmail, 'push-direct-caller-api');
+    const callerHeaders = {Authorization: `${callerToken.token_type} ${callerToken.access_token}`};
+    const recipientID = await userID(callerContext, callerToken, recipientEmail);
+    const conversationsResponse = await callerContext.request.get(`${chatBase}/api/chat/conversations`, {headers: callerHeaders});
+    expect(conversationsResponse.status()).toBe(200);
+    const conversation = (await conversationsResponse.json() as Array<{id: string; other_user_id?: string}>).find(item => item.other_user_id === recipientID);
+    expect(conversation, 'The selected caller-recipient direct conversation must exist').toBeDefined();
+    if (!conversation) throw new Error('Direct conversation not found after selecting both users');
+
+    // Closing the page drops the recipient's live socket while preserving the
+    // same browser context and its restricted HttpOnly refresh cookie.
+    await recipient.close();
+    await caller.getByRole('button', {name: 'Start audio call'}).click();
+    await expect(caller.getByText('Ringing...', {exact: true})).toBeVisible({timeout: 10_000});
+    const callID = await callIDPromise;
+
+    recipient = await recipientContext.newPage();
+    await installCommandTypeRecorder(recipient);
+    const recipientSocketTraffic = new Promise<void>(resolve => {
+      recipient.on('websocket', socket => socket.on('framesent', () => resolve()));
+    });
+    await recipient.goto('/home');
+    await expect(recipient).toHaveURL(/\/home$/);
+    // The selected conversation displays the peer's "Online" presence instead
+    // of the generic "Live connection" label; wait for actual socket traffic
+    // without inspecting/logging its URL or frame contents.
+    await recipientSocketTraffic;
+    const click = await dispatchServiceWorkerNotificationClick(recipient, {
+      kind: 'direct_call', call_id: callID, conversation_id: conversation.id,
+    });
+    expect(click.clients).toBeGreaterThan(0);
+    expect(click.message).toEqual({type: 'NOTIFICATION_CLICK', data: expect.objectContaining({action: '', notification: {data: {kind: 'direct_call', call_id: callID, conversation_id: conversation.id}}})});
+
+    const selectedConversation = recipient.locator('.person-option.selected');
+    await expect(selectedConversation).toContainText('Push Call Caller', {timeout: 10_000});
+    const directCallSurface = recipient.getByRole('region', {name: 'Direct audio call', exact: true});
+    await expect(directCallSurface).toBeVisible();
+    const incomingStatus = directCallSurface.getByRole('status');
+    await expect(incomingStatus).toHaveText('Incoming audio call. Choose Accept to answer.');
+    await expect(recipient.getByRole('button', {name: 'Accept', exact: true})).toBeVisible();
+    await expect(recipient.getByText('Audio call connected.', {exact: true})).toHaveCount(0);
+    const commands = await recipient.evaluate(() => (window as Window & {__directCallPushCommandTypes: string[]}).__directCallPushCommandTypes);
+    expect(commands).toContain('call.recover');
+    expect(commands).not.toContain('call.accept');
+    expect(commands).not.toContain('call.signal');
+    const activeAudioTracks = await recipient.evaluate(() => Array.from(document.querySelectorAll('audio')).flatMap(audio => audio.srcObject instanceof MediaStream ? audio.srcObject.getAudioTracks() : []).filter(track => track.readyState === 'live').length);
+    expect(activeAudioTracks).toBe(0);
+
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(recipient, theme);
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await recipient.setViewportSize(viewport);
+        await expect(incomingStatus).toHaveText('Incoming audio call. Choose Accept to answer.');
+        await expect(recipient.getByRole('button', {name: 'Accept', exact: true})).toBeVisible();
+        const geometry = await incomingStatus.evaluate(status => {
+          const accept = [...document.querySelectorAll<HTMLElement>('button')].find(button => button.getAttribute('aria-label') === 'Accept' || button.textContent?.trim() === 'Accept');
+          const statusBox = status.getBoundingClientRect();
+          const acceptBox = accept?.getBoundingClientRect();
+          return {width: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, height: document.documentElement.clientHeight, status: {left: statusBox.left, right: statusBox.right, top: statusBox.top, bottom: statusBox.bottom}, accept: acceptBox && {left: acceptBox.left, right: acceptBox.right, top: acceptBox.top, bottom: acceptBox.bottom}};
+        });
+        expect(geometry.width, `${theme}/${viewport.width}px direct-call push viewport overflow`).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        expect(geometry.accept, 'An explicit Accept action must be rendered').toBeDefined();
+        expect(geometry.status.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.status.right).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        expect(geometry.status.top).toBeGreaterThanOrEqual(0);
+        expect(geometry.status.bottom).toBeLessThanOrEqual(geometry.height + 1);
+        expect(geometry.accept?.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.accept?.right).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        expect(geometry.status.right).toBeLessThanOrEqual((geometry.accept?.left ?? 0) + 1);
+        expect(geometry.accept?.bottom).toBeLessThanOrEqual(geometry.height + 1);
+        await recipient.screenshot({path: testInfo.outputPath(`push-direct-call-ringing-${theme}-${viewport.width}.png`), fullPage: false});
+      }
+    }
+  } finally {
+    await Promise.allSettled([callerContext.close(), recipientContext.close()]);
+  }
+});
+
+test('group-call push click discovers an authorized room without joining', async ({browser}, testInfo) => {
+  test.setTimeout(120_000);
+  const ownerEmail = uniqueEmail('push-group-owner');
+  const recipientEmail = uniqueEmail('push-group-recipient');
+  const ownerContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const recipientContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const owner = await ownerContext.newPage();
+  const recipient = await recipientContext.newPage();
+  try {
+    await register(owner, ownerEmail, 'Push Group Owner');
+    await register(recipient, recipientEmail, 'Push Group Recipient');
+    const ownerToken = await authenticatedToken(ownerContext, ownerEmail, 'push-group-owner');
+    const memberID = await userID(ownerContext, ownerToken, recipientEmail);
+    const created = await ownerContext.request.post(`${chatBase}/api/chat/groups`, {
+      headers: {Authorization: `${ownerToken.token_type} ${ownerToken.access_token}`},
+      data: {name: 'Push call group', member_ids: [memberID]},
+    });
+    expect(created.status()).toBe(201);
+    const group = await created.json() as {id: string};
+    await owner.reload();
+    await waitForLiveConnection(owner);
+    const ownerGroup = owner.locator('.person-option').filter({hasText: 'Push call group'});
+    await expect(ownerGroup).toBeVisible();
+    await ownerGroup.click();
+    await owner.getByRole('button', {name: 'Join or start group audio call'}).click();
+    await expect(owner.locator('.group-call-panel')).toContainText('1 participant', {timeout: 10_000});
+
+    await recipient.addInitScript(() => {
+      const commands: string[] = [];
+      Object.defineProperty(window, '__pushGroupCallCommands', {configurable: true, value: commands});
+      const originalSend = WebSocket.prototype.send;
+      WebSocket.prototype.send = function(data: Parameters<WebSocket['send']>[0]): void {
+        if (typeof data === 'string') {
+          try {
+            const event = JSON.parse(data) as {type?: string};
+            if (event.type?.startsWith('group.call.')) commands.push(event.type);
+          } catch { /* Preserve non-JSON application frames. */ }
+        }
+        originalSend.call(this, data);
+      };
+    });
+    await recipient.reload(); // Restore through the HttpOnly cookie before handling the notification.
+    await expect(recipient).toHaveURL(/\/home$/);
+    const clients = await dispatchServiceWorkerNotificationClick(recipient, {kind: 'group_call', conversation_id: group.id});
+    expect(clients.clients).toBeGreaterThan(0);
+    const selectedGroup = recipient.locator('.person-option.selected');
+    const availabilityNotice = recipient.getByRole('status').filter({hasText: 'A group call is available. Join from the selected conversation if you choose.'});
+    const groupCallCommands = await recipient.evaluate(() => (window as Window & {__pushGroupCallCommands: string[]}).__pushGroupCallCommands);
+    expect(groupCallCommands).toContain('group.call.discover');
+    expect(groupCallCommands).not.toContain('group.call.sync');
+    expect(groupCallCommands).not.toContain('group.call.join');
+    expect(groupCallCommands).not.toContain('group.call.accept');
+    await expect(recipient.locator('.group-call-panel')).toHaveCount(0);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(recipient, theme);
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+        await recipient.setViewportSize(viewport);
+        await expect(selectedGroup).toContainText('Push call group');
+        await expect(availabilityNotice).toHaveText('A group call is available. Join from the selected conversation if you choose.');
+        await expect(availabilityNotice).not.toContainText(/participant|roster/i);
+        const joinButton = recipient.getByRole('button', {name: 'Join or start group audio call'});
+        await expect(joinButton).toBeVisible();
+        const geometry = await recipient.evaluate(() => {
+          const notice = document.querySelector('.send-status');
+          const button = [...document.querySelectorAll('button')].find(element => element.getAttribute('aria-label') === 'Join or start group audio call');
+          if (!notice || !button) return null;
+          const noticeBox = notice.getBoundingClientRect();
+          const buttonBox = button.getBoundingClientRect();
+          return {
+            documentWidth: document.documentElement.scrollWidth,
+            viewportWidth: document.documentElement.clientWidth,
+            notice: {left: noticeBox.left, right: noticeBox.right, top: noticeBox.top, bottom: noticeBox.bottom},
+            button: {left: buttonBox.left, right: buttonBox.right, top: buttonBox.top, bottom: buttonBox.bottom},
+          };
+        });
+        expect(geometry).not.toBeNull();
+        if (!geometry) throw new Error('Expected visible group-call notice and Join action');
+        expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+        expect(geometry.notice.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.notice.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(geometry.notice.top).toBeGreaterThanOrEqual(0);
+        expect(geometry.notice.bottom).toBeLessThanOrEqual(viewport.height + 1);
+        expect(geometry.button.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.button.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(geometry.button.top).toBeGreaterThanOrEqual(0);
+        expect(geometry.button.bottom).toBeLessThanOrEqual(viewport.height + 1);
+        await recipient.screenshot({path: testInfo.outputPath(`push-group-call-${theme}-${viewport.width}.png`), fullPage: false});
+      }
+    }
+  } finally {
+    await Promise.allSettled([ownerContext.close(), recipientContext.close()]);
   }
 });
 
@@ -5051,7 +5405,7 @@ test('Home people search clears results, distinguishes empty and failed states, 
   }
 });
 
-test('notifies and sounds a background conversation without duplicating the visible message', async ({browser}) => {
+test('plays a background message sound without duplicating the visible message or creating a page notification', async ({browser}) => {
   const aliceEmail = uniqueEmail('notifications-alice');
   const bobEmail = uniqueEmail('notifications-bob');
   const aliceContext = await browser.newContext({viewport: {width: 1440, height: 900}});
@@ -5102,8 +5456,7 @@ test('notifies and sounds a background conversation without duplicating the visi
     await alice.getByPlaceholder('Write a message…').fill(backgroundMessage);
     await alice.getByPlaceholder('Write a message…').press('Enter');
     await expect(bob.getByText(backgroundMessage)).toBeVisible({timeout: 10_000});
-    await expect.poll(async () => bob.evaluate(() => (window as Window & {__zweiNotificationRecords: BrowserNotificationRecord[]}).__zweiNotificationRecords.length)).toBe(1);
-    expect(await bob.evaluate(() => (window as Window & {__zweiNotificationRecords: BrowserNotificationRecord[]}).__zweiNotificationRecords[0])).toEqual({title: 'New message', body: 'You have a new message.', tag: expect.stringMatching(/^zwei-message-/)});
+    expect(await bob.evaluate(() => (window as Window & {__zweiNotificationRecords: BrowserNotificationRecord[]}).__zweiNotificationRecords)).toEqual([]);
     await expect.poll(async () => bob.evaluate(() => (window as Window & {__zweiAudioState: {tones: number; unlocks: number}}).__zweiAudioState.tones)).toBeGreaterThan(0);
   } finally {
     await aliceContext.close();
@@ -8418,8 +8771,8 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
     await expect(owner.locator('.message-bubble').filter({hasText: 'group mention delivery'}).last().locator('.message-mention')).toHaveText(`@${users[2].name}`);
     const charlieMessage = charlie.locator('.message-bubble').filter({hasText: 'group mention delivery'}).last();
     await expect(charlieMessage.locator('.message-mention')).toHaveText(`@${users[2].name}`);
-    await expect.poll(async () => charlie.evaluate(() => (window as Window & {__zweiNotificationRecords: BrowserNotificationRecord[]}).__zweiNotificationRecords.length)).toBe(1);
-    expect(await charlie.evaluate(() => (window as Window & {__zweiNotificationRecords: BrowserNotificationRecord[]}).__zweiNotificationRecords[0])).toEqual({title: 'New message', body: 'You have a new message.', tag: expect.stringMatching(/^zwei-message-/)});
+    expect(await charlie.evaluate(() => (window as Window & {__zweiNotificationRecords: BrowserNotificationRecord[]}).__zweiNotificationRecords)).toEqual([]);
+    await expect.poll(async () => charlie.evaluate(() => (window as Window & {__zweiAudioState: {tones: number; unlocks: number}}).__zweiAudioState.tones)).toBeGreaterThan(0);
     const groupMentionStyle = await charlieMessage.locator('.message-mention').evaluate(element => {
       const style = getComputedStyle(element);
       const matchedRules: Array<{selector: string; color: string; fontWeight: string}> = [];

@@ -1,9 +1,12 @@
 package httptransport
 
 import (
+	"crypto/elliptic"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/KovalMax/zwei/services/auth/internal/application"
@@ -44,6 +47,48 @@ func TestRefreshWithoutCookieReturnsUnauthorized(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestVAPIDPublicKeyEndpointRejectsInvalidCurvePoint(t *testing.T) {
+	handler := &Handler{vapidPublicKey: "encoded-public-key"}
+	request := httptest.NewRequest(http.MethodGet, "/api/auth/push/vapid-public-key", nil)
+	response := httptest.NewRecorder()
+	handler.vapidPublicKeyEndpoint(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("VAPID response = %d %s", response.Code, response.Body)
+	}
+}
+
+func TestVAPIDPublicKeyEndpointServesValidP256Point(t *testing.T) {
+	x, y := elliptic.P256().ScalarBaseMult([]byte{1})
+	publicKey := base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y))
+	response := httptest.NewRecorder()
+	(&Handler{vapidPublicKey: publicKey}).vapidPublicKeyEndpoint(response, httptest.NewRequest(http.MethodGet, "/api/auth/push/vapid-public-key", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), publicKey) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestVAPIDPublicKeyEndpointFailsClosedWhenUnconfigured(t *testing.T) {
+	response := httptest.NewRecorder()
+	(&Handler{}).vapidPublicKeyEndpoint(response, httptest.NewRequest(http.MethodGet, "/api/auth/push/vapid-public-key", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPushSubscriptionRequestRejectsCallerSuppliedIdentity(t *testing.T) {
+	for _, body := range []string{
+		`{"endpoint":"https://fcm.googleapis.com/send/token","keys":{"p256dh":"key","auth":"secret"},"user_id":"account"}`,
+		`{"endpoint":"https://fcm.googleapis.com/send/token","keys":{"p256dh":"key","auth":"secret"},"device_id":"device"}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/push-subscription", strings.NewReader(body))
+		response := httptest.NewRecorder()
+		var payload pushSubscriptionRequest
+		if decodeJSON(response, request, &payload) {
+			t.Fatalf("accepted caller-supplied identity: %s", body)
+		}
 	}
 }
 

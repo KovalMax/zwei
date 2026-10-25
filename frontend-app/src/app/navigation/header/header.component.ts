@@ -5,6 +5,7 @@ import {Router} from '@angular/router';
 import {Subscription} from 'rxjs';
 import {Profile} from '../../auth/profile.model';
 import {PwaService} from '../../pwa/pwa.service';
+import {PushEnrollmentService} from '../../pwa/push-enrollment.service';
 
 @Component({
     standalone: false,
@@ -20,7 +21,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     private readonly subscriptions = new Subscription();
     private readonly themeKey = 'zwei_theme';
 
-    constructor(private authService: AuthService, private router: Router, private changeDetector: ChangeDetectorRef, public readonly pwa: PwaService) {
+    constructor(private authService: AuthService, private router: Router, private changeDetector: ChangeDetectorRef, public readonly pwa: PwaService, private readonly push: PushEnrollmentService) {
     }
 
     public ngOnInit(): void {
@@ -55,7 +56,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     public onLogout(): void {
-        this.authService.logout().subscribe(() => void this.router.navigate(['login']));
+        this.authService.logout().subscribe(async () => {
+            await this.push.unsubscribeLocal();
+            await this.router.navigate(['login']);
+        });
     }
 
     public toggleTheme(): void {

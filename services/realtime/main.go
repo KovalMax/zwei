@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,12 +15,16 @@ import (
 
 	"github.com/KovalMax/zwei/services/internal/runtime"
 	"github.com/KovalMax/zwei/services/realtime/internal/application"
+	"github.com/KovalMax/zwei/services/realtime/internal/application/callpush"
+	"github.com/KovalMax/zwei/services/realtime/internal/application/messagepush"
 	postgresinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/postgres"
 	redisinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/redis"
 	turninfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/turn"
+	webpushinfra "github.com/KovalMax/zwei/services/realtime/internal/infrastructure/webpush"
 	websockettransport "github.com/KovalMax/zwei/services/realtime/internal/transport/websocket"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 	"github.com/KovalMax/zwei/services/shared/messaging"
+	"github.com/KovalMax/zwei/services/shared/pushcrypto"
 )
 
 func main() {
@@ -42,6 +48,13 @@ func main() {
 	}
 	defer db.Close()
 	if err := db.Ping(ctx); err != nil {
+		panic(err)
+	}
+	codec, err := pushCodecFromEnvironment()
+	if err != nil {
+		panic(err)
+	}
+	if err := postgresinfra.EnsurePushFingerprintKeyIdentity(ctx, db, codec); err != nil {
 		panic(err)
 	}
 	encryptionSecret := getenv("MESSAGE_ENCRYPTION_KEY", "local-development-key-change-me")
@@ -139,17 +152,149 @@ func main() {
 	}()
 	outbox := postgresinfra.NewOutboxRepository(db)
 	go consumeConversationEvents(ctx, outbox, hub)
-	handler := websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins)
+	var pushWorkerDone chan struct{}
+	var callPushDone chan struct{}
+	if dispatcher, enabled, err := newMessagePushDispatcher(db, coordination); err != nil {
+		panic(err)
+	} else if enabled {
+		pushWorkerDone = make(chan struct{})
+		go func() { defer close(pushWorkerDone); consumeMessagePushIntents(ctx, dispatcher, logger) }()
+		queue, err := newCallPushQueue(db, coordination, coordination, groupCall)
+		if err != nil {
+			panic(err)
+		}
+		hub.SetCallPushQueue(queue)
+		callPushDone = make(chan struct{})
+		go func() { defer close(callPushDone); queue.Run(ctx) }()
+	}
 	mux := runtime.NewHealthHandler("realtime")
-	mux.Handle("GET /ws", handler)
-	mux.Handle("GET /ws/v2", websockettransport.NewVersionedHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins, 2))
+	mux.Handle("GET /ws/v2", websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins))
 	server := &http.Server{
 		Addr:    ":" + getenv("REALTIME_PORT", "8083"),
 		Handler: mux,
 	}
 	runtime.ConfigureWebSocketServer(server)
-	if err := runtime.RunHTTP(ctx, logger, server); err != nil {
-		panic(err)
+	serverErr := runtime.RunHTTP(ctx, logger, server)
+	cancel()
+	if pushWorkerDone != nil {
+		<-pushWorkerDone
+	}
+	if callPushDone != nil {
+		<-callPushDone
+	}
+	if serverErr != nil {
+		panic(serverErr)
+	}
+}
+
+func newCallPushQueue(db *pgxpool.Pool, presence *redisinfra.PresenceCoordinator, calls application.CallCoordinator, authorizer application.GroupCallAuthorizer) (*callpush.Queue, error) {
+	publicKey, privateKey, subject := os.Getenv("VAPID_PUBLIC_KEY"), os.Getenv("VAPID_PRIVATE_KEY"), os.Getenv("VAPID_SUBJECT")
+	codec, err := pushCodecFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	sender, err := webpushinfra.New(publicKey, privateKey, subject, nil)
+	if err != nil {
+		return nil, err
+	}
+	vapidKeyID, err := pushcrypto.VAPIDFingerprint(publicKey)
+	if err != nil {
+		return nil, err
+	}
+	repository := postgresinfra.NewCallPushRepository(db, codec, vapidKeyID, calls, presence, authorizer)
+	return callpush.New(repository, presence, sender, 64), nil
+}
+
+func newMessagePushDispatcher(db *pgxpool.Pool, presence *redisinfra.PresenceCoordinator) (*messagepush.Dispatcher, bool, error) {
+	publicKey, privateKey, subject := os.Getenv("VAPID_PUBLIC_KEY"), os.Getenv("VAPID_PRIVATE_KEY"), os.Getenv("VAPID_SUBJECT")
+	if publicKey == "" && privateKey == "" && subject == "" {
+		return nil, false, nil
+	}
+	if publicKey == "" || privateKey == "" || subject == "" {
+		return nil, false, errors.New("incomplete VAPID configuration")
+	}
+	codec, err := pushCodecFromEnvironment()
+	if err != nil {
+		return nil, false, err
+	}
+	sender, err := webpushinfra.New(publicKey, privateKey, subject, nil)
+	if err != nil {
+		return nil, false, errors.New("invalid VAPID configuration")
+	}
+	vapidKeyID, err := pushcrypto.VAPIDFingerprint(publicKey)
+	if err != nil {
+		return nil, false, errors.New("invalid VAPID configuration")
+	}
+	return messagepush.New(postgresinfra.NewMessagePushOutbox(db, codec, vapidKeyID), presence, sender), true, nil
+}
+
+func pushCodecFromEnvironment() (*pushcrypto.Codec, error) {
+	keys := make(map[string][]byte)
+	for version, name := range map[string]string{"v1": "PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V1", "v2": "PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V2"} {
+		value := os.Getenv(name)
+		if value == "" {
+			continue
+		}
+		key, err := hex.DecodeString(value)
+		if err != nil || len(key) != 32 {
+			return nil, errors.New("invalid push subscription encryption configuration")
+		}
+		keys[version] = key
+	}
+	current := os.Getenv("PUSH_SUBSCRIPTION_ENCRYPTION_CURRENT_VERSION")
+	if current == "" {
+		current = "v1"
+	}
+	if current != "v1" && current != "v2" {
+		return nil, errors.New("invalid current push subscription encryption version")
+	}
+	if current == "v2" && len(keys["v1"]) != 32 {
+		return nil, errors.New("v2 rotation requires retaining PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V1 for old rows")
+	}
+	fingerprint, err := hex.DecodeString(os.Getenv("PUSH_SUBSCRIPTION_FINGERPRINT_KEY"))
+	if err != nil || len(fingerprint) < 32 {
+		return nil, errors.New("invalid push subscription fingerprint configuration")
+	}
+	codec, err := pushcrypto.NewKeyring(keys, current, fingerprint)
+	if err != nil {
+		return nil, errors.New("invalid push subscription encryption configuration")
+	}
+	return codec, nil
+}
+
+func consumeMessagePushIntents(ctx context.Context, dispatcher *messagepush.Dispatcher, logger *slog.Logger) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			workCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := dispatcher.Process(workCtx, 4)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				var diagnostic *messagepush.DiagnosticError
+				if errors.As(err, &diagnostic) {
+					reason := "internal"
+					switch diagnostic.Reason {
+					case "resolve_failed", "presence_failed", "provider_failed", "internal":
+						reason = diagnostic.Reason
+					}
+					if reason == "provider_failed" && diagnostic.HTTPStatus >= 100 && diagnostic.HTTPStatus <= 599 {
+						if messagepush.IsAppleProviderCode(diagnostic.ProviderCode) {
+							logger.Warn("message push batch failed", "reason", reason, "http_status", diagnostic.HTTPStatus, "provider_code", diagnostic.ProviderCode)
+						} else {
+							logger.Warn("message push batch failed", "reason", reason, "http_status", diagnostic.HTTPStatus)
+						}
+					} else {
+						logger.Warn("message push batch failed", "reason", reason)
+					}
+				} else {
+					logger.Warn("message push batch failed", "reason", "internal")
+				}
+			}
+		}
 	}
 }
 
