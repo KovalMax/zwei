@@ -29,10 +29,69 @@ func TestLoginDoesNotRequireDisplayName(t *testing.T) {
 	}
 }
 
+func TestRefreshPreservesRotationErrors(t *testing.T) {
+	storageFailure := errors.New("database unavailable")
+	for _, want := range []error{ErrRefreshToken, storageFailure, context.Canceled} {
+		service := NewService(&refreshErrorRepository{err: want}, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+		_, err := service.Refresh(context.Background(), "refresh")
+		if !errors.Is(err, want) {
+			t.Errorf("Refresh() error = %v, want %v", err, want)
+		}
+	}
+}
+
+type refreshErrorRepository struct {
+	fakeRepository
+	err error
+}
+
+func (f *fakeRepository) RotateRefreshCandidates(context.Context, [][]byte, []byte, time.Time, func(user.Session, []byte) error) error {
+	return nil
+}
+
+type candidateRepository struct {
+	fakeRepository
+	hashes [][]byte
+	err    error
+}
+
+func (f *candidateRepository) RotateRefreshCandidates(_ context.Context, hashes [][]byte, _ []byte, _ time.Time, issue func(user.Session, []byte) error) error {
+	f.hashes = hashes
+	if f.err != nil {
+		return f.err
+	}
+	return issue(user.Session{UserID: uuid.New(), DeviceID: uuid.New(), SessionVersion: 1}, hashes[0])
+}
+
+func TestRefreshCandidatesBoundsAndDeduplicates(t *testing.T) {
+	repo := &candidateRepository{}
+	service := NewService(repo, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+	for _, input := range [][]string{nil, {""}, {string(bytes.Repeat([]byte("x"), 4097))}, make([]string, MaxRefreshCandidates+1)} {
+		if _, err := service.RefreshCandidates(context.Background(), input); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("invalid candidates: %v", err)
+		}
+	}
+	if _, err := service.RefreshCandidates(context.Background(), []string{"first", "first", "second"}); err != nil {
+		t.Fatal(err)
+	}
+	first, second := sha256.Sum256([]byte("first")), sha256.Sum256([]byte("second"))
+	if len(repo.hashes) != 2 || !bytes.Equal(repo.hashes[0], first[:]) || !bytes.Equal(repo.hashes[1], second[:]) {
+		t.Fatal("candidate hashes not deduplicated")
+	}
+	repo.err = ErrRefreshToken
+	if _, err := service.RefreshCandidates(context.Background(), []string{"first", "second"}); !errors.Is(err, ErrRefreshToken) {
+		t.Fatalf("ambiguity error: %v", err)
+	}
+}
+
+func (f *refreshErrorRepository) RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error {
+	return f.err
+}
+
 func TestPushSubscriptionRequiresVerifiedSessionDeviceAndSupportedEndpoint(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
-	identity := sharedauth.Identity{UserID: uuid.New(), SessionVersion: 7, DeviceID: uuid.NewString()}
+	identity := sharedauth.Identity{UserID: uuid.New(), SessionVersion: 7, DeviceID: uuid.NewString(), BrowserID: uuid.New(), BrowserGeneration: uuid.New()}
 	subscription := PushSubscription{
 		Endpoint: "https://fcm.googleapis.com/fcm/send/token",
 		P256DH:   base64.RawURLEncoding.EncodeToString(append([]byte{4}, make([]byte, 64)...)),
@@ -41,7 +100,7 @@ func TestPushSubscriptionRequiresVerifiedSessionDeviceAndSupportedEndpoint(t *te
 	if err := service.StorePushSubscription(context.Background(), identity, subscription); err != nil {
 		t.Fatalf("StorePushSubscription() error = %v", err)
 	}
-	if repository.pushUserID != identity.UserID || repository.pushDeviceID.String() != identity.DeviceID || repository.pushSessionVersion != identity.SessionVersion || repository.pushSubscription != subscription {
+	if repository.pushUserID != identity.UserID || repository.pushDeviceID.String() != identity.DeviceID || repository.pushSessionVersion != identity.SessionVersion || repository.pushSubscription != subscription || repository.pushBrowserID != identity.BrowserID || repository.pushGeneration != identity.BrowserGeneration {
 		t.Fatalf("stored identity/subscription = %v %v %d %#v", repository.pushUserID, repository.pushDeviceID, repository.pushSessionVersion, repository.pushSubscription)
 	}
 	for _, invalid := range []PushSubscription{
@@ -55,6 +114,46 @@ func TestPushSubscriptionRequiresVerifiedSessionDeviceAndSupportedEndpoint(t *te
 	}
 	if err := service.StorePushSubscription(context.Background(), sharedauth.Identity{UserID: identity.UserID}, subscription); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("identity without session/device error = %v", err)
+	}
+	for _, invalid := range []sharedauth.Identity{{UserID: identity.UserID, DeviceID: identity.DeviceID, SessionVersion: 7, BrowserGeneration: identity.BrowserGeneration}, {UserID: identity.UserID, DeviceID: identity.DeviceID, SessionVersion: 7, BrowserID: identity.BrowserID}} {
+		if err := service.StorePushSubscription(context.Background(), invalid, subscription); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("identity without browser binding error = %v", err)
+		}
+	}
+}
+
+func TestDeleteCurrentPushSubscriptionScopesAndValidatesIdentity(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, nil, nil, time.Minute, time.Hour)
+	identity := sharedauth.Identity{UserID: uuid.New(), DeviceID: uuid.NewString(), SessionVersion: 3, BrowserID: uuid.New(), BrowserGeneration: uuid.New()}
+	if err := service.DeleteCurrentPushSubscription(context.Background(), identity); err != nil {
+		t.Fatal(err)
+	}
+	if repository.pushUserID != identity.UserID || repository.pushDeviceID.String() != identity.DeviceID || repository.pushSessionVersion != identity.SessionVersion || repository.pushBrowserID != identity.BrowserID || repository.pushGeneration != identity.BrowserGeneration {
+		t.Fatal("delete not scoped to authenticated identity")
+	}
+	for _, invalid := range []sharedauth.Identity{{}, {UserID: identity.UserID, DeviceID: "bad", SessionVersion: 1, BrowserID: identity.BrowserID, BrowserGeneration: identity.BrowserGeneration}, {UserID: identity.UserID, DeviceID: identity.DeviceID}, {UserID: identity.UserID, DeviceID: identity.DeviceID, SessionVersion: 3, BrowserID: identity.BrowserID}, {UserID: identity.UserID, DeviceID: identity.DeviceID, SessionVersion: 3, BrowserGeneration: identity.BrowserGeneration}} {
+		if err := service.DeleteCurrentPushSubscription(context.Background(), invalid); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("invalid identity error = %v", err)
+		}
+	}
+}
+
+func TestVerifyPushSubscriptionValidatesAndScopesIdentity(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+	identity := sharedauth.Identity{UserID: uuid.New(), DeviceID: uuid.NewString(), SessionVersion: 4}
+	sub := PushSubscription{Endpoint: "https://fcm.googleapis.com/send/token", P256DH: base64.RawURLEncoding.EncodeToString(append([]byte{4}, make([]byte, 64)...)), Auth: base64.RawURLEncoding.EncodeToString(make([]byte, 16))}
+	matched, err := service.VerifyPushSubscription(context.Background(), identity, sub)
+	if err != nil || !matched || repository.pushUserID != identity.UserID || repository.pushDeviceID.String() != identity.DeviceID || repository.pushSessionVersion != identity.SessionVersion || repository.pushSubscription != sub {
+		t.Fatal("verification did not use the authenticated identity and subscription")
+	}
+	if _, err := service.VerifyPushSubscription(context.Background(), sharedauth.Identity{}, sub); !errors.Is(err, ErrInvalidInput) {
+		t.Fatal("invalid identity accepted")
+	}
+	sub.Auth = "bad"
+	if _, err := service.VerifyPushSubscription(context.Background(), identity, sub); !errors.Is(err, ErrInvalidInput) {
+		t.Fatal("invalid subscription accepted")
 	}
 }
 
@@ -310,6 +409,8 @@ type fakeRepository struct {
 	resendExpiresAt      time.Time
 	invitation           user.Invitation
 	pushUserID           uuid.UUID
+	pushBrowserID        uuid.UUID
+	pushGeneration       uuid.UUID
 	pushDeviceID         uuid.UUID
 	pushSessionVersion   int64
 	pushSubscription     PushSubscription
@@ -328,16 +429,31 @@ func (f *fakeRepository) EnsureDevice(context.Context, uuid.UUID, string, string
 func (f *fakeRepository) CreateSession(context.Context, uuid.UUID, uuid.UUID, []byte, int64, time.Time) error {
 	return nil
 }
-func (f *fakeRepository) RotateRefreshToken(context.Context, []byte) (user.Session, error) {
-	return user.Session{}, errors.New("not implemented")
+func (f *fakeRepository) RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error {
+	return errors.New("not implemented")
 }
 func (f *fakeRepository) RevokeAllSessions(context.Context, uuid.UUID) error { return nil }
-func (f *fakeRepository) StorePushSubscription(_ context.Context, userID, deviceID uuid.UUID, sessionVersion int64, subscription PushSubscription) error {
+func (f *fakeRepository) RefreshTokenOwner(context.Context, []byte) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+func (f *fakeRepository) StorePushSubscription(_ context.Context, userID, deviceID uuid.UUID, sessionVersion int64, browserID, generation uuid.UUID, subscription PushSubscription) error {
+	f.pushBrowserID, f.pushGeneration = browserID, generation
 	f.pushUserID, f.pushDeviceID, f.pushSessionVersion, f.pushSubscription = userID, deviceID, sessionVersion, subscription
 	return nil
 }
-func (f *fakeRepository) DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, string) error {
+func (f *fakeRepository) DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, uuid.UUID, uuid.UUID, string) error {
 	return nil
+}
+
+func (f *fakeRepository) DeleteCurrentPushSubscription(_ context.Context, userID, deviceID uuid.UUID, sessionVersion int64, browserID, generation uuid.UUID) error {
+	f.pushUserID, f.pushDeviceID, f.pushSessionVersion = userID, deviceID, sessionVersion
+	f.pushBrowserID, f.pushGeneration = browserID, generation
+	return nil
+}
+
+func (f *fakeRepository) VerifyPushSubscription(_ context.Context, userID, deviceID uuid.UUID, sessionVersion int64, subscription PushSubscription) (bool, error) {
+	f.pushUserID, f.pushDeviceID, f.pushSessionVersion, f.pushSubscription = userID, deviceID, sessionVersion, subscription
+	return true, nil
 }
 func (f *fakeRepository) Profile(context.Context, uuid.UUID) (user.Profile, error) {
 	return f.profile, nil

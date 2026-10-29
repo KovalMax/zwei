@@ -64,6 +64,113 @@ describe('GroupCallFacade', () => {
         facade = new GroupCallFacade({ getObservable: () => events.asObservable(), readyChanges: ready.asObservable(), get ready() { return ready.value; }, send } as unknown as DataProviderService);
     });
 
+    it.each([['leave', 0], ['end', 0], ['leave', 5000], ['end', 5000]] as const)('checks pending %s before a new attempt and handles rejection after %i ms', (action, delay) => fakeAsync(async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}]));
+        facade[action]();
+        const control = sentGroupRequest(`group.call.${action}`);
+        await tick(delay);
+        facade.discoverAndStart('group-2', 'self-1');
+        const sync = sentRequestID('group.call.sync');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        events.next(rejected(control, 'unavailable'));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sync, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'owned_elsewhere'}});
+        await facade.start('group-2', 'self-1');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.start', payload: {conversation_id: 'group-2'}}));
+    })());
+
+    it.each(['leave', 'end'] as const)('permits a new attempt after confirming successful %s without an acknowledgement', async action => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}]));
+        facade[action]();
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(send).toHaveBeenLastCalledWith(expect.objectContaining({type: 'group.call.sync', payload: expect.objectContaining({ownership_status: true})}));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sentRequestID('group.call.sync'), payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'}});
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-2'}}));
+    });
+
+    it.each(['leave', 'end'] as const)('retries dropped %s in an owned solo ringing room and completes the deferred attempt', async action => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'ringing', 'group-1', 1, 1, [self]));
+        facade[action]();
+        facade.discoverAndStart('group-2', 'self-1');
+        const sync = sentRequestID('group.call.sync');
+        events.next(synced('stale-request', {status: 'ringing', ownership_status: 'active', participants: [self]}));
+        expect(send.mock.calls.filter(([command]) => command.type === `group.call.${action}`)).toHaveLength(1);
+        events.next(synced(sync, {status: 'ringing', ownership_status: 'active', participants: [self]}));
+        expect(send.mock.calls.filter(([command]) => command.type === `group.call.${action}`)).toHaveLength(2);
+        const followup = sentRequestID('group.call.sync', 1);
+        events.next(absentSync(sync));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        events.next(absentSync(followup));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-2'}}));
+    });
+
+    it.each(['owned_elsewhere', 'participant_absent'] as const)('handles %s after dropped solo ringing leave', async ownership => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'ringing'));
+        facade.leave();
+        facade.discoverAndStart('group-2', 'self-1');
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sentRequestID('group.call.sync'), payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: ownership}});
+        expect(send.mock.calls.filter(([command]) => command.type === 'group.call.leave')).toHaveLength(1);
+        expect(send.mock.calls.filter(([command]) => command.type === 'group.call.discover')).toHaveLength(ownership === 'participant_absent' ? 1 : 0);
+    });
+
+    it.each(['conversation', 'revision', 'device', 'room', 'generation'] as const)('does not retry a ringing leave for mismatched %s', async mismatch => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'ringing', 'group-1', 1, 2, [self]));
+        facade.leave();
+        facade.discoverAndStart('group-2', 'self-1');
+        const changes: Partial<GroupCallActiveSyncPayload> = mismatch === 'conversation' ? {conversation_id: 'other'} :
+            mismatch === 'revision' ? {state_revision: 1} : mismatch === 'device' ? {participants: [{...self, device_id: 'other'}]} :
+            mismatch === 'room' ? {room_id: 'other'} : {generation: 2};
+        events.next(synced(sentRequestID('group.call.sync'), {status: 'ringing', ownership_status: 'active', state_revision: 2, participants: [self], ...changes}));
+        expect(send.mock.calls.filter(([command]) => command.type === 'group.call.leave')).toHaveLength(1);
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+    });
+
+    it('discovers the original room after a deferred rejoin and does not start a replacement', async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}]));
+        facade.leave();
+        facade.rejoin('self-1');
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sentRequestID('group.call.sync'), payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'}});
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-1'}}));
+        const discovery = sentRequestID('group.call.discover');
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discovery, payload: {conversation_id: 'group-1', room: null}});
+        expect(send.mock.calls.filter(([command]) => command.type === 'group.call.start')).toHaveLength(1);
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.join'}));
+    });
+
+    it.each(['disconnect', 'conversation'] as const)('cancels a deferred attempt on %s', async reason => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}]));
+        facade.leave();
+        facade.discoverAndStart('group-2', 'self-1');
+        const sync = sentRequestID('group.call.sync');
+        if (reason === 'disconnect') { ready.next(false); ready.next(true); }
+        else facade.cancelDeferredIntentForConversation('group-3');
+        events.next(absentSync(sync));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['leave', 'end'] as const)('keeps a pending %s blocked after sync timeout and late rejection', action => fakeAsync(async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}]));
+        facade[action]();
+        const control = sentGroupRequest(`group.call.${action}`);
+        facade.discoverAndStart('group-2', 'self-1');
+        const sync = sentRequestID('group.call.sync');
+        await tick(8000);
+        events.next(rejected(control, 'unavailable'));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sync, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'}});
+        await facade.start('group-2', 'self-1');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.start', payload: {conversation_id: 'group-2'}}));
+    })());
+
     it('retains the server support reference from room events through the terminal notice', async () => {
         await facade.start('group-1', 'self-1');
         const started = room('group.call.started', 'active');
@@ -73,6 +180,397 @@ describe('GroupCallFacade', () => {
         events.next({...ended, payload: {...ended.payload, support_ref: 'group-ref-1'}});
         expect(facade.state.phase).toBe('ended');
         expect(facade.state.supportRef).toBe('group-ref-1');
+    });
+
+    it.each(['leave', 'end'] as const)('retries an uncertain rejected %s after reconnect using correlated ownership sync', action => fakeAsync(async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self, peer]));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        const first = sentRequestID('group.call.sync');
+        await tick(8000);
+        ready.next(false);
+        ready.next(true);
+        facade.discoverAndStart('group-2', 'self-1');
+        const retry = sentRequestID('group.call.sync', 1);
+        expect(retry).not.toBe(first);
+        expect(send).toHaveBeenLastCalledWith(expect.objectContaining({type: 'group.call.sync', payload: expect.objectContaining({ownership_status: true})}));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: first, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'}});
+        await facade.start('group-2', 'self-1');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.start', payload: {conversation_id: 'group-2'}}));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: retry, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'}});
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(send).toHaveBeenLastCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+    })());
+
+    it.each(['leave', 'end'] as const)('keeps a rejected %s blocked when retry ownership is elsewhere', action => fakeAsync(async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self, peer]));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        await tick(8000);
+        facade.discoverAndStart('group-2', 'self-1');
+        const retry = sentRequestID('group.call.sync', 1);
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: retry, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'owned_elsewhere'}});
+        await facade.start('group-2', 'self-1');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.start', payload: {conversation_id: 'group-2'}}));
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(sentRequestID('group.call.sync', 2)).not.toBe(retry);
+    })());
+
+    it('leaves an established room on local peer setup failure while the socket remains ready', async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        expect(facade.state.phase).toBe('active');
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const leaves = send.mock.calls.map(call => call[0]).filter(command => command.type === 'group.call.leave');
+        expect(leaves).toHaveLength(1);
+        expect(leaves[0].payload).toEqual({conversation_id: 'group-1', room_id: 'room-1', generation: 1});
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.end'}));
+        expect(track.stop).toHaveBeenCalled();
+        expect(facade.state.phase).toBe('error');
+    });
+
+    it.each(['send failure', 'rejection', 'sync rejection', 'still present'] as const)('blocks new calls when failure cleanup is unverified: %s', async outcome => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        if (outcome === 'send failure') send.mockImplementation(event => event.type !== 'group.call.leave');
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        if (outcome === 'rejection') events.next(rejected(sentGroupRequest('group.call.leave'), 'call unavailable'));
+        if (outcome === 'sync rejection') events.next(rejected(sentRequestID('group.call.sync'), 'sync unavailable'));
+        if (outcome === 'still present') events.next(synced(sentRequestID('group.call.sync'), {state_revision: 2, participants: [self, peer]}));
+        expect(facade.state.errorLabel).toContain('could not be verified');
+        const count = send.mock.calls.length;
+        await facade.start('group-2', 'self-1');
+        expect(send).toHaveBeenCalledTimes(count);
+    });
+
+    it('confirms cleanup before allowing another call and ignores a delayed cleanup reply', fakeAsync(async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const leaveID = sentGroupRequest('group.call.leave');
+        const syncID = sentRequestID('group.call.sync');
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(1);
+        events.next(absentSync(syncID));
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(2);
+        events.next(rejected(leaveID, 'late rejection'));
+        events.next(synced(syncID, {state_revision: 4, participants: [self, peer]}));
+        expect(facade.state.phase).toBe('ringing');
+    }));
+
+    it.each(['legacy', 'room_unavailable', 'owned_elsewhere', 'active'] as const)('keeps cleanup blocked for %s ownership', async ownership => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const syncID = sentRequestID('group.call.sync');
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.sync', payload: expect.objectContaining({ownership_status: true})}));
+        if (ownership === 'active') events.next(synced(syncID, {ownership_status: 'active', participants: [self, peer], state_revision: 3}));
+        else events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: syncID, payload: {room_id: 'room-1', generation: 1, status: 'ended', ...(ownership === 'legacy' ? {} : {ownership_status: ownership})}});
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(1);
+        if (ownership === 'owned_elsewhere') expect(facade.state.errorLabel).toContain('another connection');
+    });
+
+    it.each(['unsent', 'rejected'] as const)('retries %s cleanup only after an explicit ownership check and confirms absence', async outcome => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        if (outcome === 'unsent') send.mockImplementation(event => event.type !== 'group.call.leave');
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        if (outcome === 'rejected') events.next(rejected(sentGroupRequest('group.call.leave'), 'unavailable'));
+        send.mockReturnValue(true);
+        facade.discoverAndStart('group-2', 'self-1');
+        const sync = sentRequestID('group.call.sync', outcome === 'unsent' ? 0 : 1);
+        events.next(synced(sync, {ownership_status: 'active', participants: [self, peer], state_revision: 3}));
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.leave')).toHaveLength(2);
+        const followup = sentRequestID('group.call.sync', outcome === 'unsent' ? 1 : 2);
+        events.next(absentSync(sync));
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(0);
+        events.next(absentSync(followup));
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(1);
+    });
+
+    it('never retries a leave when explicit ownership check reports a sibling connection', async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        events.next(rejected(sentRequestID('group.call.sync'), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        const sync = sentRequestID('group.call.sync', 1);
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sync, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'owned_elsewhere'}});
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.leave')).toHaveLength(1);
+    });
+
+    it('bounds cleanup to one leave per explicit attempt even if the follow-up remains active', async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        events.next(rejected(sentRequestID('group.call.sync'), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        events.next(synced(sentRequestID('group.call.sync', 1), {ownership_status: 'active', participants: [self, peer], state_revision: 3}));
+        events.next(synced(sentRequestID('group.call.sync', 2), {ownership_status: 'active', participants: [self, peer], state_revision: 3}));
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.leave')).toHaveLength(2);
+        expect(facade.state.phase).toBe('error');
+        expect(facade.state.errorLabel).toContain('could not be verified');
+    });
+
+    it('keeps cleanup unverified after a sync timeout and ignores the late reply', fakeAsync(async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const syncID = sentRequestID('group.call.sync');
+        await tick(8_000);
+        expect(facade.state.errorLabel).toContain('could not be verified');
+        events.next(synced(syncID, {state_revision: 3, participants: [peer]}));
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(1);
+    }));
+
+    it.each(['owned_elsewhere', 'rejection', 'timeout'] as const)('rechecks cleanup on a new call attempt after %s', outcome => fakeAsync(async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const originalFailure = facade.state.errorLabel;
+        expect(originalFailure).toBeTruthy();
+        const first = sentRequestID('group.call.sync');
+        if (outcome === 'owned_elsewhere') events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: first, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'owned_elsewhere'}});
+        else if (outcome === 'rejection') events.next(rejected(first, 'sync unavailable'));
+        else await tick(8_000);
+        facade.discoverAndStart('group-2', 'self-1');
+        const retry = sentRequestID('group.call.sync', 1);
+        expect(retry).not.toBe(first);
+        events.next(absentSync(first));
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(0);
+        events.next(absentSync(retry));
+        expect(facade.state.statusLabel).toContain('Checking for an active group call');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(1);
+    })());
+
+    it('does not accept an old cleanup snapshot after the socket disconnects', async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const syncID = sentRequestID('group.call.sync');
+        ready.next(false);
+        ready.next(true);
+        events.next(absentSync(syncID));
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(1);
+        expect(facade.state.errorLabel).toContain('could not be verified');
+        const retryID = sentRequestID('group.call.sync', 1);
+        expect(retryID).not.toBe(syncID);
+        events.next(absentSync(retryID));
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(2);
+    });
+
+    it('keeps cleanup retryable when a correlated snapshot names the wrong room', async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        const first = sentRequestID('group.call.sync');
+        events.next({...absentSync(first), payload: {...absentSync(first).payload, room_id: 'other-room'}});
+        facade.discoverAndStart('group-2', 'self-1');
+        const retry = sentRequestID('group.call.sync', 1);
+        expect(retry).not.toBe(first);
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(0);
+        events.next(absentSync(retry));
+        facade.discoverAndStart('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.discover')).toHaveLength(1);
+    });
+
+    it('reconciles timed-out cleanup on reconnect without resending leave', fakeAsync(async () => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class { constructor() { throw new Error('unsupported'); } }});
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]));
+        await tick(8_000);
+        ready.next(false);
+        ready.next(true);
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.leave')).toHaveLength(1);
+        const retryID = sentRequestID('group.call.sync', 1);
+        events.next(absentSync(retryID));
+        await facade.start('group-2', 'self-1');
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(2);
+    }));
+
+    it('joins a peer room started during discovery exactly once', async () => {
+        facade.discoverAndStart('group-1', 'self-1');
+        const discovery = sentRequestID('group.call.discover');
+        const started = room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'peer-1', device_id: 'peer-device'}]);
+        events.next(started);
+        await flush();
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discovery, payload: {conversation_id: 'group-1', room: started.payload}});
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.join')).toHaveLength(1);
+    });
+
+    it('does not join itself when a room started during discovery already contains self', async () => {
+        facade.discoverAndStart('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}]));
+        await Promise.resolve();
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.join')).toHaveLength(0);
+    });
+
+    it.each(['addTrack', 'addTransceiver'] as const)('closes a partially constructed peer when %s throws', async method => {
+        const self = {user_id: 'self-1', device_id: 'device-1'};
+        const peer = {user_id: 'peer-a', device_id: 'device-a'};
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1, [self]));
+        const close = vi.fn();
+        Object.defineProperty(window, 'RTCPeerConnection', {configurable: true, value: class {
+            close = close;
+            addTrack(): RTCRtpSender { if (method === 'addTrack') throw new Error('failed'); return {} as RTCRtpSender; }
+            addTransceiver(): RTCRtpTransceiver { throw new Error('failed'); }
+        }});
+        const joined = room('group.call.participant.joined', 'active', 'group-1', 1, 2, [self, peer]);
+        events.next({...joined, payload: {...joined.payload, presenter: peer}});
+        expect(close).toHaveBeenCalledOnce();
+        expect(facade.state.phase).toBe('error');
+    });
+
+    it('ignores unrelated and stale full terminal snapshots without changing the active room or support reference', async () => {
+        await facade.start('group-1', 'self-1');
+        const started = room('group.call.started', 'active', 'group-1', 1, 5);
+        events.next({...started, payload: {...started.payload, support_ref: 'current-ref'}});
+        const ended = room('group.call.ended', 'ended', 'group-1', 1, 6);
+        events.next({...ended, payload: {...ended.payload, room_id: 'old-room', support_ref: 'old-ref'}});
+        events.next({...ended, payload: {...ended.payload, state_revision: 5, support_ref: 'stale-ref'}});
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.ended', payload: {room_id: 'old-room', generation: 1, status: 'ended', state_revision: 6, support_ref: 'old-minimal-ref'}});
+        expect(facade.state.phase).toBe('active');
+        expect(facade.state.room?.room_id).toBe('room-1');
+        expect(facade.state.supportRef).toBe('current-ref');
+        expect(track.stop).not.toHaveBeenCalled();
+        events.next({...ended, payload: {...ended.payload, support_ref: 'terminal-ref'}});
+        expect(facade.state.phase).toBe('ended');
+        expect(facade.state.supportRef).toBe('terminal-ref');
+        expect(track.stop).toHaveBeenCalled();
+    });
+
+    it('ignores a microphone rejection from an aborted start after a newer call becomes active', async () => {
+        let rejectOld: (reason: unknown) => void = () => undefined;
+        const getUserMedia = vi.fn().mockImplementationOnce(() => new Promise<MediaStream>((_, reject) => rejectOld = reject))
+            .mockResolvedValue({ getTracks: () => [track], getAudioTracks: () => [track] });
+        Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+        const oldStart = facade.start('group-1', 'self-1');
+        facade.abort('group-1');
+        await facade.start('group-2', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-2'));
+        rejectOld(new DOMException('denied', 'NotAllowedError'));
+        await oldStart;
+        expect(facade.state.phase).toBe('active');
+        expect(facade.state.room?.conversation_id).toBe('group-2');
+        expect(track.stop).not.toHaveBeenCalled();
+    });
+    it.each(['start', 'join'] as const)('invalidates pending %s capture across disconnect and reconnect', async operation => {
+        let resolveCapture: (stream: MediaStream) => void = () => undefined;
+        vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(() => new Promise(resolve => resolveCapture = resolve));
+        const pending = operation === 'start' ? facade.start('group-1', 'self-1') : facade.join(room('group.call.started', 'active').payload, 'self-1');
+        ready.next(false);
+        ready.next(true);
+        resolveCapture({getTracks: () => [track], getAudioTracks: () => [track]} as unknown as MediaStream);
+        await pending;
+        expect(track.stop).toHaveBeenCalled();
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: operation === 'start' ? 'group.call.start' : 'group.call.join'}));
+        expect(facade.state.phase).not.toBe('joining');
+        expect(facade.state.phase).not.toBe('ringing');
+    });
+
+    it('keeps the conversation on the terminal confirmation after ending locally', async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 1));
+        facade.end();
+        events.next(room('group.call.ended', 'ended', 'group-1', 1, 2));
+        expect(facade.state.phase).toBe('ended');
+        expect(facade.state.conversationID).toBe('group-1');
+    });
+
+    it('serializes concurrent microphone changes and releases pending capture on teardown', async () => {
+        const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}];
+        await facade.join(room('group.call.started', 'active', 'group-1', 1, 1, participants).payload, 'self-1');
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants));
+        const firstTrack = {kind: 'audio', stop: vi.fn(), enabled: true};
+        const secondTrack = {kind: 'audio', stop: vi.fn(), enabled: true};
+        const stream = (item: typeof firstTrack): MediaStream => ({getTracks: () => [item], getAudioTracks: () => [item]} as unknown as MediaStream);
+        vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValueOnce(stream(firstTrack)).mockResolvedValueOnce(stream(secondTrack));
+        let finishReplace: () => void = () => undefined;
+        senders[0].replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => finishReplace = resolve));
+        const first = facade.selectInputDevice('first');
+        await flush();
+        const second = facade.selectInputDevice('second');
+        await flush();
+        expect(senders[0].replaceTrack).toHaveBeenCalledTimes(1);
+        finishReplace();
+        await Promise.all([first, second]);
+        expect(facade.state.selectedInputID).toBe('second');
+        expect(firstTrack.stop).toHaveBeenCalled();
+        expect(secondTrack.stop).not.toHaveBeenCalled();
+        facade.end();
+        expect(secondTrack.stop).toHaveBeenCalled();
+    });
+
+    it('discards an in-flight microphone replacement and queued selection when the call ends', async () => {
+        const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}];
+        await facade.join(room('group.call.started', 'active', 'group-1', 1, 1, participants).payload, 'self-1');
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants));
+        const replacementTrack = {kind: 'audio', stop: vi.fn(), enabled: true};
+        vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValueOnce({getTracks: () => [replacementTrack], getAudioTracks: () => [replacementTrack]} as unknown as MediaStream);
+        let finishReplace: () => void = () => undefined;
+        senders[0].replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => finishReplace = resolve));
+        const first = facade.selectInputDevice('first');
+        await flush();
+        const second = facade.selectInputDevice('second');
+        facade.end();
+        expect(replacementTrack.stop).toHaveBeenCalled();
+        finishReplace();
+        await Promise.all([first, second]);
+        expect(replacementTrack.stop).toHaveBeenCalled();
+        expect(track.stop).toHaveBeenCalled();
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+        expect(facade.state.phase).toBe('ended');
     });
     afterEach(() => { facade.close(); if (mediaDevices)
         Object.defineProperty(navigator, 'mediaDevices', mediaDevices); if (peerConnectionDescriptor)
@@ -115,6 +613,62 @@ describe('GroupCallFacade', () => {
             };
         }).payload.room_id).toBe('room-1');
         expect(facade.state.phase).toBe('joining');
+    });
+
+    it.each(['empty', 'same room'] as const)('preserves an incoming room when a %s discovery response arrives later', async result => {
+        facade.discoverAndStart('group-1', 'self-1');
+        const discovery = send.mock.lastCall?.[0] as {request_id: string};
+        const started = room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'peer-1', device_id: 'peer-device'}]);
+        events.next(started);
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discovery.request_id, payload: {conversation_id: 'group-1', room: result === 'empty' ? null : started.payload}});
+        await flush();
+        expect(facade.state.phase).toBe('joining');
+        expect(facade.state.room?.room_id).toBe('room-1');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.start'}));
+        expect(send.mock.calls.filter(([event]) => event.type === 'group.call.join')).toHaveLength(1);
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not join a stale discovery room after that room ends while discovery is pending', async () => {
+        facade.discoverAndStart('group-1', 'self-1');
+        const discovery = send.mock.lastCall?.[0] as {request_id: string};
+        const started = room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'peer-1', device_id: 'peer-device'}]);
+        events.next(started);
+        events.next(room('group.call.ended', 'ended', 'group-1', 1, 2));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discovery.request_id, payload: {conversation_id: 'group-1', room: started.payload}});
+        await flush();
+        expect(facade.state.phase).toBe('ended');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.join'}));
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops late microphone capture when the started room ends before discovery returns', async () => {
+        let resolveCapture: (stream: MediaStream) => void = () => { throw new Error('Capture was not requested.'); };
+        vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValueOnce(new Promise<MediaStream>(resolve => { resolveCapture = resolve; }));
+        facade.discoverAndStart('group-1', 'self-1');
+        const discovery = send.mock.lastCall?.[0] as {request_id: string};
+        const started = room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'peer-1', device_id: 'peer-device'}]);
+        events.next(started);
+        events.next(room('group.call.ended', 'ended', 'group-1', 1, 2));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discovery.request_id, payload: {conversation_id: 'group-1', room: started.payload}});
+        resolveCapture({getTracks: () => [track], getAudioTracks: () => [track]} as unknown as MediaStream);
+        await flush();
+        expect(track.stop).toHaveBeenCalled();
+        expect(facade.state.phase).toBe('ended');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.join'}));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.start'}));
+    });
+
+    it.each(['full', 'minimal'] as const)('does not join discovery snapshot preceded by an unseen %s terminal event', async shape => {
+        facade.discoverAndStart('group-1', 'self-1');
+        const discovery = send.mock.lastCall?.[0] as {request_id: string};
+        const started = room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'peer-1', device_id: 'peer-device'}]);
+        const ended = room('group.call.ended', 'ended', 'group-1', 1, 2);
+        events.next(shape === 'full' ? ended : {version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.ended', payload: {room_id: 'room-1', generation: 1, status: 'ended', state_revision: 2}});
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: discovery.request_id, payload: {conversation_id: 'group-1', room: started.payload}});
+        await flush();
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.join'}));
+        expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
     });
 
     it('rolls back earlier peer microphone replacements when a later peer rejects the device', async () => {
@@ -166,6 +720,44 @@ describe('GroupCallFacade', () => {
         expect(replacementTrack.enabled).toBe(false);
         expect(senders).toHaveLength(2);
         for (const sender of senders) expect(sender.replaceTrack).toHaveBeenCalledWith(replacementTrack);
+    });
+
+    it('applies mute changes to both microphones throughout multi-peer replacement and rollback', async () => {
+        const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}, {user_id: 'peer-b', device_id: 'device-b'}];
+        await facade.join(room('group.call.started', 'active', 'group-1', 1, 1, participants).payload, 'self-1');
+        events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants));
+        const replacement = {kind: 'audio', enabled: true, readyState: 'live', stop: vi.fn()};
+        vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValueOnce({getTracks: () => [replacement], getAudioTracks: () => [replacement]} as unknown as MediaStream);
+        let finish: () => void = () => undefined;
+        senders[0].replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve));
+        let finishRollback: () => void = () => undefined;
+        let rollbackStarted: () => void = () => undefined;
+        const rollback = new Promise<void>(resolve => rollbackStarted = resolve);
+        senders[0].replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => { finishRollback = resolve; rollbackStarted(); }));
+        senders[1].replaceTrack.mockRejectedValueOnce(new Error('failed'));
+        const switching = facade.selectInputDevice('new');
+        await flush();
+        facade.toggleMute();
+        expect(track.enabled).toBe(false);
+        expect(replacement.enabled).toBe(false);
+        facade.toggleMute();
+        expect(track.enabled).toBe(true);
+        expect(replacement.enabled).toBe(true);
+        facade.toggleMute();
+        finish();
+        await rollback;
+        expect(senders[0].replaceTrack).toHaveBeenLastCalledWith(track);
+        facade.toggleMute();
+        expect(track.enabled).toBe(true);
+        expect(replacement.enabled).toBe(true);
+        facade.toggleMute();
+        expect(track.enabled).toBe(false);
+        expect(replacement.enabled).toBe(false);
+        finishRollback();
+        await switching;
+        expect(track.enabled).toBe(false);
+        expect(replacement.enabled).toBe(false);
+        expect(senders[0].replaceTrack).toHaveBeenLastCalledWith(track);
     });
 
     it('starts only after correlated discovery reports no room', async () => {
@@ -222,6 +814,7 @@ describe('GroupCallFacade', () => {
         expect(facade.canRejoin('group-1')).toBe(true);
         expect(facade.canRejoin('another-group')).toBe(false);
         facade.rejoin('self-1');
+        confirmRejoinDiscovery(2);
         await flush();
         const joinRequest = sentGroupRequest('group.call.join');
         expect(vi.mocked(send).mock.calls.filter(([event]) => event.type === 'group.call.start')).toHaveLength(1);
@@ -275,7 +868,7 @@ describe('GroupCallFacade', () => {
         expect(facade.canRejoin('another-group')).toBe(false);
     }));
 
-    it('does not block rejoin after the leave command is queued', async () => {
+    it('checks ownership before rejoining after the leave command is queued', async () => {
         await facade.start('group-1', 'self-1');
         events.next(room('group.call.started', 'active', 'group-1', 1, 1, [
             { user_id: 'self-1', device_id: 'device-1' }, { user_id: 'peer-1', device_id: 'peer-device' },
@@ -284,6 +877,8 @@ describe('GroupCallFacade', () => {
         expect(facade.state.phase).toBe('left');
         expect(facade.canRejoin('group-1')).toBe(true);
         facade.rejoin('self-1');
+        expect(sentEvent('group.call.join')).toBeUndefined();
+        confirmRejoinDiscovery(1);
         await flush();
         expect(facade.state.phase).toBe('joining');
         expect(vi.mocked(send).mock.calls.filter(([event]) => event.type === 'group.call.join')).toHaveLength(1);
@@ -321,6 +916,7 @@ describe('GroupCallFacade', () => {
         Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) } });
 
         facade.rejoin('self-1');
+        confirmRejoinDiscovery(1);
         await flush();
 
         expect(facade.state.phase).toBe('left');
@@ -391,10 +987,11 @@ describe('GroupCallFacade', () => {
         ]));
         facade.leave();
         facade.rejoin('self-1');
+        confirmRejoinDiscovery(5);
         await flush();
         events.next(room('group.call.participant.left', 'active', 'group-1', 1, 4, [{ user_id: 'peer-1', device_id: 'peer-device' }]));
         expect(facade.state.phase).toBe('joining');
-        expect(facade.state.room?.participants).toHaveLength(2);
+        expect(facade.state.room?.participants).toHaveLength(1);
 
         events.next(room('group.call.ended', 'ended', 'group-1', 1, 6));
         events.next(room('group.call.started', 'active', 'group-1', 1, 7));
@@ -422,7 +1019,95 @@ describe('GroupCallFacade', () => {
         expect(facade.canRejoin('group-1')).toBe(false);
     });
 
-    it('reconciles a rejected leave and preserves only a retry path for a confirmed active room', async () => {
+    it.each(['leave', 'end'] as const)('retries rejected %s only after own active sync and confirms absence before deferred discovery', async action => {
+        const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'}];
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, participants));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        const syncID = sentRequestID('group.call.sync');
+        events.next(synced(syncID, {ownership_status: 'active', state_revision: 5, participants}));
+        expect(send.mock.calls.filter(([command]) => command.type === `group.call.${action}`)).toHaveLength(2);
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        const verification = sentRequestID('group.call.sync', 1);
+        events.next(absentSync(syncID));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        events.next(absentSync(verification));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-2'}}));
+    });
+
+    it.each(['leave', 'end'] as const)('retains a deferred start when terminal precedes %s ownership sync', async action => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, [
+            {user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'},
+        ]));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        const syncID = sentRequestID('group.call.sync');
+        events.next(room('group.call.ended', 'ended', 'group-1', 1, 6));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        events.next(absentSync(syncID));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-2'}}));
+    });
+
+    it('does not take over after terminal and owned elsewhere, and ignores the stale sync', async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, [
+            {user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'},
+        ]));
+        facade.leave();
+        events.next(rejected(sentGroupRequest('group.call.leave'), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        const oldSync = sentRequestID('group.call.sync');
+        events.next(room('group.call.ended', 'ended', 'group-1', 1, 6));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: oldSync, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'owned_elsewhere'}});
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        facade.discoverAndStart('group-2', 'self-1');
+        const retry = sentRequestID('group.call.sync', 1);
+        events.next(absentSync(oldSync));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        events.next(absentSync(retry));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-2'}}));
+        expect(send.mock.calls.filter(([command]) => command.type === 'group.call.leave')).toHaveLength(1);
+    });
+
+    it.each(['leave', 'end'] as const)('preserves deferred intent after %s verification timeout and reconnect, ignoring stale replies', action => fakeAsync(async () => {
+        const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'}];
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, participants));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        events.next(synced(sentRequestID('group.call.sync'), {ownership_status: 'active', state_revision: 5, participants}));
+        const verification = sentRequestID('group.call.sync', 1);
+        await tick(8000);
+        ready.next(false);
+        ready.next(true);
+        const reconnectSync = sentRequestID('group.call.sync', 2);
+        expect(reconnectSync).not.toBe('');
+        events.next(absentSync(verification));
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        events.next(absentSync(reconnectSync));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover', payload: {conversation_id: 'group-2'}}));
+    })());
+
+    it.each(['leave', 'end'] as const)('bounds %s retry when verification still reports own active reservation', async action => {
+        const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'}];
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, participants));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        facade.discoverAndStart('group-2', 'self-1');
+        events.next(synced(sentRequestID('group.call.sync'), {ownership_status: 'active', state_revision: 5, participants}));
+        events.next(synced(sentRequestID('group.call.sync', 1), {ownership_status: 'active', state_revision: 5, participants}));
+        expect(send.mock.calls.filter(([command]) => command.type === `group.call.${action}`)).toHaveLength(2);
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.discover'}));
+        expect(facade.canRejoin('group-1')).toBe(false);
+    });
+
+    it('keeps rejoin blocked while retrying a rejected leave and verifying absence', async () => {
         await facade.start('group-1', 'self-1');
         events.next(room('group.call.started', 'active', 'group-1', 1, 5, [
             { user_id: 'self-1', device_id: 'device-1' }, { user_id: 'peer-1', device_id: 'peer-device' },
@@ -434,13 +1119,56 @@ describe('GroupCallFacade', () => {
         const syncID = sentRequestID('group.call.sync');
         expect(facade.state.phase).toBe('left');
         expect(facade.canRejoin('group-1')).toBe(false);
-        events.next(synced(syncID, { state_revision: 5, participants: [{ user_id: 'self-1', device_id: 'device-1' }, { user_id: 'peer-1', device_id: 'peer-device' }] }));
+        events.next(synced(syncID, { ownership_status: 'active', state_revision: 5, participants: [{ user_id: 'self-1', device_id: 'device-1' }, { user_id: 'peer-1', device_id: 'peer-device' }] }));
 
         expect(facade.state.phase).toBe('left');
         expect(facade.state.errorLabel).toContain('Could not leave');
-        expect(facade.canRejoin('group-1')).toBe(true);
+        expect(facade.canRejoin('group-1')).toBe(false);
+        expect(sentGroupRequest('group.call.leave', 1)).not.toBe('');
         expect(facade.state.localStream).toBeUndefined();
     });
+
+    it.each([['leave', 'owned_elsewhere'], ['end', 'owned_elsewhere'], ['leave', 'legacy'], ['end', 'legacy'], ['leave', 'room_unavailable'], ['end', 'room_unavailable']] as const)('keeps rejected %s uncertain for %s ownership', async (action, ownership) => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, [
+            {user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'},
+        ]));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        const syncID = sentRequestID('group.call.sync');
+        expect(send).toHaveBeenLastCalledWith(expect.objectContaining({type: 'group.call.sync', payload: expect.objectContaining({ownership_status: true})}));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: syncID, payload: {room_id: 'room-1', generation: 1, status: 'ended', ...(ownership === 'legacy' ? {} : {ownership_status: ownership})}});
+        expect(facade.state.errorLabel).toContain('could not be verified');
+        expect(facade.canRejoin('group-1')).toBe(false);
+    });
+
+    it.each(['leave', 'end'] as const)('correlates rejected %s after dismissal and retains its error', action => fakeAsync(async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, [
+            {user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'},
+        ]));
+        facade[action]();
+        const requestID = sentGroupRequest(`group.call.${action}`);
+        await tick(5000);
+        expect(facade.state.phase).toBe('idle');
+        events.next(rejected(requestID, 'unavailable'));
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sentRequestID('group.call.sync'), payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'owned_elsewhere'}});
+        await tick(5000);
+        expect(facade.state.errorLabel).toContain('could not be verified');
+        expect(facade.canRejoin('group-1')).toBe(false);
+    })());
+
+    it.each(['leave', 'end'] as const)('retains rejected %s error when the original dismissal timer expires', action => fakeAsync(async () => {
+        await facade.start('group-1', 'self-1');
+        events.next(room('group.call.started', 'active', 'group-1', 1, 5, [
+            {user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-device'},
+        ]));
+        facade[action]();
+        events.next(rejected(sentGroupRequest(`group.call.${action}`), 'unavailable'));
+        events.next(absentSync(sentRequestID('group.call.sync')));
+        await tick(5000);
+        expect(facade.state.errorLabel).toContain('Could not');
+    })());
 
     it('keeps an ended result after a rejected end is authoritatively reconciled as ended', async () => {
         await facade.start('group-1', 'self-1');
@@ -485,9 +1213,10 @@ describe('GroupCallFacade', () => {
 
         expect(facade.state.phase).toBe('left');
         expect(facade.canRejoin('group-1')).toBe(false);
-        events.next(synced(syncID, { state_revision: 5, participants: [{ user_id: 'self-1', device_id: 'device-1' }, { user_id: 'peer-1', device_id: 'peer-device' }] }));
+        events.next(synced(syncID, { ownership_status: 'active', state_revision: 5, participants: [{ user_id: 'self-1', device_id: 'device-1' }, { user_id: 'peer-1', device_id: 'peer-device' }] }));
         expect(facade.state.phase).toBe('left');
-        expect(facade.canRejoin('group-1')).toBe(true);
+        expect(facade.canRejoin('group-1')).toBe(false);
+        expect(sentGroupRequest('group.call.leave', 1)).not.toBe('');
     });
 
     it('keeps rejoin disabled when control room sync is sent unsuccessfully or rejected', async () => {
@@ -588,6 +1317,7 @@ describe('GroupCallFacade', () => {
         events.next(room('group.call.started', 'active'));
         ready.next(false);
         expect(facade.state.phase).toBe('error');
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.leave'}));
         await tick(30000);
         expect(vi.mocked(send).mock.calls.some(([event]) => event.type === 'group.call.sync')).toBe(false);
     }));
@@ -689,6 +1419,7 @@ describe('GroupCallFacade', () => {
         expect(facade.state.errorLabel).toBe('Group call unavailable: membership required');
         expect(facade.state.localStream).toBeUndefined();
         expect(track.stop).toHaveBeenCalledTimes(1);
+        expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.leave'}));
 
         await facade.join(room('group.call.started', 'active').payload, 'self-1');
         const secondRequestID = sentGroupRequest('group.call.join', 1);
@@ -1244,6 +1975,8 @@ describe('GroupCallFacade', () => {
         expect(facade.state.phase).toBe('ended');
 
         await facade.join(activeRoom, 'self-1');
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: sentRequestID('group.call.sync'), payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'}});
+        await facade.join(activeRoom, 'self-1');
         events.next(room('group.call.started', 'active'));
         facade.leave();
         expect(sentEvent('group.call.leave')?.payload.generation).toBe(activeRoom.generation);
@@ -1375,6 +2108,11 @@ describe('GroupCallFacade', () => {
             request_id: string;
         }).filter(event => event.type === type)[occurrence]?.request_id || '';
     }
+    function confirmRejoinDiscovery(revision: number): void {
+        events.next(absentSync(sentRequestID('group.call.sync')));
+        const discovered = room('group.call.started', 'active', 'group-1', 1, revision, [{user_id: 'peer-1', device_id: 'peer-device'}]);
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover'), payload: {conversation_id: 'group-1', room: discovered.payload}});
+    }
     function sentGroupRequest(type: 'group.call.start' | 'group.call.join' | 'group.call.leave' | 'group.call.end', occurrence = 0): string {
         const requests = vi.mocked(send).mock.calls.map(([event]) => event as {
             type: string;
@@ -1453,6 +2191,10 @@ function synced(requestID: string, override: Partial<GroupCallActiveSyncPayload>
 
 function endedSync(requestID: string): GroupCallSyncedSocketEvent {
     return { version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: requestID, payload: { room_id: 'room-1', generation: 1, status: 'ended' } };
+}
+
+function absentSync(requestID: string): GroupCallSyncedSocketEvent {
+    return { version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: requestID, payload: {room_id: 'room-1', generation: 1, status: 'ended', ownership_status: 'participant_absent'} };
 }
 
 function rejected(requestID: string, error: string): MessageSocketEvent {

@@ -1,4 +1,5 @@
 import {expect, Page, test} from '@playwright/test';
+import {restoreSession, fixtureToken} from './session-helpers';
 
 const password = 'Password123!';
 const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
@@ -16,11 +17,120 @@ function field(page: Page, name: string) {
   return page.locator('mat-form-field').filter({has: input(page, name)});
 }
 
-async function register(page: Page, email: string, nickname = 'Test User', baseURL = ''): Promise<string> {
-  const loginResponse = await page.context().request.post(`${adminBase}/api/auth/login`, {
-    data: {email: adminEmail, password, device_id: `e2e-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'},
+// Sample the browser-painted backdrop across each text line, not an assumed
+// gradient stop. Hiding only the text preserves all background compositing.
+async function renderedTextContrast(page: Page, selector: string): Promise<number> {
+  const element = page.locator(selector).first();
+  await element.scrollIntoViewIfNeeded();
+  const metrics = await element.evaluate(node => {
+    const style = getComputedStyle(node);
+    let opacity = 1;
+    for (let parent: Element | null = node; parent; parent = parent.parentElement) opacity *= Number(getComputedStyle(parent).opacity);
+    const ranges: {left: number; top: number; right: number; bottom: number}[] = [];
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      if (!walker.currentNode.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(walker.currentNode);
+      for (const rect of Array.from(range.getClientRects())) ranges.push({left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom});
+    }
+    return {color: style.color, opacity, ranges};
   });
-  const loginPayload = await loginResponse.json() as {access_token: string; token_type: string};
+  const style = await page.addStyleTag({content: `${selector} { color: transparent !important; text-shadow: none !important; }`});
+  let screenshot: Buffer;
+  try {
+    screenshot = await page.screenshot({scale: 'css', animations: 'disabled'});
+  } finally {
+    await style.evaluate(node => node.remove());
+  }
+  return page.evaluate(async ({image, metrics}) => {
+    const bytes = Uint8Array.from(atob(image), character => character.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], {type: 'image/png'}));
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext('2d');
+    if (!context || !metrics.ranges.length) return 0;
+    context.drawImage(bitmap, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const colorCanvas = document.createElement('canvas');
+    colorCanvas.width = colorCanvas.height = 1;
+    const colorContext = colorCanvas.getContext('2d');
+    if (!colorContext) return 0;
+    colorContext.fillStyle = metrics.color;
+    colorContext.fillRect(0, 0, 1, 1);
+    const foreground = colorContext.getImageData(0, 0, 1, 1).data;
+    const alpha = foreground[3] / 255 * metrics.opacity;
+    const luminance = (channels: number[]) => channels.map(value => {
+      const c = value / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    let minimum = Infinity;
+    for (const rect of metrics.ranges) {
+      if (rect.left < 0 || rect.top < 0 || rect.right > canvas.width || rect.bottom > canvas.height) return 0;
+      for (let y = Math.ceil(rect.top); y < Math.floor(rect.bottom); y++) {
+        for (let x = Math.ceil(rect.left); x < Math.floor(rect.right); x++) {
+          const index = (y * canvas.width + x) * 4;
+          const background = Array.from(pixels.slice(index, index + 3));
+          const rendered = background.map((channel, i) => foreground[i] * alpha + channel * (1 - alpha));
+          const bg = luminance(background), fg = luminance(rendered);
+          minimum = Math.min(minimum, (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05));
+        }
+      }
+    }
+    return Number.isFinite(minimum) ? minimum : 0;
+  }, {image: screenshot.toString('base64'), metrics});
+}
+
+// Compare painted outline pixels to their immediately adjacent painted backdrop
+// on each side, including translucent ancestor surfaces and gradients.
+async function renderedOutlineContrast(page: Page, selector: string): Promise<number> {
+  const metrics = await page.locator(selector).evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, offset: parseFloat(style.outlineOffset), width: parseFloat(style.outlineWidth)};
+  });
+  const screenshot = await page.screenshot({scale: 'css', animations: 'disabled'});
+  return page.evaluate(async ({image, metrics}) => {
+    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(image), c => c.charCodeAt(0))], {type: 'image/png'}));
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width; canvas.height = bitmap.height;
+    const context = canvas.getContext('2d');
+    if (!context) return 0;
+    context.drawImage(bitmap, 0, 0);
+    const luminance = (values: number[]) => values.map(value => {
+      const c = value / 255;
+      return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [ .2126, .7152, .0722 ][index], 0);
+    const pixel = (x: number, y: number): number | null => {
+      x = Math.floor(x); y = Math.floor(y);
+      if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return null;
+      return luminance(Array.from(context.getImageData(x, y, 1, 1).data.slice(0, 3)));
+    };
+    let minimum = Infinity;
+    // Stay on the straight portions of rounded outlines, away from antialiased corners.
+    for (const fraction of [0.4, 0.5, 0.6]) {
+      const x = metrics.left + (metrics.right - metrics.left) * fraction;
+      const y = metrics.top + (metrics.bottom - metrics.top) * fraction;
+      const middle = metrics.offset + metrics.width / 2;
+      const outside = metrics.offset + metrics.width + 1;
+      for (const [ringX, ringY, adjacentX, adjacentY] of [
+        [x, metrics.top - middle, x, metrics.top - outside],
+        [x, metrics.bottom + middle, x, metrics.bottom + outside],
+        [metrics.left - middle, y, metrics.left - outside, y],
+        [metrics.right + middle, y, metrics.right + outside, y],
+      ]) {
+        const ring = pixel(ringX, ringY), adjacent = pixel(adjacentX, adjacentY);
+        if (ring === null || adjacent === null) return 0;
+        minimum = Math.min(minimum, (Math.max(ring, adjacent) + .05) / (Math.min(ring, adjacent) + .05));
+      }
+    }
+    return minimum;
+  }, {image: screenshot.toString('base64'), metrics});
+}
+
+async function register(page: Page, email: string, nickname = 'Test User', baseURL = ''): Promise<string> {
+  const loginPayload = await fixtureToken(adminBase, adminEmail, password, 'E2E');
   const invitationResponse = await page.context().request.post(`${adminBase}/api/admin/invitations`, {
     headers: {Authorization: `${loginPayload.token_type} ${loginPayload.access_token}`},
     data: {email},
@@ -33,7 +143,7 @@ async function register(page: Page, email: string, nickname = 'Test User', baseU
   await input(page, 'nickName').fill(nickname);
   await input(page, 'password').fill(password);
   await input(page, 'confirmPassword').fill(password);
-  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/register') && response.request().method() === 'POST');
+  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   const response = await responsePromise;
   if (response.status() !== 201) {
@@ -47,12 +157,86 @@ async function register(page: Page, email: string, nickname = 'Test User', baseU
   return payload.access_token;
 }
 
+async function openProfile(page: Page): Promise<void> {
+  await page.getByRole('button', {name: 'Account menu'}).click();
+  await page.getByRole('menuitem', {name: 'Profile', exact: true}).click();
+}
+
 async function login(page: Page, email: string, value = password): Promise<void> {
   await page.goto('/login');
   await input(page, 'email').fill(email);
   await input(page, 'password').fill(value);
   await page.getByRole('button', {name: 'Sign in'}).click();
 }
+
+test('same-device tabs serialize push enable before account-scoped disable and retain browser subscription', async ({browser}, testInfo) => {
+  const base = process.env.BASE_URL ?? 'https://chat.localhost';
+  const context = await browser.newContext({ignoreHTTPSErrors: true});
+  try {
+    await context.addInitScript(() => {
+      Object.defineProperty(Notification, 'permission', {configurable: true, get: () => 'granted'});
+      const subscription = {
+        endpoint: 'https://fcm.googleapis.com/send/e2e-subscription',
+        options: {applicationServerKey: Uint8Array.from(atob('B'.repeat(87) + '='), c => c.charCodeAt(0)).buffer},
+        toJSON: () => ({endpoint: 'https://fcm.googleapis.com/send/e2e-subscription', keys: {p256dh: 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', auth: 'AAAAAAAAAAAAAAAAAAAAAA'}}),
+        unsubscribe: async () => { throw new Error('shared browser subscription must not be removed'); },
+      };
+      Object.defineProperty(PushManager.prototype, 'getSubscription', {configurable: true, value: async () => subscription});
+    });
+    await context.route('**/api/auth/push/vapid-public-key', route => route.fulfill({status: 200, json: {public_key: 'B'.repeat(87)}}));
+    const first = await context.newPage();
+    await register(first, uniqueEmail('push-tabs'), 'Push tabs', base);
+    await openProfile(first);
+    await first.getByRole('radio', {name: /Notifications and sounds/}).click();
+    const checkbox = (page: Page) => page.getByRole('checkbox', {name: 'Enable push notifications on this browser'});
+    await expect(checkbox(first)).toHaveJSProperty('indeterminate', true);
+    await checkbox(first).check();
+    await expect(first.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser.'})).toBeVisible();
+    const second = await context.newPage();
+    await restoreSession(second, () => second.goto(`${base}/profile`), 'profile', await first.evaluate(() => localStorage.getItem('zwei.intended-session')));
+    await expect(checkbox(second)).toHaveJSProperty('indeterminate', true);
+    await checkbox(second).check();
+    await expect(second.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser.'})).toBeVisible();
+
+    // Pause the actual save while it owns the browser-wide Web Lock. A disable
+    // from the other tab must not overtake it, even across independent facades.
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const saveStarted = new Promise<void>(resolve => { started = resolve; });
+    await first.route('**/api/auth/push-subscription', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      started();
+      await gate;
+      await route.continue();
+    });
+    // Re-enroll on the first tab after a server-side disable, then race the
+    // stale checked second tab's disable with that save.
+    const firstDelete = first.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/push-subscription/current' && response.request().method() === 'DELETE');
+    await checkbox(first).uncheck();
+    expect((await firstDelete).status()).toBe(204);
+    await expect(checkbox(first)).toHaveJSProperty('indeterminate', true);
+    await checkbox(first).check();
+    await saveStarted;
+    let deleteSeen = false;
+    second.on('request', request => { if (request.method() === 'DELETE' && new URL(request.url()).pathname === '/api/auth/push-subscription/current') deleteSeen = true; });
+    await checkbox(second).uncheck();
+    await expect(second.getByRole('status').filter({hasText: 'Updating this browser…'})).toBeVisible();
+    expect(deleteSeen).toBe(false);
+    const secondDelete = second.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/push-subscription/current' && response.request().method() === 'DELETE');
+    release();
+    await expect.poll(() => deleteSeen).toBe(true);
+    expect((await secondDelete).status()).toBe(204);
+    await expect(checkbox(second)).toHaveJSProperty('indeterminate', true);
+    await expect(second.getByRole('status').filter({hasText: 'Push registration for this account could not be confirmed'})).toBeVisible();
+    await second.screenshot({path: testInfo.outputPath('push-tabs-disabled.png'), fullPage: true});
+    await restoreSession(first, () => first.reload(), 'profile');
+    await expect(checkbox(first)).toHaveJSProperty('indeterminate', true);
+    expect(await first.evaluate(async () => !!(await (await navigator.serviceWorker.ready).pushManager.getSubscription()))).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
 
 test('profile push setup state stays contained across themes and target viewports', async ({page}, testInfo) => {
   const email = uniqueEmail('push-profile');
@@ -62,10 +246,10 @@ test('profile push setup state stays contained across themes and target viewport
     data: {alert_mode: 'notifications'},
   });
   expect(preference.ok()).toBeTruthy();
-  await page.goto('/profile');
+  await restoreSession(page, () => page.goto('/profile'), 'profile');
   await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await expect(page.getByRole('heading', {name: 'This browser'})).toBeVisible();
-  await expect(page.getByRole('status').filter({hasText: /Web Push is not supported|Notifications are blocked|Enable browser notifications|not currently registered|Push notifications are enabled/})).toHaveCount(1);
+  await expect(page.getByRole('status').filter({hasText: /Web Push is not supported|Notifications are blocked|Enable browser notifications|not currently registered|could not be confirmed|Push notifications are enabled/})).toHaveCount(1);
 
   for (const theme of ['light', 'dark'] as const) {
     await page.evaluate(selected => {
@@ -120,11 +304,15 @@ test('profile push setup state stays contained across themes and target viewport
 });
 
 test('profile push permission states preserve account preference and stay contained', async ({browser}, testInfo) => {
+  // Four browser contexts each exercise ten viewport/theme combinations,
+  // including focus, tooltip animation, geometry and screenshot assertions.
+  test.setTimeout(90_000);
   const chatBase = process.env.BASE_URL ?? 'https://chat.localhost';
   const origin = new URL(chatBase).origin;
   const cases = [
     {state: 'not-enrolled', permission: 'granted' as const},
     {state: 'denied', permission: 'denied' as const},
+    {state: 'unverified', permission: 'granted' as const},
     {state: 'enabled', permission: 'granted' as const},
   ];
 
@@ -150,20 +338,24 @@ test('profile push permission states preserve account preference and stay contai
       }
       // Headless Chromium in this Docker setup reports notifications as denied
       // despite per-context grants; pin the exposed state before any navigation.
-      await context.addInitScript(({permissionState, enabled}: {permissionState: NotificationPermission; enabled: boolean}) => {
+      await context.addInitScript(({permissionState, subscribed}: {permissionState: NotificationPermission; subscribed: boolean}) => {
         if (typeof Notification !== 'undefined') {
           Object.defineProperty(Notification, 'permission', {configurable: true, get: () => permissionState});
         }
         // SwPush's initial subscription observable reads PushManager.getSubscription().
-        // Return only a non-null sentinel for this test state; do not subscribe to
-        // the push provider or alter browser subscription ownership.
-        if (enabled && typeof PushManager !== 'undefined') {
+        // Model a browser subscription without contacting a push provider.
+        if (subscribed && typeof PushManager !== 'undefined') {
           Object.defineProperty(PushManager.prototype, 'getSubscription', {
             configurable: true,
-            value: async () => ({testOnlyProfileSubscription: true}),
+            value: async () => ({
+              endpoint: 'https://push.example.test/subscription',
+              options: {applicationServerKey: Uint8Array.from(atob('B'.repeat(87) + '='), c => c.charCodeAt(0)).buffer},
+              toJSON: () => ({endpoint: 'https://push.example.test/subscription', keys: {p256dh: 'test-key', auth: 'test-auth'}}),
+              unsubscribe: async () => true,
+            }),
           });
         }
-      }, {permissionState: permission, enabled: state === 'enabled'});
+      }, {permissionState: permission, subscribed: state === 'enabled' || state === 'unverified'});
 
       const accessToken = await register(page, uniqueEmail(`push-${state}`), `Push ${state}`, chatBase);
       expect(await page.evaluate(() => Notification.permission), `${state}: notification permission after registration`).toBe(permission);
@@ -172,26 +364,34 @@ test('profile push permission states preserve account preference and stay contai
         data: {alert_mode: 'notifications'},
       });
       expect(preference.ok(), `${state}: save account notification preference`).toBeTruthy();
-      await page.goto(`${chatBase}/profile`);
+      if (state === 'enabled' || state === 'unverified') {
+        await page.route('**/api/auth/push/vapid-public-key', route => route.fulfill({status: 200, json: {public_key: 'B'.repeat(87)}}));
+        await page.route('**/api/auth/push-subscription/verify', route => route.fulfill({status: 200, json: {matches: state === 'enabled'}}));
+      }
+      await restoreSession(page, () => page.goto(`${chatBase}/profile`), 'profile');
       await expect(page.getByRole('heading', {name: 'This browser'})).toBeVisible();
+      const pushCheckbox = page.getByRole('checkbox', {name: 'Enable push notifications on this browser'});
 
       if (state === 'not-enrolled') {
         await expect(page.getByRole('status').filter({hasText: 'This browser is not currently registered to receive push notifications.'})).toBeVisible();
-        await expect(page.getByRole('button', {name: 'Enable on this browser'})).toBeVisible();
+        await expect(pushCheckbox).not.toBeChecked();
       } else if (state === 'enabled') {
-        const enabledStatus = page.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser. Use the button to repair or refresh this subscription.'});
+        const enabledStatus = page.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser.'});
         await expect(enabledStatus).toHaveCount(1);
         await expect(enabledStatus).toBeVisible();
-        const refreshButton = page.getByRole('button', {name: 'Refresh browser subscription', exact: true});
-        await expect(refreshButton).toBeVisible();
-        await expect(refreshButton).toHaveText('Refresh browser subscription');
-        await expect(refreshButton).toBeEnabled();
+        await expect(pushCheckbox).toBeChecked();
+      } else if (state === 'unverified') {
+        await expect(page.getByRole('status').filter({hasText: 'Push registration for this account could not be confirmed'})).toBeVisible();
+        await expect(pushCheckbox).toHaveJSProperty('indeterminate', true);
+        const disable = page.getByRole('button', {name: 'Disable push for this account'});
+        await expect(disable).toBeVisible();
       } else {
         await expect(page.getByRole('status').filter({hasText: 'Notifications are blocked. Allow them in this browser’s site settings, then re-enable here.'})).toBeVisible();
+        await expect(pushCheckbox).toBeDisabled();
       }
       await expect(page.getByRole('radio', {name: /Notifications and sounds/})).toHaveAttribute('aria-checked', 'true');
 
-      if (state === 'enabled') {
+      if (state === 'not-enrolled') {
         let releaseVapidResponse!: () => void;
         const vapidResponseGate = new Promise<void>(resolve => { releaseVapidResponse = resolve; });
         let requestStarted!: () => void;
@@ -201,16 +401,15 @@ test('profile push permission states preserve account preference and stay contai
           await vapidResponseGate;
           await route.fulfill({status: 503, contentType: 'application/json', body: '{}'});
         });
-        await page.getByRole('button', {name: 'Refresh browser subscription', exact: true}).click();
+        await pushCheckbox.check();
         await vapidRequestStarted;
-        const savingButton = page.getByRole('button', {name: 'Enabling…', exact: true});
-        await expect(savingButton).toBeDisabled();
-        await expect(savingButton).toHaveText('Enabling…');
-        await expect(page.getByRole('status').filter({hasText: 'Registering this browser…'})).toBeVisible();
+        await expect(pushCheckbox).toBeDisabled();
+        await expect(page.getByRole('status').filter({hasText: 'Updating this browser…'})).toBeVisible();
         releaseVapidResponse();
-        await expect(page.getByRole('button', {name: 'Refresh browser subscription', exact: true})).toBeEnabled();
+        await expect(pushCheckbox).toBeEnabled();
+        await expect(pushCheckbox).not.toBeChecked();
+        await expect(page.getByRole('alert').filter({hasText: 'Could not enable notifications'})).toBeVisible();
         await page.unroute('**/api/auth/push/vapid-public-key');
-        await expect(page.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser. Use the button to repair or refresh this subscription.'})).toHaveCount(1);
       }
 
       for (const theme of ['light', 'dark'] as const) {
@@ -231,52 +430,21 @@ test('profile push permission states preserve account preference and stay contai
             const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.profile-card button'));
             const rects = buttons.map(button => button.getBoundingClientRect());
             const cardRect = card?.getBoundingClientRect();
-            const cta = pushState?.querySelector<HTMLButtonElement>('button');
-            const ctaStyle = cta ? getComputedStyle(cta) : null;
+            const cta = pushState?.querySelector<HTMLInputElement>('input[type="checkbox"]');
             const ctaRect = cta?.getBoundingClientRect();
+            const pushLabel = pushState?.querySelector<HTMLElement>('label');
+            const pushStatus = pushState?.querySelector<HTMLElement>('[role="status"]');
+            const pushRect = pushState?.getBoundingClientRect();
+            const containedInPush = (element: HTMLElement | null | undefined): boolean => {
+              if (!element || !pushRect) return false;
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && rect.left >= pushRect.left && rect.right <= pushRect.right && rect.top >= pushRect.top && rect.bottom <= pushRect.bottom && element.scrollWidth <= element.clientWidth;
+            };
             const mediaRow = document.querySelector<HTMLElement>('.media-disclosure-row');
             const infoButton = document.querySelector<HTMLButtonElement>('.media-info-button');
-            const mediaLabel = document.querySelector<HTMLElement>('.media-preference');
             const mediaCopy = mediaRow?.querySelector('p');
             const infoRect = infoButton?.getBoundingClientRect();
             const copyRect = mediaCopy?.getBoundingClientRect();
-            const contrast = (foreground: string, background: string): number => {
-              const canvas = document.createElement('canvas');
-              canvas.width = 1;
-              canvas.height = 1;
-              const context = canvas.getContext('2d');
-              if (!context) return 0;
-              const luminance = (color: string): number => {
-                context.clearRect(0, 0, 1, 1);
-                context.fillStyle = color;
-                context.fillRect(0, 0, 1, 1);
-                const channels = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(channel => {
-                  const normalized = channel / 255;
-                  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
-                });
-                return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
-              };
-              const foregroundLuminance = luminance(foreground);
-              const backgroundLuminance = luminance(background);
-              return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
-            };
-            const renderedCardSurface = (): string => {
-              const canvas = document.createElement('canvas');
-              canvas.width = 1;
-              canvas.height = 1;
-              const context = canvas.getContext('2d');
-              if (!context || !card) return 'rgb(255, 255, 255)';
-              const isDarkTheme = document.documentElement.classList.contains('dark-theme');
-              // Use the warmest full-strength point of the light page gradient as
-              // the translucent card's backing surface; this is conservative for
-              // the rendered card. Dark cards are opaque and use their actual fill.
-              context.fillStyle = isDarkTheme ? '#202c3b' : '#f8dfc1';
-              context.fillRect(0, 0, 1, 1);
-              context.fillStyle = getComputedStyle(card).backgroundColor;
-              context.fillRect(0, 0, 1, 1);
-              const [red, green, blue] = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3);
-              return `rgb(${red}, ${green}, ${blue})`;
-            };
             return {
               noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
               cardContained: Boolean(cardRect && cardRect.left >= 0 && cardRect.right <= window.innerWidth),
@@ -284,14 +452,11 @@ test('profile push permission states preserve account preference and stay contai
               mediaRowContained: Boolean(cardRect && mediaRow && mediaRow.getBoundingClientRect().left >= cardRect.left && mediaRow.getBoundingClientRect().right <= cardRect.right),
               mediaInfoContained: Boolean(cardRect && infoButton && infoButton.getBoundingClientRect().left >= cardRect.left && infoButton.getBoundingClientRect().right <= cardRect.right),
               mediaCopyAndInfoDoNotOverlap: Boolean(infoRect && copyRect && (copyRect.right <= infoRect.left || infoRect.right <= copyRect.left || copyRect.bottom <= infoRect.top || infoRect.bottom <= copyRect.top)),
-              mediaLabelContrast: mediaLabel ? contrast(getComputedStyle(mediaLabel).color, renderedCardSurface()) : 0,
-              mediaCopyContrast: mediaCopy ? contrast(getComputedStyle(mediaCopy).color, renderedCardSurface()) : 0,
+              pushLabelContained: containedInPush(pushLabel),
+              pushStatusContained: containedInPush(pushStatus),
               buttonsContained: rects.every(rect => Boolean(cardRect && rect.left >= cardRect.left && rect.right <= cardRect.right)),
               buttonsDoNotOverlap: rects.every((rect, index) => rects.slice(index + 1).every(other => rect.right <= other.left || rect.left >= other.right || rect.bottom <= other.top || rect.top >= other.bottom)),
-              ctaStyled: Boolean(ctaStyle && ctaRect && ctaRect.height >= 44 && ctaStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' && ctaStyle.backgroundColor !== 'rgb(239, 239, 239)' && ctaStyle.color !== 'rgb(0, 0, 0)' && ctaStyle.borderRadius !== '0px'),
-              ctaContrast: ctaStyle ? contrast(ctaStyle.color, ctaStyle.backgroundColor) : 0,
-              ctaColors: ctaStyle ? `${ctaStyle.color} on ${ctaStyle.backgroundColor}` : 'missing',
-              ctaDisabled: Boolean(cta?.disabled),
+              checkboxContained: Boolean(ctaRect && cardRect && ctaRect.left >= cardRect.left && ctaRect.right <= cardRect.right && ctaRect.width > 0 && ctaRect.height > 0),
             };
           });
           expect(layout, `${state} ${theme} Profile at ${viewport.width}x${viewport.height}`).toEqual({
@@ -301,90 +466,66 @@ test('profile push permission states preserve account preference and stay contai
             mediaRowContained: true,
             mediaInfoContained: true,
             mediaCopyAndInfoDoNotOverlap: true,
-            mediaLabelContrast: expect.any(Number),
-            mediaCopyContrast: expect.any(Number),
+            pushLabelContained: true,
+            pushStatusContained: true,
             buttonsContained: true,
             buttonsDoNotOverlap: true,
-            ctaStyled: true,
-            ctaContrast: expect.any(Number),
-            ctaColors: expect.any(String),
-            ctaDisabled: expect.any(Boolean),
+            checkboxContained: true,
           });
-          expect(layout.ctaContrast, `${state} ${theme} CTA contrast at ${viewport.width}x${viewport.height}: ${layout.ctaColors}, disabled=${layout.ctaDisabled}`).toBeGreaterThanOrEqual(4.5);
-          expect(layout.mediaLabelContrast, `${state} ${theme} inline-media label contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
-          expect(layout.mediaCopyContrast, `${state} ${theme} inline-media disclosure copy contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          expect(await renderedTextContrast(page, '[aria-labelledby="media-settings-title"] .media-preference'), `${state} ${theme} inline-media label contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          expect(await renderedTextContrast(page, '.media-disclosure-row p'), `${state} ${theme} inline-media disclosure copy contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          expect(await renderedTextContrast(page, '[aria-labelledby="push-settings-title"] label'), `${state} ${theme} push checkbox label contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          expect(await renderedTextContrast(page, '[aria-labelledby="push-settings-title"] [role="status"]'), `${state} ${theme} push status contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          if (state === 'unverified') {
+            expect(await renderedTextContrast(page, '[aria-labelledby="push-settings-title"] button'), `${state} ${theme} disable push action contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
+          }
           await page.locator('[aria-labelledby="push-settings-title"]').scrollIntoViewIfNeeded();
           const expectedStatus = state === 'denied'
             ? 'Notifications are blocked.'
             : state === 'enabled'
-              ? 'Push notifications are enabled on this browser. Use the button to repair or refresh this subscription.'
-              : 'This browser is not currently registered';
+              ? 'Push notifications are enabled on this browser.'
+              : state === 'unverified' ? 'Push registration for this account could not be confirmed' : 'This browser is not currently registered';
           await expect(page.getByRole('status').filter({hasText: expectedStatus})).toBeInViewport();
           if (state === 'enabled') {
             await expect(page.getByRole('status').filter({hasText: expectedStatus})).toHaveCount(1);
           }
-          const buttonName = state === 'enabled' ? 'Refresh browser subscription' : 'Enable on this browser';
-          const enableButton = page.getByRole('button', {name: buttonName, exact: true});
-          await expect(enableButton).toBeEnabled();
-          await expect(enableButton).toHaveText(buttonName);
-          await expect(enableButton).toBeInViewport();
-          const restingBackground = await enableButton.evaluate(button => getComputedStyle(button).backgroundColor);
-          await enableButton.hover();
-          const hoverBackground = await enableButton.evaluate(button => getComputedStyle(button).backgroundColor);
-          expect(hoverBackground, `${state} ${theme} CTA hover at ${viewport.width}x${viewport.height}`).not.toBe(restingBackground);
-          await page.getByRole('radio', {name: /Notifications and sounds/}).focus();
-          await page.keyboard.press('Tab');
-          await expect(enableButton).toBeFocused();
-          const focusStyle = await enableButton.evaluate(button => ({
-            outlineStyle: getComputedStyle(button).outlineStyle,
-            outlineWidth: getComputedStyle(button).outlineWidth,
-            outlineColor: getComputedStyle(button).outlineColor,
-            focusedVisible: button.matches(':focus-visible'),
-            rect: (() => { const {x, y, width, height} = button.getBoundingClientRect(); return {x, y, width, height}; })(),
-          }));
-          expect(focusStyle.focusedVisible, `${state} ${theme} CTA keyboard focus at ${viewport.width}x${viewport.height}`).toBe(true);
-          expect(focusStyle.outlineStyle).toBe('solid');
-          expect(focusStyle.outlineWidth).toBe('3px');
-          expect(focusStyle.outlineColor).toBe('rgb(23, 105, 194)');
-          expect(focusStyle.rect.width).toBeGreaterThan(0);
-          expect(focusStyle.rect.height).toBeGreaterThanOrEqual(44);
-          await page.screenshot({path: testInfo.outputPath(`profile-push-${state}-${theme}-${viewport.width}x${viewport.height}-focus.png`), fullPage: true});
-          await enableButton.evaluate(button => { (button as HTMLButtonElement).disabled = true; });
-          const disabledStyle = await enableButton.evaluate(button => {
-            const style = getComputedStyle(button);
-            const canvas = document.createElement('canvas');
-            canvas.width = 1;
-            canvas.height = 1;
-            const context = canvas.getContext('2d');
-            const luminance = (color: string): number => {
-              if (!context) return 0;
-              context.clearRect(0, 0, 1, 1);
-              context.fillStyle = color;
-              context.fillRect(0, 0, 1, 1);
-              const channels = Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3).map(channel => {
-                const normalized = channel / 255;
-                return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+          await expect(pushCheckbox).toBeInViewport();
+          // A tooltip from the preceding viewport can still be fading out.
+          await page.keyboard.press('Escape');
+          await expect(page.locator('.cdk-overlay-container .profile-media-disclosure-tooltip')).toHaveCount(0);
+          if (state !== 'denied') {
+            await page.getByRole('radio', {name: /Notifications and sounds/}).focus();
+            await page.keyboard.press('Tab');
+            await expect(pushCheckbox).toBeFocused();
+            await expect(pushCheckbox).toHaveCSS('outline-style', 'solid');
+            await expect(pushCheckbox).toHaveCSS('outline-width', '3px');
+            expect(await pushCheckbox.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+            const focusContrast = await renderedOutlineContrast(page, '[aria-labelledby="push-settings-title"] input[type="checkbox"]');
+            expect(focusContrast, `${state} ${theme} checkbox focus contrast`).toBeGreaterThanOrEqual(3);
+            if (state === 'unverified') {
+              const disable = page.getByRole('button', {name: 'Disable push for this account'});
+              await page.keyboard.press('Tab');
+              await expect(disable).toBeFocused();
+              expect(await disable.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+              await expect(disable).toHaveCSS('outline-style', 'solid');
+              await expect(disable).toHaveCSS('outline-width', '3px');
+              const clearance = await disable.evaluate(button => {
+                const label = button.parentElement?.querySelector('label');
+                if (!label) return -1;
+                const style = getComputedStyle(button);
+                return button.getBoundingClientRect().top - label.getBoundingClientRect().bottom - parseFloat(style.outlineOffset) - parseFloat(style.outlineWidth);
               });
-              return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
-            };
-            const foreground = luminance(style.color);
-            const background = luminance(style.backgroundColor);
-            return {
-              background: style.backgroundColor,
-              color: style.color,
-              cursor: style.cursor,
-              contrast: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05),
-            };
-          });
-          expect(disabledStyle.background).not.toBe('rgba(0, 0, 0, 0)');
-          expect(disabledStyle.color).not.toBe('rgb(0, 0, 0)');
-          expect(disabledStyle.cursor).toBe('not-allowed');
-          expect(disabledStyle.contrast, `${state} ${theme} disabled CTA contrast at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(4.5);
-          await enableButton.evaluate(button => { (button as HTMLButtonElement).disabled = false; });
+              expect(clearance, `${state} ${theme} disable focus ring clears checkbox label`).toBeGreaterThanOrEqual(1);
+              expect(await renderedOutlineContrast(page, '[aria-labelledby="push-settings-title"] button'), `${state} ${theme} disable push focus contrast`).toBeGreaterThanOrEqual(3);
+            }
+          }
+          await page.screenshot({path: testInfo.outputPath(`profile-push-${state}-${theme}-${viewport.width}x${viewport.height}-focus.png`), fullPage: true});
           const infoButton = page.getByRole('button', {name: 'GIPHY loading privacy details'});
           const checkbox = page.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'});
           await expect(checkbox).not.toBeChecked();
-          await enableButton.focus();
+          await page.getByRole('radio', {name: /Notifications and sounds/}).focus();
+          if (state !== 'denied') await page.keyboard.press('Tab');
+          if (state === 'unverified') await page.keyboard.press('Tab');
           await page.keyboard.press('Tab');
           await expect(infoButton).toBeFocused();
           await expect(infoButton).toHaveCSS('outline-style', 'solid');
@@ -397,6 +538,7 @@ test('profile push permission states preserve account preference and stay contai
           const tooltip = page.locator('.cdk-overlay-container .profile-media-disclosure-tooltip');
           await expect(tooltip).toBeVisible();
           await expect(tooltip).toHaveText(disclosure);
+          await expect(tooltip).toHaveCSS('opacity', '1');
           const tooltipRect = await tooltip.boundingBox();
           expect(tooltipRect, `${theme} tooltip at ${viewport.width}x${viewport.height} is rendered`).not.toBeNull();
           if (!tooltipRect) throw new Error('Expected the privacy disclosure tooltip to render.');
@@ -404,7 +546,7 @@ test('profile push permission states preserve account preference and stay contai
           expect(tooltipRect.x + tooltipRect.width, `${theme} tooltip right at ${viewport.width}x${viewport.height}`).toBeLessThanOrEqual(viewport.width);
           expect(tooltipRect.y, `${theme} tooltip top at ${viewport.width}x${viewport.height}`).toBeGreaterThanOrEqual(0);
           expect(tooltipRect.y + tooltipRect.height, `${theme} tooltip bottom at ${viewport.width}x${viewport.height}`).toBeLessThanOrEqual(viewport.height);
-          const pushActionRect = await enableButton.boundingBox();
+          const pushActionRect = await pushCheckbox.boundingBox();
           const mediaCheckboxRect = await checkbox.boundingBox();
           if (pushActionRect && mediaCheckboxRect) {
             const overlaps = (rect: {x: number; y: number; width: number; height: number}) =>
@@ -419,6 +561,14 @@ test('profile push permission states preserve account preference and stay contai
           await expect(checkbox).not.toBeChecked();
           await page.screenshot({path: testInfo.outputPath(`profile-push-${state}-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: true});
         }
+      }
+      if (state === 'unverified') {
+        const disable = page.getByRole('button', {name: 'Disable push for this account'});
+        const removal = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/push-subscription/current' && response.request().method() === 'DELETE');
+        await disable.click();
+        expect((await removal).ok()).toBeTruthy();
+        await expect(pushCheckbox).not.toBeChecked();
+        await expect(pushCheckbox).toHaveJSProperty('indeterminate', true);
       }
     } finally {
       await context.close();
@@ -459,21 +609,22 @@ test('profile recovers from a browser push service that never responds', async (
       contentType: 'application/json',
       body: JSON.stringify({public_key: 'B'.repeat(87)}),
     }));
-    await page.goto(`${chatBase}/profile`);
+    await restoreSession(page, () => page.goto(`${chatBase}/profile`), 'profile');
     await expect(page.getByRole('heading', {name: 'This browser'})).toBeVisible();
     await page.clock.install();
-    await page.getByRole('button', {name: 'Enable on this browser'}).click();
-    const enabling = page.getByRole('button', {name: 'Enabling…', exact: true});
+    const enabling = page.getByRole('checkbox', {name: 'Enable push notifications on this browser'});
+    await enabling.check();
     await expect(enabling).toBeDisabled();
-    await expect(page.getByRole('status').filter({hasText: 'Registering this browser…'})).toBeVisible();
+    await expect(page.getByRole('status').filter({hasText: 'Updating this browser…'})).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as Window & {__pushSubscribeCallCount?: number}).__pushSubscribeCallCount ?? 0)).toBe(1);
     await page.clock.fastForward(25_000);
     const timeoutMessage = page.getByRole('alert').filter({hasText: 'This browser’s push service did not respond'});
     await expect(timeoutMessage).toContainText('Safari or Google Chrome');
-    const retry = page.getByRole('button', {name: 'Enable on this browser', exact: true});
+    const retry = enabling;
     await expect(retry).toBeEnabled();
-    await expect(page.getByRole('status').filter({hasText: 'Registering this browser…'})).toHaveCount(0);
-    await retry.click();
+    await expect(retry).not.toBeChecked();
+    await expect(page.getByRole('status').filter({hasText: 'Updating this browser…'})).toHaveCount(0);
+    await retry.check();
     await expect.poll(() => page.evaluate(() => (window as Window & {__pushSubscribeCallCount?: number}).__pushSubscribeCallCount ?? 0)).toBe(2);
   } finally {
     await context.close();
@@ -1123,9 +1274,7 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
 
   await login(page, email);
   await expect(page).toHaveURL(/\/home$/);
-  const refreshResponse = page.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
-  await page.reload();
-  expect((await refreshResponse).status()).toBe(200);
+  await restoreSession(page, () => page.reload(), 'home');
   await expect(page).toHaveURL(/\/home$/);
   await expect(page.getByRole('button', {name: 'Account menu'})).toBeVisible();
   await expect(page.getByRole('heading', {name: 'Choose a conversation'})).toBeVisible();
@@ -1279,14 +1428,14 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   const soundsOnly = page.getByRole('radio', {name: /Sounds only/});
   await soundsOnly.click();
   await expect(soundsOnly).toHaveAttribute('aria-checked', 'true');
-  await page.reload();
+  await restoreSession(page, () => page.reload(), 'profile');
   await expect(page.getByRole('radio', {name: /Sounds only/})).toHaveAttribute('aria-checked', 'true');
   const separateBrowser = await browser.newContext();
   try {
     const otherPage = await separateBrowser.newPage();
     await login(otherPage, email);
     await expect(otherPage).toHaveURL(/\/home$/);
-    await otherPage.goto('/profile');
+    await restoreSession(otherPage, () => otherPage.goto('/profile'), 'profile');
     await expect(otherPage.getByRole('heading', {name: 'Profile'})).toBeVisible();
     await expect(otherPage.getByRole('radio', {name: /Sounds only/})).toHaveAttribute('aria-checked', 'true');
     expect(await otherPage.evaluate(() => window.localStorage.getItem('zwei_alert_mode'))).toBeNull();
@@ -1295,7 +1444,7 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   }
   for (const theme of ['light', 'dark'] as const) {
     await page.evaluate(value => window.localStorage.setItem('zwei_theme', value), theme);
-    await page.reload();
+    await restoreSession(page, () => page.reload(), 'profile');
     await expect(page.getByRole('heading', {name: 'Profile'})).toBeVisible();
     for (const viewport of [
       {width: 2560, height: 1440},

@@ -60,6 +60,24 @@ jobs:
       - name: Apply database migrations
         run: make -C infrastructure APP_NAME=messenger-go-tests migrate
 
+      - name: Prepare isolated fingerprint test database
+        run: |
+          docker compose -p messenger-go-tests --env-file infrastructure/.env -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml exec -T database sh -ec '
+            createdb -U "$POSTGRES_USER" messenger_test
+            for migration in /migrations/*.sql; do
+              psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d messenger_test -f "$migration"
+            done
+          '
+
+      - name: Run destructive fingerprint integration tests without skips
+        env:
+          ZWEI_TEST_DATABASE_URL: postgres://messenger_user:user-password@127.0.0.1:3379/messenger_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v -run '^(TestPushFingerprintIdentityIsDurableConcurrentAndRekeyDeletesSubscriptions|TestRealtimePushFingerprintIdentityRejectsChangedKeyWithoutMutation)$' ./services/auth/internal/persistence/postgres ./services/realtime/internal/infrastructure/postgres | tee fingerprint-test.log
+          grep -q '^--- PASS: TestPushFingerprintIdentityIsDurableConcurrentAndRekeyDeletesSubscriptions ' fingerprint-test.log
+          grep -q '^--- PASS: TestRealtimePushFingerprintIdentityRejectsChangedKeyWithoutMutation ' fingerprint-test.log
+
       - name: Run Go tests with race detection
         env:
           ZWEI_TEST_DATABASE_URL: postgres://messenger_user:user-password@127.0.0.1:3379/messenger?sslmode=disable

@@ -1,5 +1,6 @@
 import {getDeviceID} from '../login/login';
 import {Token} from '../auth/token';
+import type {ContinuedBrowserSession} from '../auth/browser-session.client';
 
 export interface RegistrationForm {
     email: string;
@@ -23,7 +24,7 @@ export interface PendingRegistrationResponse {
     status: 'pending';
 }
 
-export type RegistrationResponse = Token | PendingRegistrationResponse;
+export type RegistrationResponse = Token | ContinuedBrowserSession | PendingRegistrationResponse;
 
 export class RegistrationModel implements Registration {
     constructor(

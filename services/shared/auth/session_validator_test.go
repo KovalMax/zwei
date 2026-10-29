@@ -15,9 +15,11 @@ func TestWebSocketTicketCannotAuthenticateAsBearer(t *testing.T) {
 	secret := []byte("01234567890123456789012345678901")
 	userID := uuid.New()
 	ticket, err := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
-		SessionVersion: 7,
-		DeviceID:       "browser-1",
-		Purpose:        "websocket",
+		SessionVersion:    7,
+		DeviceID:          "browser-1",
+		BrowserID:         uuid.NewString(),
+		BrowserGeneration: uuid.NewString(),
+		Purpose:           "websocket",
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute)),
@@ -74,10 +76,10 @@ func (r testSessionVersionRow) Scan(dest ...any) error {
 	if len(dest) != 1 {
 		return errors.New("unexpected scan destination")
 	}
-	version, ok := dest[0].(*int64)
+	active, ok := dest[0].(*bool)
 	if !ok {
 		return errors.New("unexpected scan destination type")
 	}
-	*version = r.version
+	*active = true
 	return nil
 }

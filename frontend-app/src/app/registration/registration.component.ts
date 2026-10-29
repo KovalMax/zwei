@@ -8,6 +8,7 @@ import {RegistrationErrorResponse} from './registration.error.model';
 import {finalize} from 'rxjs/operators';
 import {ControlsOf} from '../shared/model/controlOf';
 import {AuthService} from '../auth/auth.service';
+import {AuthCookieLockUnavailableError} from '../auth/auth-cookie-lock.service';
 
 @Component({
     standalone: false,
@@ -60,7 +61,7 @@ export class RegistrationComponent {
                       this.authService.acceptToken(token);
                       void this.router.navigate([this.authService.defaultAuthenticatedRoute()]);
                  },
-                error: (error: RegistrationErrorResponse) => this.showError(this.registrationErrorMessage(error)),
+                error: (error: RegistrationErrorResponse | AuthCookieLockUnavailableError) => this.showError(error instanceof AuthCookieLockUnavailableError ? error.message : this.registrationErrorMessage(error)),
             });
     }
 

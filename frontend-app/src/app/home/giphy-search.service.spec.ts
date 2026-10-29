@@ -4,12 +4,14 @@ import {TestBed} from '@angular/core/testing';
 import {Router} from '@angular/router';
 import {AuthInterceptorService, SKIP_AUTH_INTERCEPTOR} from '../auth/auth-interceptor.service';
 import {AuthService} from '../auth/auth.service';
+import {AuthCookieLockService} from '../auth/auth-cookie-lock.service';
 import {HostService} from '../auth/host.service';
 import {PwaService} from '../pwa/pwa.service';
 import {GiphySearchService} from './giphy-search.service';
 
 const KEY_URL = 'https://chat.localhost/api/auth/giphy-key';
 const SEARCH_URL = 'https://api.giphy.com/v1/gifs/search';
+const accessToken = (subject: string) => `header.${btoa(JSON.stringify({sub: subject}))}.signature`;
 const GIF = {id: 'approved', title: 'Cat', rating: 'g', images: {fixed_height: {url: 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif'}}};
 const page = (data: unknown[], offset = 0, count = data.length, total_count = count) => ({data, meta: {pagination: {offset, count, total_count}}});
 
@@ -29,19 +31,21 @@ describe('GiphySearchService', () => {
             imports: [HttpClientTestingModule],
             providers: [
                 HostService,
+                {provide: AuthCookieLockService, useValue: {run: (work: () => unknown) => work()}},
                 {provide: HTTP_INTERCEPTORS, useClass: AuthInterceptorService, multi: true},
                 {provide: PwaService, useValue: {confirmNetworkResponse: vi.fn()}},
                 {provide: Router, useValue: {url: '/home', parseUrl: () => ({root: {children: {primary: {segments: [{path: 'home'}]}}}}), navigate: vi.fn()}},
             ],
         });
         auth = TestBed.inject(AuthService);
-        auth.acceptToken({token_type: 'Bearer', access_token: 'test-access-token', expires_in: 3600});
+        auth.acceptToken({browser_id: 'browser', generation: 'one', token_type: 'Bearer', access_token: accessToken('first'), expires_in: 3600});
         service = TestBed.inject(GiphySearchService);
         http = TestBed.inject(HttpTestingController);
     });
 
     afterEach(() => {
         http.verify();
+        localStorage.removeItem('zwei.intended-session');
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
     });
@@ -62,7 +66,7 @@ describe('GiphySearchService', () => {
     function grantKey(key = 'provider-key'): void {
         const request = http.expectOne(KEY_URL);
         expect(request.request.method).toBe('GET');
-        expect(request.request.headers.get('Authorization')).toBe('Bearer test-access-token');
+        expect(request.request.headers.get('Authorization')).toBe(`Bearer ${accessToken('first')}`);
         expect(request.request.context.get(SKIP_AUTH_INTERCEPTOR)).toBe(false);
         request.flush({api_key: key});
     }
@@ -205,10 +209,10 @@ describe('GiphySearchService', () => {
         service.search('first').subscribe();
         grantKey();
         await flushFetch();
-        auth.acceptToken({token_type: 'Bearer', access_token: 'replacement-token', expires_in: 3600});
+        auth.acceptToken({browser_id: 'browser', generation: 'one', token_type: 'Bearer', access_token: accessToken('replacement'), expires_in: 3600});
         service.search('after-change').subscribe();
         const request = http.expectOne(KEY_URL);
-        expect(request.request.headers.get('Authorization')).toBe('Bearer replacement-token');
+        expect(request.request.headers.get('Authorization')).toBe(`Bearer ${accessToken('replacement')}`);
         request.flush({api_key: 'replacement-key'});
         expect(searchRequest().url.searchParams.get('api_key')).toBe('replacement-key');
         await flushFetch();
@@ -229,10 +233,10 @@ describe('GiphySearchService', () => {
         expect(staleError).toBe('GIPHY search was interrupted. Try again.');
         expect(staleSearchCompleted).toBe(false);
 
-        auth.acceptToken({token_type: 'Bearer', access_token: 'new-account-token', expires_in: 3600});
+        auth.acceptToken({browser_id: 'browser', generation: 'one', token_type: 'Bearer', access_token: accessToken('new-account'), expires_in: 3600});
         service.search('after-login').subscribe();
         const freshGrant = http.expectOne(KEY_URL);
-        expect(freshGrant.request.headers.get('Authorization')).toBe('Bearer new-account-token');
+        expect(freshGrant.request.headers.get('Authorization')).toBe(`Bearer ${accessToken('new-account')}`);
         freshGrant.flush({api_key: 'new-account-key'});
         expect(searchRequest().url.searchParams.get('api_key')).toBe('new-account-key');
     });

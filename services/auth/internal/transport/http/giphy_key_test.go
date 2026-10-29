@@ -102,6 +102,6 @@ func (revokedHTTPReader) QueryRow(context.Context, string, ...any) pgx.Row {
 type revokedHTTPSessionRow struct{}
 
 func (revokedHTTPSessionRow) Scan(dest ...any) error {
-	*dest[0].(*int64) = 2
+	*dest[0].(*bool) = false
 	return nil
 }

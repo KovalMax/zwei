@@ -136,13 +136,13 @@
             <mat-form-field appearance="outline">
                 <textarea #messageDraft matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [attr.aria-haspopup]="mentionSuggestions.length ? 'listbox' : null" [attr.aria-autocomplete]="mentionSuggestions.length ? 'list' : null" [attr.aria-controls]="mentionSuggestions.length ? 'mention-picker' : null" [attr.aria-expanded]="mentionSuggestions.length > 0" [attr.aria-activedescendant]="mentionSuggestions.length ? mentionOptionID(activeMentionIndex) : null" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown)="handleMentionKeydown($event)" (keydown.enter)="onComposerEnter($event)"></textarea>
             </mat-form-field>
-            <div class="composer-picker-wrap">
+            <div #emojiPickerWrap class="composer-picker-wrap">
                 <button type="button" class="composer-picker-trigger" aria-label="Open emoji picker" [attr.aria-expanded]="emojiPickerOpen" aria-controls="emoji-picker" [disabled]="!selectedConversation || !socketReady" (mousedown)="$event.preventDefault()" (click)="emojiPickerOpen = !emojiPickerOpen">😀</button>
                 <div class="composer-picker emoji-picker" *ngIf="emojiPickerOpen" id="emoji-picker" role="group" aria-label="Insert an emoji">
                     <button *ngFor="let emoji of composerEmojis" type="button" [attr.aria-label]="'Insert ' + emoji.label" [title]="emoji.label" (mousedown)="$event.preventDefault()" (click)="insertEmoji(emoji.glyph); emojiPickerOpen = false"><span aria-hidden="true">{{ emoji.glyph }}</span><small>{{ emoji.label }}</small></button>
                 </div>
             </div>
-            <div class="composer-picker-wrap">
+            <div #giphyPickerWrap class="composer-picker-wrap">
                 <button #giphyPickerTrigger type="button" class="composer-picker-trigger" aria-label="Open GIPHY picker" [attr.aria-expanded]="giphyPickerOpen" aria-controls="giphy-picker" [disabled]="!selectedConversation || !socketReady || !giphyEnabled" (mousedown)="$event.preventDefault()" (click)="toggleGiphyPicker()">✦</button>
                 <section class="composer-picker giphy-picker" *ngIf="giphyPickerOpen" id="giphy-picker" aria-label="Search GIPHY" (keydown.escape)="closeGiphyPicker()">
                     <ng-container *ngIf="!selectedGiphy; else stagedGiphy">

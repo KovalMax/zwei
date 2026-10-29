@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,16 +11,40 @@ import (
 )
 
 type Claims struct {
-	SessionVersion int64  `json:"session_version"`
-	DeviceID       string `json:"device_id,omitempty"`
-	Purpose        string `json:"purpose,omitempty"`
+	SessionVersion    int64  `json:"session_version"`
+	DeviceID          string `json:"device_id,omitempty"`
+	BrowserID         string `json:"browser_id,omitempty"`
+	BrowserGeneration string `json:"browser_generation,omitempty"`
+	Purpose           string `json:"purpose,omitempty"`
 	jwt.RegisteredClaims
 }
 
+// UnmarshalJSON distinguishes absent legacy claims from explicit null or empty claims.
+func (c *Claims) UnmarshalJSON(data []byte) error {
+	type claimsAlias Claims
+	var decoded claimsAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	_, hasID := fields["browser_id"]
+	_, hasGeneration := fields["browser_generation"]
+	if hasID != hasGeneration || (hasID && (decoded.BrowserID == "" || decoded.BrowserGeneration == "")) {
+		return errors.New("invalid browser binding")
+	}
+	*c = Claims(decoded)
+	return nil
+}
+
 type Identity struct {
-	UserID         uuid.UUID
-	SessionVersion int64
-	DeviceID       string
+	UserID            uuid.UUID
+	SessionVersion    int64
+	DeviceID          string
+	BrowserID         uuid.UUID
+	BrowserGeneration uuid.UUID
 }
 
 func ParseBearer(r *http.Request, secret []byte) (Identity, error) {
@@ -74,7 +99,18 @@ func identityFromClaims(claims *Claims) (Identity, error) {
 	if err != nil {
 		return Identity{}, errors.New("invalid subject")
 	}
-	return Identity{UserID: userID, SessionVersion: claims.SessionVersion, DeviceID: claims.DeviceID}, nil
+	identity := Identity{UserID: userID, SessionVersion: claims.SessionVersion, DeviceID: claims.DeviceID}
+	if claims.BrowserID != "" || claims.BrowserGeneration != "" {
+		identity.BrowserID, err = uuid.Parse(claims.BrowserID)
+		if err != nil || identity.BrowserID == uuid.Nil {
+			return Identity{}, errors.New("invalid browser binding")
+		}
+		identity.BrowserGeneration, err = uuid.Parse(claims.BrowserGeneration)
+		if err != nil || identity.BrowserGeneration == uuid.Nil {
+			return Identity{}, errors.New("invalid browser binding")
+		}
+	}
+	return identity, nil
 }
 
 func ParseWebSocketTicket(rawToken string, secret []byte) (Identity, error) {

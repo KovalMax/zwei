@@ -7,9 +7,13 @@
 :host-context(.dark-theme) .profile-card { border-color: #30465e; background: #202c3b; box-shadow: 0 20px 60px rgba(0, 0, 0, .22); }
 .media-preference { display:flex; align-items:flex-start; gap:10px; font-size:14px; font-weight:700; }
 .media-preference input { width:18px; height:18px; accent-color:var(--zwei-focus); }
+.media-preference input:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+:host-context(.dark-theme) .media-preference input:focus-visible { outline-color: var(--chat-info); }
 .alert-settings > button { min-height: 48px; padding: 0 16px; border: 1px solid var(--zwei-accent); border-radius: var(--zwei-radius-control); background: var(--zwei-accent-soft); color: var(--zwei-ink); font: 700 14px/1 'DM Sans', sans-serif; cursor: pointer; }
+.alert-settings > .media-preference + button { margin-top: 12px; }
 .alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--zwei-accent-soft) 84%, var(--zwei-accent)); }
 .alert-settings > button:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
+:host-context(.dark-theme) .alert-settings > button:focus-visible { outline-color: var(--chat-info) !important; }
 .alert-settings > button:disabled { background: var(--auth-submit-disabled); color: var(--auth-submit-text); cursor: not-allowed; }
 :host-context(.dark-theme) .alert-settings > button:not(:disabled) { border-color: var(--chat-line-strong); background: var(--chat-info-surface); color: var(--chat-text-strong); }
 :host-context(.dark-theme) .alert-settings > button:hover:not(:disabled) { background: color-mix(in srgb, var(--chat-info-surface) 84%, var(--chat-info)); }
@@ -29,5 +33,6 @@
 :host-context(.dark-theme) .media-info-button { border-color: var(--chat-line-strong); background: var(--chat-surface-control); color: var(--chat-muted); }
 :host-context(.dark-theme) .media-info-button:hover { color: var(--chat-info); border-color: var(--chat-info); }
 :host-context(.dark-theme) .media-preference { color: var(--chat-muted); }
+:host-context(.light-theme) .alert-settings[aria-labelledby="push-settings-title"] > p[role="status"] { color: var(--zwei-muted); }
 ::ng-deep .profile-media-disclosure-tooltip { box-sizing: border-box; max-width: min(360px, calc(100vw - 32px)) !important; white-space: normal; line-height: 1.45; }
 @media (max-width: 420px) { .alert-settings > button { max-width: 132px; padding: 6px 8px; line-height: 1.2; white-space: normal; } }

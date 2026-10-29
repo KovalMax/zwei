@@ -1,0 +1,4 @@
+.auth-switch { margin: 26px 0 0; text-align: center; font-size: 13px; }
+.auth-switch a { color: var(--login-accent); font-weight: 800; text-decoration: none; }
+.auth-switch a:hover { text-decoration: underline; }
+.auth-page .retry-button { color: var(--auth-title); }

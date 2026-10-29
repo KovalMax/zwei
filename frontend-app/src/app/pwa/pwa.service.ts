@@ -33,6 +33,8 @@ export class PwaService implements OnDestroy {
     private readonly offlineListener: () => void;
     private readonly onlineListener: () => void;
     private readonly installListener: (event: Event) => void;
+    private readonly visibilityListener: () => void;
+    private updateTimer?: ReturnType<typeof setInterval>;
 
     public constructor(private readonly updates: SwUpdate, private readonly zone: NgZone, @Inject(DOCUMENT) private readonly document: Document) {
         this.offlineListener = () => this.zone.run(() => {
@@ -47,6 +49,9 @@ export class PwaService implements OnDestroy {
             this.clearOfflineState();
         });
         this.installListener = event => this.zone.run(() => this.captureInstallPrompt(event));
+        this.visibilityListener = () => {
+            if (this.document.visibilityState === 'visible') this.checkForUpdate();
+        };
         window.addEventListener('offline', this.offlineListener);
         window.addEventListener('online', this.onlineListener);
         window.addEventListener('beforeinstallprompt', this.installListener);
@@ -54,6 +59,9 @@ export class PwaService implements OnDestroy {
             this.subscriptions.add(updates.versionUpdates.subscribe(event => {
                 if (event.type === 'VERSION_READY') this.updateAvailable = true;
             }));
+            this.document.addEventListener('visibilitychange', this.visibilityListener);
+            this.updateTimer = setInterval(() => this.checkForUpdate(), 6 * 60 * 60 * 1000);
+            this.checkForUpdate();
         }
     }
 
@@ -62,6 +70,8 @@ export class PwaService implements OnDestroy {
         window.removeEventListener('offline', this.offlineListener);
         window.removeEventListener('online', this.onlineListener);
         window.removeEventListener('beforeinstallprompt', this.installListener);
+        this.document.removeEventListener('visibilitychange', this.visibilityListener);
+        if (this.updateTimer) clearInterval(this.updateTimer);
     }
 
     public setAuthenticated(authenticated: boolean): void {
@@ -119,6 +129,11 @@ export class PwaService implements OnDestroy {
         event.preventDefault();
         this.deferredInstall = event;
         this.canInstall = this.authenticated;
+    }
+
+    private checkForUpdate(): void {
+        if (!this.updates.isEnabled) return;
+        void this.updates.checkForUpdate().catch(() => undefined);
     }
 
     private clearOfflineState(): void {

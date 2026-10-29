@@ -13,6 +13,7 @@ import {RootRedirectComponent} from './shared/root-redirect/root-redirect.compon
 const routes: Routes = [
     {path: '', component: RootRedirectComponent, pathMatch: 'full'},
     {path: 'login', component: LoginComponent, resolve: [AuthResolver]},
+    {path: 'continue', redirectTo: 'login'},
     {path: 'sign-up', component: RegistrationComponent, resolve: [AuthResolver]},
     {path: 'home', canActivate: [AuthGuard], loadChildren: () => import('./home/home.module').then(module => module.HomeModule)},
     {path: 'profile', component: ProfileComponent, canActivate: [AuthGuard]},

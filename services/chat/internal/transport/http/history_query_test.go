@@ -60,7 +60,7 @@ func TestParseHistoryPageQuery(t *testing.T) {
 func TestHistoryMessagesRejectsInvalidQueryBeforeStoreCall(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	userID := uuid.New()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(),
 		SessionVersion: 7,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
@@ -124,7 +124,7 @@ func (s *historyQueryStore) List(_ context.Context, _, _ uuid.UUID, before int64
 func TestHistoryMessagesPassesDefaultAndValidatedBounds(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	userID := uuid.New()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(),
 		SessionVersion:   7,
 		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
 	}).SignedString([]byte(secret))

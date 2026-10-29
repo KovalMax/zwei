@@ -86,7 +86,7 @@ func TestGroupMutationUsesSharedUserScopedBucket(t *testing.T) {
 func TestGroupReadsRateLimitBeforeQuery(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
 	userID := uuid.New()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(),
 		SessionVersion: 7,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
@@ -178,10 +178,10 @@ func (rateLimitSessionRow) Scan(dest ...any) error {
 	if len(dest) != 1 {
 		return errors.New("unexpected session scan")
 	}
-	version, ok := dest[0].(*int64)
+	version, ok := dest[0].(*bool)
 	if !ok {
 		return errors.New("unexpected session version destination")
 	}
-	*version = 7
+	*version = true
 	return nil
 }

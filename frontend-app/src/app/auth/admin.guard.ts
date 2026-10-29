@@ -12,13 +12,13 @@ export class AdminGuard implements CanActivate {
     public canActivate(_route: ActivatedRouteSnapshot, _state: RouterStateSnapshot): Observable<boolean | UrlTree> {
         return this.auth.restore().pipe(
             switchMap(token => {
-                if (!token) return of(this.router.createUrlTree(['/login']));
+                if (!token) return of(this.router.createUrlTree(['/continue']));
                 return this.admins.checkAccess().pipe(
                     map(() => true),
-                    catchError(() => {
-                        this.auth.logout(false);
-                        return of(this.router.createUrlTree(['/login']));
-                    }),
+                    catchError(() => this.auth.logout(false).pipe(
+                        catchError(() => of(void 0)),
+                        map(() => this.router.createUrlTree(['/login'])),
+                    )),
                 );
             }),
         );

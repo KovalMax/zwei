@@ -172,6 +172,111 @@ describe('CallFacade', () => {
         expect(facade.selectedInputDeviceID).toBe('microphone-2');
     });
 
+    it('serializes concurrent selections, applies mute changes, and stops every acquired track on end', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const firstStream = new MockStream('first');
+        const secondStream = new MockStream('second');
+        (navigator.mediaDevices.enumerateDevices as Mock).mockResolvedValue([
+            {deviceId: 'first', kind: 'audioinput', label: 'First'},
+            {deviceId: 'second', kind: 'audioinput', label: 'Second'},
+        ]);
+        (navigator.mediaDevices.getUserMedia as Mock).mockResolvedValueOnce(firstStream).mockResolvedValueOnce(secondStream);
+        let finish: () => void = () => undefined;
+        connections[0].sender.replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve));
+        const first = facade.selectInputDevice('first');
+        await flush();
+        const second = facade.selectInputDevice('second');
+        await flush();
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+        facade.toggleMute();
+        expect(firstStream.track.enabled).toBe(false);
+        finish();
+        await Promise.all([first, second]);
+        expect(facade.selectedInputDeviceID).toBe('second');
+        expect(secondStream.track.enabled).toBe(false);
+        expect(stream.track.stop).toHaveBeenCalled();
+        expect(firstStream.track.stop).toHaveBeenCalled();
+        expect(secondStream.track.stop).not.toHaveBeenCalled();
+        facade.end();
+        expect(secondStream.track.stop).toHaveBeenCalled();
+    });
+
+    it('discards queued input selections after termination while capture is pending', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const replacement = new MockStream('first');
+        let finishCapture: (stream: MediaStream) => void = () => undefined;
+        (navigator.mediaDevices.getUserMedia as Mock).mockImplementationOnce(() => new Promise<MediaStream>(resolve => finishCapture = resolve));
+        const first = facade.selectInputDevice('first');
+        await flush();
+        const second = facade.selectInputDevice('second');
+        facade.end();
+        finishCapture(replacement as unknown as MediaStream);
+        await Promise.all([first, second]);
+        expect(stream.track.stop).toHaveBeenCalled();
+        expect(replacement.track.stop).toHaveBeenCalled();
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+        expect(facade.state.localStream).toBeUndefined();
+    });
+
+    it('rolls back a failed selection before applying the next queued selection', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const failed = new MockStream('first');
+        const next = new MockStream('second');
+        (navigator.mediaDevices.getUserMedia as Mock).mockResolvedValueOnce(failed).mockResolvedValueOnce(next);
+        let reject: (error: Error) => void = () => undefined;
+        connections[0].sender.replaceTrack.mockImplementationOnce(() => new Promise<void>((_, rejectPromise) => reject = rejectPromise));
+        const first = facade.selectInputDevice('first');
+        await flush();
+        const second = facade.selectInputDevice('second');
+        reject(new Error('replacement failed'));
+        await Promise.all([first, second]);
+        expect(connections[0].sender.replaceTrack).toHaveBeenNthCalledWith(2, stream.track);
+        expect(connections[0].sender.replaceTrack).toHaveBeenNthCalledWith(3, next.track);
+        expect(failed.track.stop).toHaveBeenCalled();
+        expect(stream.track.stop).toHaveBeenCalled();
+        expect(facade.state.localStream).toBe(next as unknown as MediaStream);
+        facade.end();
+        expect(next.track.stop).toHaveBeenCalled();
+    });
+
+    it('does not block a new call on an old pending capture or apply its queued selection', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        let finishCapture: (stream: MediaStream) => void = () => undefined;
+        (navigator.mediaDevices.getUserMedia as Mock).mockImplementationOnce(() => new Promise<MediaStream>(resolve => finishCapture = resolve));
+        const first = facade.selectInputDevice('old-first');
+        await flush();
+        const queued = facade.selectInputDevice('old-second');
+        facade.end();
+        const newCall = new MockStream('new-call');
+        const newInput = new MockStream('new-input');
+        (navigator.mediaDevices.getUserMedia as Mock).mockResolvedValueOnce(newCall).mockResolvedValueOnce(newInput);
+        await facade.start('conversation-2', 'peer-2');
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.ringing', payload: {...callPayload('ringing'), call_id: 'call-2', conversation_id: 'conversation-2'}});
+        events.next({version: WEBSOCKET_PROTOCOL_VERSION, type: 'call.accepted', payload: {...callPayload('active'), call_id: 'call-2', conversation_id: 'conversation-2', ice_servers: []}});
+        await flush();
+        await facade.selectInputDevice('new-input');
+        const oldInput = new MockStream('old-first');
+        finishCapture(oldInput as unknown as MediaStream);
+        await Promise.all([first, queued]);
+        expect(oldInput.track.stop).toHaveBeenCalled();
+        expect(facade.state.localStream).toBe(newInput as unknown as MediaStream);
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(4);
+        facade.end();
+        expect(newInput.track.stop).toHaveBeenCalled();
+    });
+
     it('keeps a muted direct call muted when switching microphone inputs', async () => {
         events.next(incoming());
         facade.accept();
@@ -190,6 +295,47 @@ describe('CallFacade', () => {
         expect(facade.state.muted).toBe(true);
         expect(replacement.track.enabled).toBe(false);
         expect(connections[0].sender.replaceTrack).toHaveBeenCalledWith(replacement.track);
+    });
+
+    it('updates both microphones when mute changes during a pending replacement', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const replacement = new MockStream('microphone-2');
+        (navigator.mediaDevices.getUserMedia as Mock).mockResolvedValue(replacement);
+        let finish: () => void = () => undefined;
+        connections[0].sender.replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve));
+        const switching = facade.selectInputDevice('microphone-2');
+        await flush();
+        facade.toggleMute();
+        expect(stream.track.enabled).toBe(false);
+        expect(replacement.track.enabled).toBe(false);
+        facade.toggleMute();
+        expect(replacement.track.enabled).toBe(true);
+        facade.toggleMute();
+        finish();
+        await switching;
+        expect(facade.state.muted).toBe(true);
+        expect(replacement.track.enabled).toBe(false);
+    });
+
+    it('stops a pending microphone immediately when the direct call ends', async () => {
+        events.next(incoming());
+        facade.accept();
+        events.next(accepted());
+        await flush();
+        const replacement = new MockStream('microphone-2');
+        (navigator.mediaDevices.getUserMedia as Mock).mockResolvedValue(replacement);
+        let finish: () => void = () => undefined;
+        connections[0].sender.replaceTrack.mockImplementationOnce(() => new Promise<void>(resolve => finish = resolve));
+        const switching = facade.selectInputDevice('microphone-2');
+        await flush();
+        facade.end();
+        expect(replacement.track.stop).toHaveBeenCalled();
+        finish();
+        await switching;
+        expect(facade.state.localStream).toBeUndefined();
     });
 
     it('retires the connection before stopping a microphone replacement whose replaceTrack times out', fakeAsync(async () => {

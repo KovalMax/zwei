@@ -1,0 +1,5 @@
+# Maintenance-only edge: replace, don't merge, the production published ports.
+services:
+  traefik:
+    ports: !override
+      - "127.0.0.1:8443:443"

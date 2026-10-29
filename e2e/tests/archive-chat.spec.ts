@@ -1,4 +1,5 @@
-import {expect, Page, request as playwrightRequest, test} from '@playwright/test';
+import {expect, Page, test} from '@playwright/test';
+import {fixtureToken, reloadSession} from './session-helpers';
 
 const authBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
 const chatBase = process.env.CHAT_BASE_URL ?? 'https://chat.localhost';
@@ -31,9 +32,7 @@ function uniqueEmail(name: string): string {
 }
 
 async function register(page: Page, email: string, nickname: string): Promise<void> {
-  const admin = await page.request.post(`${authBase}/api/auth/login`, {data: {email: adminEmail, password, device_id: `archive-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'}});
-  expect(admin.status()).toBe(200);
-  const adminToken = await admin.json() as Token;
+  const adminToken = await fixtureToken(authBase, adminEmail, password, 'E2E');
   const invitation = await page.request.post(`${authBase}/api/admin/invitations`, {headers: {Authorization: `${adminToken.token_type} ${adminToken.access_token}`}, data: {email}});
   expect(invitation.status()).toBe(201);
   const {code} = await invitation.json() as {code: string};
@@ -44,21 +43,14 @@ async function register(page: Page, email: string, nickname: string): Promise<vo
   await page.locator('[formControlName="nickName"]').fill(nickname);
   await page.locator('[formControlName="password"]').fill(password);
   await page.locator('[formControlName="confirmPassword"]').fill(password);
-  const response = page.waitForResponse(item => item.url().endsWith('/api/auth/register') && item.request().method() === 'POST');
+  const response = page.waitForResponse(item => item.url().endsWith('/api/auth/v2/register') && item.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   expect((await response).status()).toBe(201);
   await expect(page).toHaveURL(/\/home$/);
 }
 
 async function loginToken(email: string): Promise<Token> {
-  const api = await playwrightRequest.newContext({ignoreHTTPSErrors: true});
-  try {
-    const response = await api.post(`${authBase}/api/auth/login`, {data: {email, password, device_id: `archive-${Date.now()}-${Math.random()}`, device_name: 'E2E'}});
-    expect(response.status()).toBe(200);
-    return await response.json() as Token;
-  } finally {
-    await api.dispose();
-  }
+  return fixtureToken(authBase, email, password, 'E2E');
 }
 
 async function userID(page: Page, token: Token, email: string): Promise<string> {
@@ -240,7 +232,7 @@ test('archive and explicitly restore direct and group chats per user; inbound me
       ...Array.from({length: 18}, (_, index) => createScrollGroup(index, 'alice')),
       ...Array.from({length: 20}, (_, index) => createScrollGroup(index + 18, 'bob')),
     ]);
-    await alice.reload();
+    await reloadSession(alice);
     await loadAllGroups(alice);
     await expect(alice.locator('.conversation-row')).toHaveCount(39);
 
@@ -251,13 +243,13 @@ test('archive and explicitly restore direct and group chats per user; inbound me
     await alice.getByRole('textbox', {name: 'Message'}).fill(directMessage);
     await alice.getByRole('button', {name: 'Send message'}).click();
     await expect(alice.locator('.message-list')).toContainText(directMessage);
-    await bob.reload();
+    await reloadSession(bob);
     await expect(bob.locator('.person-option[aria-label="Alice Archive"]')).toBeVisible();
     await bob.locator('.person-option[aria-label="Alice Archive"]').click();
     await expect(bob.locator('.message-list')).toContainText(directMessage);
 
     // The peer's group membership is established before Alice changes only her presentation state.
-    await bob.reload();
+    await reloadSession(bob);
     await loadAllGroups(bob);
     await expect(bob.locator(`.person-option[data-conversation-id="${group.id}"]`)).toBeVisible();
 
@@ -380,7 +372,7 @@ test('archive and explicitly restore direct and group chats per user; inbound me
     await expect(groupRow.getByRole('button', {name: 'Archive Archive Crew'})).toBeVisible();
     await groupRow.getByRole('button', {name: 'Archive Archive Crew'}).click();
     await expect(alice.locator(`.person-option[data-conversation-id="${group.id}"]`)).toHaveCount(0);
-    await bob.reload();
+    await reloadSession(bob);
     await loadAllGroups(bob);
     await expect(bob.locator(`.person-option[data-conversation-id="${group.id}"]`)).toBeVisible();
     await alice.getByRole('button', {name: 'Archived'}).click();
@@ -574,7 +566,7 @@ test('archive and explicitly restore direct and group chats per user; inbound me
       const response = await bob.request.delete(`${chatBase}/api/chat/groups/${archivedGroup.id}`, {headers: {Authorization: `${bobToken.token_type} ${bobToken.access_token}`}});
       expect(response.status(), `deleting fixture ${archivedGroup.name}`).toBe(204);
     }
-    await alice.reload();
+    await reloadSession(alice);
     await alice.getByRole('button', {name: 'Archived'}).click();
     await expect(alice.getByRole('status').filter({hasText: 'No archived chats.'})).toBeVisible();
     for (const theme of ['light', 'dark'] as const) {
@@ -597,8 +589,12 @@ test('archive and explicitly restore direct and group chats per user; inbound me
     await expect(alice).toHaveURL(/\/login$/);
     await expect(alice.locator('.conversation-rail')).toHaveCount(0);
     await expect(alice.locator('body')).not.toContainText('Archive Crew');
+    expect(await alice.evaluate(() => localStorage.getItem('zwei.intended-session'))).toBeNull();
+    const refreshRequests: string[] = [];
+    alice.on('request', request => { if (new URL(request.url()).pathname === '/api/auth/v2/refresh') refreshRequests.push(request.method()); });
     await alice.goto('/home');
     await expect(alice).toHaveURL(/\/login$/);
+    expect(refreshRequests).toEqual([]);
     await expect(alice.locator('.conversation-rail')).toHaveCount(0);
     await expect(alice.locator('body')).not.toContainText('Archive Crew');
   } finally {

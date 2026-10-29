@@ -6,6 +6,9 @@ import {AuthService} from '../../auth/auth.service';
 import {Router} from '@angular/router';
 import {Subject} from 'rxjs';
 import {PushEnrollmentService} from '../../pwa/push-enrollment.service';
+import {LogoutCookieUnclearedError} from '../../auth/auth.service';
+import {throwError} from 'rxjs';
+import {AuthCookieLockUnavailableError} from '../../auth/auth-cookie-lock.service';
 
 describe('HeaderComponent', () => {
     let component: HeaderComponent;
@@ -54,6 +57,30 @@ describe('HeaderComponent', () => {
         revoke.complete();
         await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(['login']));
         expect(unsubscribe).toHaveBeenCalledOnce();
+    });
+
+    it('reports an uncleared cookie without offering a revoked-bearer retry', () => {
+        vi.spyOn(TestBed.inject(AuthService), 'logout').mockReturnValue(throwError(() => new LogoutCookieUnclearedError()));
+        const push = vi.spyOn(TestBed.inject(PushEnrollmentService), 'unsubscribeLocal').mockResolvedValue();
+        fixture.detectChanges();
+        component.onLogout();
+        fixture.detectChanges();
+        const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+        expect(alert.textContent).toContain('sessions were revoked');
+        expect(alert.querySelector('button')).toBeNull();
+        expect(push).toHaveBeenCalledOnce();
+    });
+
+    it('does not claim revocation when safe logout is unavailable', () => {
+        vi.spyOn(TestBed.inject(AuthService), 'logout').mockReturnValue(throwError(() => new AuthCookieLockUnavailableError()));
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        fixture.detectChanges();
+        component.onLogout();
+        fixture.detectChanges();
+        const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+        expect(alert.textContent).toContain('server session may still be active');
+        expect(alert.textContent).toContain('Web Locks');
+        expect(navigate).not.toHaveBeenCalled();
     });
 
     it('leaves account menu placement to the Material trigger in mobile and desktop viewports', () => {

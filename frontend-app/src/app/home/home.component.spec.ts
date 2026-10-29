@@ -564,6 +564,74 @@ describe('HomeComponent', () => {
         component.ngOnDestroy();
     });
 
+    it('dismisses open pickers on outside clicks without stealing focus, while keeping picker interactions inside', () => {
+        fixture.detectChanges();
+        const emojiWrap = document.createElement('div');
+        const giphyWrap = document.createElement('div');
+        const inside = document.createElement('input');
+        giphyWrap.appendChild(inside);
+        document.body.append(emojiWrap, giphyWrap);
+        const refs = component as unknown as {emojiPickerWrap: {nativeElement: HTMLElement}; giphyPickerWrap: {nativeElement: HTMLElement}};
+        refs.emojiPickerWrap = {nativeElement: emojiWrap};
+        refs.giphyPickerWrap = {nativeElement: giphyWrap};
+        component.emojiPickerOpen = true;
+        component.giphyPickerOpen = true;
+        expect(component.emojiPickerOpen).toBe(true);
+        expect(component.giphyPickerOpen).toBe(true);
+        inside.click();
+        expect(component.emojiPickerOpen).toBe(false);
+        expect(component.giphyPickerOpen).toBe(true);
+        component.giphyQuery = 'cats';
+        const outside = document.createElement('button');
+        document.body.appendChild(outside);
+        outside.focus(); outside.click(); fixture.detectChanges();
+        expect(component.emojiPickerOpen).toBe(false);
+        expect(component.giphyPickerOpen).toBe(false);
+        expect(component.giphyQuery).toBe('');
+        expect(document.activeElement).toBe(outside);
+        outside.remove();
+        emojiWrap.remove(); giphyWrap.remove();
+    });
+
+    it('switches between picker triggers and cancels a pending GIF search without stealing focus', () => {
+        fixture.detectChanges();
+        const pending = new Subject<GiphySearchPage>();
+        vi.spyOn(TestBed.inject(GiphySearchService), 'search').mockReturnValue(pending);
+        component.selectedConversation = conversation('picker-switch');
+        component.socketReady = true;
+        component.giphyEnabled = true;
+        const emojiWrap = document.createElement('div');
+        const giphyWrap = document.createElement('div');
+        const emoji = document.createElement('button');
+        const giphy = document.createElement('button');
+        emojiWrap.appendChild(emoji); giphyWrap.appendChild(giphy);
+        document.body.append(emojiWrap, giphyWrap);
+        const refs = component as unknown as {emojiPickerWrap: {nativeElement: HTMLElement}; giphyPickerWrap: {nativeElement: HTMLElement}};
+        refs.emojiPickerWrap = {nativeElement: emojiWrap};
+        refs.giphyPickerWrap = {nativeElement: giphyWrap};
+        emoji.addEventListener('click', () => component.emojiPickerOpen = !component.emojiPickerOpen);
+        giphy.addEventListener('click', () => component.toggleGiphyPicker());
+
+        emoji.click();
+        expect(component.emojiPickerOpen).toBe(true);
+        giphy.focus(); giphy.click();
+        expect(component.emojiPickerOpen).toBe(false);
+        expect(component.giphyPickerOpen).toBe(true);
+        expect(document.activeElement).toBe(giphy);
+
+        component.giphyQuery = 'cats';
+        component.searchGiphy();
+        expect(component.giphySearchState).toBe('loading');
+        emoji.focus(); emoji.click();
+        expect(component.emojiPickerOpen).toBe(true);
+        expect(component.giphyPickerOpen).toBe(false);
+        expect(component.giphyQuery).toBe('');
+        expect(document.activeElement).toBe(emoji);
+        pending.next(giphyPage([{id: 'stale', title: 'Stale', url: 'https://media1.giphy.com/media/stale123/200.gif'}]));
+        expect(component.giphyResults).toEqual([]);
+        emojiWrap.remove(); giphyWrap.remove();
+    });
+
     it('closes and clears the GIPHY picker on Escape and restores focus to its trigger', () => {
         const home = createHomeComponent({} as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
         const trigger = document.createElement('button');
@@ -817,7 +885,7 @@ describe('HomeComponent', () => {
             body: `https://media1.giphy.com/media/asset${index}/200.gif`,
             createdAt: '2026-01-01T00:00:00Z',
         }));
-        expect(component.messages.map(message => component.shouldAutoLoadGiphy(message))).toEqual([true, true, true, false, false]);
+        expect(component.messages.map(message => component.shouldAutoLoadGiphy(message))).toEqual([true, true, true, true, true]);
         component.giphyEnabled = false;
         expect(component.shouldAutoLoadGiphy(component.messages[0])).toBe(false);
         component.ngOnDestroy();
@@ -2065,7 +2133,7 @@ describe('HomeComponent', () => {
     it('quarantines a selected group and its call after a transient membership projection error', () => {
         const selected = groupConversation('selected-group');
         const abort = vi.fn().mockName('abort').mockReturnValue(true);
-        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort } as unknown as GroupCallFacade;
+        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort, cancelDeferredIntentForConversation: () => undefined } as unknown as GroupCallFacade;
         const historyComponent = createHomeComponent({ getGroup: () => throwError(() => new GroupProjectionFailureError('unavailable')) } as unknown as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, {} as DataProviderService, { close: () => undefined } as CallFacade, undefined, groupCall);
         historyComponent.selectedConversation = selected;
         historyComponent.conversations.next([selected]);
@@ -2082,7 +2150,7 @@ describe('HomeComponent', () => {
     it('quarantines the selected group and call after an authentication failure', () => {
         const selected = groupConversation('auth-failure-group');
         const abort = vi.fn().mockName('abort').mockReturnValue(true);
-        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort } as unknown as GroupCallFacade;
+        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort, cancelDeferredIntentForConversation: () => undefined } as unknown as GroupCallFacade;
         const historyComponent = createHomeComponent({ getGroup: () => throwError(() => new GroupProjectionFailureError('sessionExpired')) } as unknown as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, {} as DataProviderService, { close: () => undefined } as CallFacade, undefined, groupCall);
         historyComponent.selectedConversation = selected;
         historyComponent.conversations.next([selected]);
@@ -2141,7 +2209,7 @@ describe('HomeComponent', () => {
         const refreshed = { ...selected, name: 'Recovered group', membershipRevision: selected.membershipRevision + 1 };
         const list = vi.fn().mockName('list').mockReturnValue(of([refreshed]));
         const abort = vi.fn().mockName('abort').mockReturnValue(true);
-        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort } as unknown as GroupCallFacade;
+        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort, cancelDeferredIntentForConversation: () => undefined } as unknown as GroupCallFacade;
         const historyComponent = createHomeComponent({ getGroup: () => throwError(() => new Error('unavailable')), list } as unknown as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, {} as DataProviderService, { close: () => undefined } as CallFacade, undefined, groupCall);
         historyComponent.selectedConversation = selected;
         historyComponent.conversations.next([selected]);
@@ -2168,7 +2236,7 @@ describe('HomeComponent', () => {
         const remaining = conversation('remaining-conversation');
         const list = vi.fn().mockName('list').mockReturnValue(of([remaining]));
         const abort = vi.fn().mockName('abort').mockReturnValue(true);
-        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort } as unknown as GroupCallFacade;
+        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort, cancelDeferredIntentForConversation: () => undefined } as unknown as GroupCallFacade;
         const historyComponent = createHomeComponent({ list } as unknown as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, { finishRecovery: vi.fn().mockName('finishRecovery') } as unknown as DataProviderService, { close: () => undefined } as CallFacade, undefined, groupCall);
         historyComponent.selectedConversation = selected;
         historyComponent.conversations.next([selected, remaining]);
@@ -2265,7 +2333,7 @@ describe('HomeComponent', () => {
     it('preserves selected group, history, and call state when Refresh chats fails', fakeAsync(async () => {
         const selected = groupConversation('temporarily-unavailable-group');
         const abort = vi.fn().mockName('abort').mockReturnValue(true);
-        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort } as unknown as GroupCallFacade;
+        const groupCall = { isOngoing: true, state: { room: { conversation_id: selected.id } }, abort, cancelDeferredIntentForConversation: () => undefined } as unknown as GroupCallFacade;
         const historyComponent = createHomeComponent({ list: () => throwError(() => new HttpErrorResponse({ status: 503 })) } as unknown as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, {} as DataProviderService, { close: () => undefined } as CallFacade, undefined, groupCall);
         const history: Message[] = [{ id: 'retained-message', conversationId: selected.id, senderId: 'peer', clientMessageId: 'retained-client', sequence: 1, body: 'Still authorized until confirmed', createdAt: '2026-01-01T00:00:00Z' }];
         historyComponent.selectedConversation = selected;
@@ -3251,7 +3319,7 @@ describe('HomeComponent', () => {
         const callState = {phase: 'active', room: {conversation_id: group.id}, localStream: {getTracks: () => []}};
         const abort = vi.fn().mockReturnValue(true);
         const canRejoin = vi.fn().mockReturnValue(true);
-        const groupCall = {state: callState, abort, canRejoin, get isOngoing() { return true; }} as unknown as GroupCallFacade;
+        const groupCall = {state: callState, abort, canRejoin, cancelDeferredIntentForConversation: () => undefined, get isOngoing() { return true; }} as unknown as GroupCallFacade;
         const history = vi.fn().mockReturnValue(of({messages: []}));
         const home = createHomeComponent(
             {listHomeSnapshot: () => of({direct: [], groups: {items: [], nextCursor: 'page-two'}}), getGroup: () => lookup.asObservable(), history} as unknown as ConversationService,

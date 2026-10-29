@@ -80,7 +80,7 @@ func authenticatedTestHandler(t *testing.T, isAdmin bool) (*application.Service,
 	t.Helper()
 	secret := []byte("01234567890123456789012345678901")
 	userID := uuid.New()
-	encoded, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{SessionVersion: 1, RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString(secret)
+	encoded, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{SessionVersion: 1, BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(), RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func (httpSessionReader) QueryRow(context.Context, string, ...any) pgx.Row { ret
 
 type httpSessionRow struct{}
 
-func (httpSessionRow) Scan(dest ...any) error { *dest[0].(*int64) = 1; return nil }
+func (httpSessionRow) Scan(dest ...any) error { *dest[0].(*bool) = true; return nil }
 
 type httpTestRepository struct {
 	application.Repository

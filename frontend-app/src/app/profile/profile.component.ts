@@ -48,11 +48,37 @@ export class ProfileComponent implements OnInit {
                     ? 'This browser’s push service did not respond. Try a supported browser such as Safari or Google Chrome, then retry.'
                 : error instanceof Error && error.message === 'unsupported'
                     ? 'Web Push is not supported by this browser.'
+                : error instanceof Error && error.message === 'subscription-key-mismatch'
+                    ? 'This browser has a push subscription for a different server key. Remove this site’s browser data or use another browser, then try again. This may affect other accounts on this browser.'
                     : 'Could not enable notifications on this browser. Please try again.';
         } finally {
             this.pushSaving = false;
             this.changeDetector.markForCheck();
         }
+    }
+
+    public async setPushEnabled(enabled: boolean): Promise<void> {
+        if (enabled) return this.enablePush();
+        if (this.pushSaving || !this.push) return;
+        this.pushSaving = true;
+        this.pushError = '';
+        this.pushSuccess = false;
+        try {
+            await this.push.disable();
+        } catch {
+            this.pushError = 'Could not confirm that push is disabled for this account. Please try again.';
+        } finally {
+            this.pushSaving = false;
+            this.changeDetector.markForCheck();
+        }
+    }
+
+    public async changePush(event: Event): Promise<void> {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement)) return;
+        await this.setPushEnabled(input.checked);
+        input.checked = this.push?.state === 'enabled';
+        this.changeDetector.markForCheck();
     }
 
     public async setAlertMode(mode: AlertMode): Promise<void> {
@@ -102,6 +128,7 @@ export class ProfileComponent implements OnInit {
                 this.alertMode = alertMode;
                 this.notifications.setMode(alertMode);
                 this.changeDetector.markForCheck();
+                void this.push?.reconcile().finally(() => this.changeDetector.markForCheck());
             },
             error: () => {
                 this.error = true;
