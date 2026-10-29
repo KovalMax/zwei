@@ -527,6 +527,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 			CallID          uuid.UUID           `json:"call_id"`
 			RoomID          uuid.UUID           `json:"room_id"`
 			Generation      int64               `json:"generation"`
+			OwnershipStatus bool                `json:"ownership_status"`
 			TargetUserID    uuid.UUID           `json:"target_user_id"`
 			TargetDeviceID  string              `json:"target_device_id"`
 			Signal          json.RawMessage     `json:"signal"`
@@ -583,7 +584,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
 		}
 		if request.Type == "group.call.sync" {
-			return h.handleGroupRoomSync(operationCtx, client, request.RequestID, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation)
+			return h.handleGroupRoomSync(operationCtx, client, request.RequestID, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation, request.Payload.OwnershipStatus)
 		}
 		if request.Type == "group.call.discover" {
 			return h.handleGroupRoomDiscovery(operationCtx, client, request.RequestID, request.Payload.ConversationID)
@@ -786,7 +787,7 @@ func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, reque
 	return nil
 }
 
-func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID string, conversationID, roomID uuid.UUID, generation int64) error {
+func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID string, conversationID, roomID uuid.UUID, generation int64, ownershipStatus bool) error {
 	if requestID == "" || conversationID == uuid.Nil || roomID == uuid.Nil || generation <= 0 {
 		return &RequestError{RequestID: requestID, Err: errors.New("invalid group call sync request")}
 	}
@@ -812,6 +813,27 @@ func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID 
 	}
 	lease, err := h.groupCallAuth.BeginGroupCall(ctx, conversationID, identity.UserID)
 	if errors.Is(err, ErrCallNotAllowed) {
+		if ownershipStatus {
+			reader, ok := h.coord.(GroupRoomOwnershipReader)
+			if !ok {
+				return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+			}
+			absent, readErr := reader.GroupReservationAbsent(ctx, identity.UserID)
+			if readErr != nil {
+				return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+			}
+			status := "room_unavailable"
+			if absent {
+				status = "participant_absent"
+			}
+			client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
+				RoomID          uuid.UUID `json:"room_id"`
+				Generation      int64     `json:"generation"`
+				Status          string    `json:"status"`
+				OwnershipStatus string    `json:"ownership_status"`
+			}{roomID, generation, GroupRoomEnded, status}})
+			return nil
+		}
 		ended()
 		return nil
 	}
@@ -823,6 +845,33 @@ func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID 
 		defer cancel()
 		_ = lease.Rollback(rollbackCtx)
 	}()
+	if ownershipStatus {
+		reader, ok := h.coord.(GroupRoomOwnershipReader)
+		if !ok {
+			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+		}
+		room, ownership, err := reader.SyncGroupRoomOwnership(ctx, conversationID, roomID, generation, lease.MembershipRevision(), participant)
+		if err != nil {
+			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+		}
+		if ownership == "active" {
+			client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
+				GroupRoom
+				OwnershipStatus string `json:"ownership_status"`
+			}{room, ownership}})
+			return nil
+		}
+		if ownership != "participant_absent" && ownership != "owned_elsewhere" && ownership != "room_unavailable" {
+			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+		}
+		client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
+			RoomID          uuid.UUID `json:"room_id"`
+			Generation      int64     `json:"generation"`
+			Status          string    `json:"status"`
+			OwnershipStatus string    `json:"ownership_status"`
+		}{roomID, generation, GroupRoomEnded, ownership}})
+		return nil
+	}
 	room, active, err := rooms.SyncGroupRoom(ctx, roomID, generation, participant)
 	if err != nil {
 		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}

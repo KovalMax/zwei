@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,6 +22,7 @@ var (
 	ErrInvalidInput          = errors.New("invalid input")
 	ErrCredentials           = errors.New("invalid credentials")
 	ErrRefreshToken          = errors.New("invalid refresh token")
+	ErrLogoutCookieMismatch  = errors.New("logout cookie mismatch")
 	ErrAccountInactive       = errors.New("account is not active")
 	ErrPushUnavailable       = errors.New("push subscription unavailable")
 	ErrPushSessionRevoked    = errors.New("push subscription session revoked")
@@ -95,21 +97,31 @@ func (s *Service) Register(ctx context.Context, input Credentials) (Registration
 }
 
 func (s *Service) Login(ctx context.Context, input Credentials) (Tokens, error) {
-	if !validLogin(input.Email, input.Password, input.DeviceID) {
-		return Tokens{}, ErrInvalidInput
-	}
-	account, err := s.repository.FindUserByEmail(ctx, normalizeEmail(input.Email))
-	if err != nil || s.passwords.Compare(account.PasswordHash, input.Password) != nil {
-		return Tokens{}, ErrCredentials
-	}
-	if account.KYCStatus != user.KYCActive || !account.EmailVerified {
-		return Tokens{}, ErrAccountInactive
-	}
-	deviceID, err := s.repository.EnsureDevice(ctx, account.ID, input.DeviceID, input.DeviceName)
+	target, err := s.AuthenticateBrowserLogin(ctx, input)
 	if err != nil {
 		return Tokens{}, err
 	}
-	return s.issueTokens(ctx, account.ID, deviceID, account.SessionVersion)
+	return s.issueTokens(ctx, target.UserID, target.DeviceID, target.SessionVersion)
+}
+
+// AuthenticateBrowserLogin validates credentials and resolves the account's device
+// without creating a legacy refresh session or issuing tokens.
+func (s *Service) AuthenticateBrowserLogin(ctx context.Context, input Credentials) (BrowserSessionTarget, error) {
+	if !validLogin(input.Email, input.Password, input.DeviceID) {
+		return BrowserSessionTarget{}, ErrInvalidInput
+	}
+	account, err := s.repository.FindUserByEmail(ctx, normalizeEmail(input.Email))
+	if err != nil || s.passwords.Compare(account.PasswordHash, input.Password) != nil {
+		return BrowserSessionTarget{}, ErrCredentials
+	}
+	if account.KYCStatus != user.KYCActive || !account.EmailVerified {
+		return BrowserSessionTarget{}, ErrAccountInactive
+	}
+	deviceID, err := s.repository.EnsureDevice(ctx, account.ID, input.DeviceID, input.DeviceName)
+	if err != nil {
+		return BrowserSessionTarget{}, err
+	}
+	return BrowserSessionTarget{UserID: account.ID, DeviceID: deviceID, SessionVersion: account.SessionVersion}, nil
 }
 
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (Tokens, error) {
@@ -117,37 +129,148 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (Tokens, err
 		return Tokens{}, ErrInvalidInput
 	}
 	hash := sha256.Sum256([]byte(refreshToken))
-	session, err := s.repository.RotateRefreshToken(ctx, hash[:])
-	if err != nil {
-		return Tokens{}, ErrRefreshToken
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return Tokens{}, err
 	}
-	return s.issueTokens(ctx, session.UserID, session.DeviceID, session.SessionVersion)
+	nextToken := base64.RawURLEncoding.EncodeToString(bytes)
+	nextHash := sha256.Sum256([]byte(nextToken))
+	var accessToken string
+	err := s.repository.RotateRefreshToken(ctx, hash[:], nextHash[:], s.clock().Add(s.refreshLifetime), func(session user.Session) error {
+		var err error
+		accessToken, err = s.tokens.IssueAccess(sharedauth.Identity{UserID: session.UserID, SessionVersion: session.SessionVersion, DeviceID: session.DeviceID.String()}, s.accessLifetime)
+		return err
+	})
+	if err != nil {
+		return Tokens{}, err
+	}
+	return Tokens{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(s.accessLifetime.Seconds()), RefreshToken: nextToken}, nil
+}
+
+// MaxRefreshCandidates bounds work performed on untrusted cookie input.
+const MaxRefreshCandidates = 16
+
+// RefreshCandidates rotates one live session only when all live candidates
+// belong to the same account. Duplicates are the same credential.
+func (s *Service) RefreshCandidates(ctx context.Context, refreshTokens []string) (Tokens, error) {
+	tokens, _, err := s.RefreshCandidatesSelected(ctx, refreshTokens)
+	return tokens, err
+}
+
+// RefreshCandidatesSelected also returns the selected input index for transport cleanup.
+func (s *Service) RefreshCandidatesSelected(ctx context.Context, refreshTokens []string) (Tokens, int, error) {
+	if len(refreshTokens) == 0 || len(refreshTokens) > MaxRefreshCandidates {
+		return Tokens{}, -1, ErrInvalidInput
+	}
+	hashes := make([][]byte, 0, len(refreshTokens))
+	seen := make(map[[32]byte]struct{}, len(refreshTokens))
+	for _, value := range refreshTokens {
+		if value == "" || len(value) > 4096 {
+			return Tokens{}, -1, ErrInvalidInput
+		}
+		hash := sha256.Sum256([]byte(value))
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		seen[hash] = struct{}{}
+		hashes = append(hashes, hash[:])
+	}
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return Tokens{}, -1, err
+	}
+	nextToken := base64.RawURLEncoding.EncodeToString(random)
+	nextHash := sha256.Sum256([]byte(nextToken))
+	var accessToken string
+	selected := -1
+	err := s.repository.RotateRefreshCandidates(ctx, hashes, nextHash[:], s.clock().Add(s.refreshLifetime), func(session user.Session, selectedHash []byte) error {
+		for i, value := range refreshTokens {
+			hash := sha256.Sum256([]byte(value))
+			if bytes.Equal(hash[:], selectedHash) {
+				selected = i
+				break
+			}
+		}
+		if selected < 0 {
+			return ErrRefreshToken
+		}
+		var err error
+		accessToken, err = s.tokens.IssueAccess(sharedauth.Identity{UserID: session.UserID, SessionVersion: session.SessionVersion, DeviceID: session.DeviceID.String()}, s.accessLifetime)
+		return err
+	})
+	if err != nil {
+		return Tokens{}, -1, err
+	}
+	if selected < 0 {
+		return Tokens{}, -1, ErrRefreshToken
+	}
+	return Tokens{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(s.accessLifetime.Seconds()), RefreshToken: nextToken}, selected, nil
 }
 
 func (s *Service) Logout(ctx context.Context, userID uuid.UUID) error {
 	return s.repository.RevokeAllSessions(ctx, userID)
 }
 
+// CheckLogoutCookie refuses to clear a cookie whose ownership cannot be proven.
+// Historical sessions are included so rotated or expired cookies retain ownership.
+func (s *Service) CheckLogoutCookie(ctx context.Context, userID uuid.UUID, refreshToken string) error {
+	if refreshToken == "" {
+		return nil
+	}
+	hash := sha256.Sum256([]byte(refreshToken))
+	owner, err := s.repository.RefreshTokenOwner(ctx, hash[:])
+	if err != nil {
+		return err
+	}
+	if owner != userID {
+		return ErrLogoutCookieMismatch
+	}
+	return nil
+}
+
 func (s *Service) StorePushSubscription(ctx context.Context, identity sharedauth.Identity, subscription PushSubscription) error {
-	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.DeviceID == "" || !validPushSubscription(subscription) {
+	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.DeviceID == "" || identity.BrowserID == uuid.Nil || identity.BrowserGeneration == uuid.Nil || !validPushSubscription(subscription) {
 		return ErrInvalidInput
 	}
 	deviceID, err := uuid.Parse(identity.DeviceID)
 	if err != nil || deviceID == uuid.Nil {
 		return ErrInvalidInput
 	}
-	return s.repository.StorePushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, subscription)
+	return s.repository.StorePushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, identity.BrowserID, identity.BrowserGeneration, subscription)
+}
+
+func (s *Service) VerifyPushSubscription(ctx context.Context, identity sharedauth.Identity, subscription PushSubscription) (bool, error) {
+	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || !validPushSubscription(subscription) {
+		return false, ErrInvalidInput
+	}
+	deviceID, err := uuid.Parse(identity.DeviceID)
+	if err != nil || deviceID == uuid.Nil {
+		return false, ErrInvalidInput
+	}
+	return s.repository.VerifyPushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, subscription)
 }
 
 func (s *Service) DeletePushSubscription(ctx context.Context, identity sharedauth.Identity, endpoint string) error {
-	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.DeviceID == "" || !validPushEndpoint(endpoint) {
+	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.DeviceID == "" || identity.BrowserID == uuid.Nil || identity.BrowserGeneration == uuid.Nil || !validPushEndpoint(endpoint) {
 		return ErrInvalidInput
 	}
 	deviceID, err := uuid.Parse(identity.DeviceID)
 	if err != nil || deviceID == uuid.Nil {
 		return ErrInvalidInput
 	}
-	return s.repository.DeletePushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, endpoint)
+	return s.repository.DeletePushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, identity.BrowserID, identity.BrowserGeneration, endpoint)
+}
+
+// DeleteCurrentPushSubscription removes only the authenticated device's registration.
+func (s *Service) DeleteCurrentPushSubscription(ctx context.Context, identity sharedauth.Identity) error {
+	if identity.UserID == uuid.Nil || identity.SessionVersion <= 0 || identity.BrowserID == uuid.Nil || identity.BrowserGeneration == uuid.Nil {
+		return ErrInvalidInput
+	}
+	deviceID, err := uuid.Parse(identity.DeviceID)
+	if err != nil || deviceID == uuid.Nil {
+		return ErrInvalidInput
+	}
+	return s.repository.DeleteCurrentPushSubscription(ctx, identity.UserID, deviceID, identity.SessionVersion, identity.BrowserID, identity.BrowserGeneration)
 }
 
 func validPushSubscription(subscription PushSubscription) bool {

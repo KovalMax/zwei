@@ -1,4 +1,5 @@
 import { errors, expect, Locator, Page, test } from '@playwright/test';
+import {restoreSession, fixtureToken, reloadSession} from './session-helpers';
 
 const password = 'Password123!';
 const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
@@ -435,11 +436,7 @@ async function installNotificationStubs(page: Page): Promise<void> {
 }
 
 async function register(page: import('@playwright/test').Page, email: string, nickname: string): Promise<void> {
-  const loginResponse = await page.context().request.post(`${adminBase}/api/auth/login`, {
-    data: {email: adminEmail, password, device_id: `e2e-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'},
-  });
-  expect(loginResponse.status()).toBe(200);
-  const loginPayload = await loginResponse.json() as {access_token: string; token_type: string};
+  const loginPayload = await fixtureToken(adminBase, adminEmail, password, 'E2E');
   const invitationResponse = await page.context().request.post(`${adminBase}/api/admin/invitations`, {
     headers: {Authorization: `${loginPayload.token_type} ${loginPayload.access_token}`},
     data: {email},
@@ -457,8 +454,8 @@ async function register(page: import('@playwright/test').Page, email: string, ni
   await page.locator('[formControlName="confirmPassword"]').fill('Password123!');
   const submit = page.getByRole('button', { name: 'Create account' });
   await expect(submit).toBeEnabled();
-  const registrationRequestPromise = page.waitForRequest(request => request.url().includes('/api/auth/register'));
-  const responsePromise = page.waitForResponse(response => response.url().includes('/api/auth/register'));
+  const registrationRequestPromise = page.waitForRequest(request => request.url().includes('/api/auth/v2/register'));
+  const responsePromise = page.waitForResponse(response => response.url().includes('/api/auth/v2/register'));
   await submit.click();
   const registrationRequest = await registrationRequestPromise;
   const registrationPayload = registrationRequest.postDataJSON() as {email?: unknown; invitation_code?: unknown};
@@ -491,11 +488,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function authenticatedToken(context: import('@playwright/test').BrowserContext, email: string, deviceName: string): Promise<{access_token: string; token_type: string}> {
-  const response = await context.request.post(`${adminBase}/api/auth/login`, {
-    data: {email, password, device_id: `e2e-${deviceName}-${Date.now()}-${Math.random()}`, device_name: 'E2E'},
-  });
-  expect(response.status()).toBe(200);
-  return response.json() as Promise<{access_token: string; token_type: string}>;
+  return fixtureToken(adminBase, email, password, deviceName);
 }
 
 async function userID(context: import('@playwright/test').BrowserContext, token: {access_token: string; token_type: string}, email: string): Promise<string> {
@@ -579,6 +572,11 @@ async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
   await page.getByRole('menuitem', {name: theme === 'light' ? 'Switch to light theme' : 'Switch to dark theme'}).click();
   await expect(page.locator('html')).toHaveClass(theme === 'light' ? /light-theme/ : /dark-theme/);
   await expect(page.locator('.cdk-overlay-backdrop-showing')).toHaveCount(0);
+}
+
+async function assertTerminalCapture(page: Page, theme: 'light' | 'dark', viewport: {width: number; height: number}): Promise<void> {
+  expect(await page.evaluate(() => ({width: window.innerWidth, height: window.innerHeight}))).toEqual(viewport);
+  await expect(page.locator('.group-call-terminal')).toHaveCSS('background-color', theme === 'light' ? 'rgb(232, 241, 251)' : 'rgb(32, 44, 59)');
 }
 
 async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwright/test').TestInfo, theme: 'light' | 'dark', viewport: {width: number; height: number}): Promise<void> {
@@ -934,21 +932,54 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     expect(collisions.controls, `${theme} ${viewport.width}px ${action.label} overlaps a group control: ${JSON.stringify({tooltip: tip, collisions})}`).toEqual([]);
     expect(collisions.textCollisions, `${theme} ${viewport.width}px ${action.label} obscures member text: ${JSON.stringify({tooltip: tip, collisions})}`).toEqual([]);
   };
+  const memberScroller = manager.locator('.group-members');
+  // Focus may scroll both nested surfaces over multiple frames. Two frames are
+  // not enough for smooth scrolling or its final tooltip-dismiss event.
+  const waitForFocusScroll = async (): Promise<boolean> => panel.evaluate(settings => new Promise<boolean>((resolve, reject) => {
+    const members = settings.querySelector<HTMLElement>('.group-members');
+    if (!members) { reject(new Error('Missing member scroller')); return; }
+    let previous = [settings.scrollTop, members.scrollTop];
+    let moved = false;
+    let stableFrames = 0;
+    const deadline = performance.now() + 3_000;
+    const sample = (): void => {
+      const current = [settings.scrollTop, members.scrollTop];
+      if (current.some((value, index) => Math.abs(value - previous[index]) > 0.1)) {
+        moved = true;
+        stableFrames = 0;
+      } else stableFrames++;
+      previous = current;
+      if (stableFrames >= 6) resolve(moved);
+      else if (performance.now() >= deadline) reject(new Error(`Nested focus scrolling did not settle: ${current}`));
+      else requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
+  const cycleKeyboardFocus = async (button: typeof actionButtons[number]['button']): Promise<void> => {
+    await page.keyboard.press('Shift+Tab');
+    await waitForFocusScroll();
+    await page.keyboard.press('Tab');
+    const targetScrolled = await waitForFocusScroll();
+    await expect(button).toBeFocused();
+    // Scrolling dismisses the tooltip even though focus remains. Once the
+    // target is settled, a fresh keyboard focus transition reopens it.
+    if (targetScrolled) {
+      await page.keyboard.press('Shift+Tab');
+      await waitForFocusScroll();
+      await page.keyboard.press('Tab');
+      await waitForFocusScroll();
+      await expect(button).toBeFocused();
+    }
+  };
   const focusUsingKeyboard = async (button: typeof actionButtons[number]['button']): Promise<void> => {
     await button.scrollIntoViewIfNeeded();
-    // Focus can scroll the nested list and settings panel. Finish that movement
-    // before testing tooltip recovery so the scroll-dismiss event cannot race it.
-    await memberScroller.evaluate(element => new Promise<void>(resolve => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    }));
+    await waitForFocusScroll();
     await page.mouse.move(0, 0);
     await button.focus();
-    await page.keyboard.press('Shift+Tab');
-    await page.keyboard.press('Tab');
-    await expect(button).toBeFocused();
+    await waitForFocusScroll();
+    await cycleKeyboardFocus(button);
   };
   const visibleTooltips = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible');
-  const memberScroller = manager.locator('.group-members');
   const scrollMemberListAwayFromCurrentEdge = async (): Promise<{before: number; targetScrollTop: number; scrollTop: number; scrollHeight: number; clientHeight: number; maxScroll: number; scrollEvents: number}> => memberScroller.evaluate(element => new Promise(resolve => {
     const list = element as HTMLElement;
     const before = list.scrollTop;
@@ -997,8 +1028,8 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible')).toHaveCount(0);
     await page.setViewportSize(viewport);
     await expect(actionButtons[2].button, 'resizing should retain keyboard focus on the action').toBeFocused();
-    await page.keyboard.press('Shift+Tab');
-    await page.keyboard.press('Tab');
+    await waitForFocusScroll();
+    await cycleKeyboardFocus(actionButtons[2].button);
     await expect(actionButtons[2].button, 'keyboard navigation should recover the focused action tooltip without moving the pointer').toBeFocused();
     await assertTooltipGeometry(actionButtons[2]);
     await page.screenshot({path: testInfo.outputPath('group-member-action-remove-keyboard-recovered-after-resize-dark-1440.png'), fullPage: false});
@@ -1035,13 +1066,10 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await actionButtons[2].button.scrollIntoViewIfNeeded();
     // Let programmatic repositioning finish before keyboard focus. Its captured
     // scroll event must dismiss tooltips, not race the subsequent focus event.
-    await memberScroller.evaluate(element => new Promise<void>(resolve => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    }));
+    await waitForFocusScroll();
     await expect(removeTooltip, `${context} repositioning alone must not resurrect the tooltip`).not.toBeVisible();
     await expect(actionButtons[2].button, `${context} list scroll should retain keyboard focus`).toBeFocused();
-    await page.keyboard.press('Shift+Tab');
-    await page.keyboard.press('Tab');
+    await cycleKeyboardFocus(actionButtons[2].button);
     await expect(actionButtons[2].button, `${context} keyboard focus should recover without pointer movement`).toBeFocused();
     await assertTooltipGeometry(actionButtons[2]);
     await expect(removeTooltip, `${context} keyboard focus should reopen after list scrolling`).toBeVisible();
@@ -1057,9 +1085,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   await page.mouse.move(1, viewport.height / 2);
   await expect(removeTooltip, `${theme} ${viewport.width}px pointer movement must not resurrect a dismissed tooltip`).not.toBeVisible();
   await actionButtons[2].button.scrollIntoViewIfNeeded();
-  await memberScroller.evaluate(element => new Promise<void>(resolve => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  }));
+  await waitForFocusScroll();
   await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
   await page.mouse.move(1, viewport.height / 2);
   await actionButtons[2].button.hover();
@@ -2800,7 +2826,7 @@ test('shows group members who are typing by name and tracks each member independ
     expect(created.status()).toBe(201);
 
     for (const page of pages) {
-      await page.reload();
+      await reloadSession(page);
       const group = page.locator('.person-option').filter({hasText: 'Typing group'});
       await expect(group).toBeVisible({timeout: 10_000});
       await group.click();
@@ -3006,7 +3032,7 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     await expect(alice.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'})).toBeVisible();
     await alice.screenshot({path: testInfo.outputPath('giphy-profile-preference-dark-mobile.png')});
     await alice.evaluate(() => { document.documentElement.classList.remove('dark-theme'); document.body.classList.remove('dark-theme'); });
-    await alice.reload();
+    await reloadSession(alice);
     await expect(alice.getByRole('checkbox', {name: 'Automatically load approved GIPHY images and GIFs'})).toBeChecked();
     await alice.getByRole('link', {name: 'Back to chats'}).click();
     await expect(alice).toHaveURL(/\/home$/);
@@ -3022,7 +3048,7 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     });
     expect(tinyImageSize.width, 'a 1px provider rendition must not expand into a blank media panel').toBeLessThanOrEqual(2);
     expect(tinyImageSize.height, 'a 1px provider rendition must not expand into a blank media panel').toBeLessThanOrEqual(2);
-    expect(await alice.locator('app-inline-giphy img').count()).toBeLessThanOrEqual(3);
+    await expect(alice.locator('app-inline-giphy img')).toHaveCount(2);
     await alice.setViewportSize({width: 390, height: 844});
     await alice.screenshot({path: testInfo.outputPath('giphy-auto-loaded-mobile.png')});
 
@@ -3099,9 +3125,18 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
       await bob.getByRole('button', {name: 'Send message'}).click();
       await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled();
     }
-    // The original click-to-load, opted-in auto-load, and successful retry are rendered.
-    await expect(alice.locator('app-inline-giphy img')).toHaveCount(3);
-    await expect(alice.getByRole('button', {name: 'Load GIPHY media'}).last()).toBeVisible();
+    // Every approved rendition loads after opt-in, including beyond the former three-image cap.
+    await expect(alice.locator('app-inline-giphy img')).toHaveCount(7);
+    for (let index = 0; index < 4; index++) {
+      const url = `https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?auto-bound=${index}`;
+      const media = alice.locator('app-inline-giphy').filter({has: alice.locator(`a[href="${url}"]`)});
+      const image = media.locator('img');
+      await image.scrollIntoViewIfNeeded();
+      await expect(image).toBeVisible();
+      await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      await expect(media.getByRole('button', {name: 'Load GIPHY media'})).toHaveCount(0);
+      expect(mediaRequests).toContain(url);
+    }
 
     const adminToken = await authenticatedToken(aliceContext, adminEmail, 'inline-media-admin');
     const adminHeaders = {Authorization: `${adminToken.token_type} ${adminToken.access_token}`};
@@ -3113,7 +3148,7 @@ test('GIPHY media is click-to-load, profile opt-in persists, and disabled policy
     const disableResponse = await aliceContext.request.put(policyURL, {headers: adminHeaders, data: {enabled: false}});
     expect(disableResponse.status()).toBe(200);
     expect(await disableResponse.json()).toEqual({enabled: false});
-    await alice.reload();
+    await reloadSession(alice);
     await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
     const requestCountBeforeDisabledItem = mediaRequests.length;
     const disabledURL = 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif?fixture=disabled';
@@ -3152,13 +3187,13 @@ test('hides persisted legacy stickers while showing ordinary and GIPHY history i
     expect(directResponse.status()).toBe(201);
     const direct = await directResponse.json() as {id:string};
     expect((await postMessage(direct.id, 'cat', 'sticker')).status()).toBe(201);
-    await recipient.reload(); await waitForPresenceReady(recipient);
+    await reloadSession(recipient); await waitForPresenceReady(recipient);
     await recipient.locator('.person-option').filter({hasText:'Legacy sticker sender'}).click();
     await expect(recipient.locator('.empty-messages')).toContainText('Sticker messages are no longer shown.');
     await expect(recipient.locator('.message-history .message-bubble')).toHaveCount(0);
     expect((await postMessage(direct.id, 'Visible direct text', 'text')).status()).toBe(201);
     expect((await postMessage(direct.id, 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', 'text')).status()).toBe(201);
-    await recipient.reload(); await waitForPresenceReady(recipient);
+    await reloadSession(recipient); await waitForPresenceReady(recipient);
     await recipient.locator('.person-option').filter({hasText:'Legacy sticker sender'}).click();
     const directHistory = recipient.locator('.message-history');
     await expect(directHistory.getByText('Visible direct text')).toBeVisible();
@@ -3172,7 +3207,7 @@ test('hides persisted legacy stickers while showing ordinary and GIPHY history i
     expect((await postMessage(group.id, 'heart', 'sticker')).status()).toBe(201);
     expect((await postMessage(group.id, 'Visible group text', 'text')).status()).toBe(201);
     expect((await postMessage(group.id, 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', 'text')).status()).toBe(201);
-    await recipient.reload(); await waitForPresenceReady(recipient);
+    await reloadSession(recipient); await waitForPresenceReady(recipient);
     await recipient.locator('.person-option').filter({hasText:group.name}).click();
     const groupHistory = recipient.locator('.message-history');
     await expect(groupHistory.getByText('Visible group text')).toBeVisible();
@@ -3413,6 +3448,16 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
         await sender.getByRole('button', {name: 'Cancel'}).click();
         await expect(sender.locator('.message-history .message-bubble')).toHaveCount(messageCountBeforeCancel);
         await query.fill('cats'); await runGiphySearch();
+        await sender.getByRole('button', {name:'Preview Cat GIF', exact:true}).click();
+        await sender.getByRole('button', {name:'Open emoji picker'}).click();
+        await expect(picker).toHaveCount(0);
+        await expect(sender.locator('#emoji-picker')).toBeVisible();
+        await expect(sender.locator('.message-history .message-bubble')).toHaveCount(messageCountBeforeCancel);
+        await pickerTrigger.click();
+        await expect(sender.locator('#emoji-picker')).toHaveCount(0);
+        await expect(query).toHaveValue('');
+        await expect(picker.getByRole('button', {name:'Send', exact:true})).toHaveCount(0);
+        await query.fill('cats'); await runGiphySearch();
         await sender.getByRole('button', {name:'Preview Cat GIF', exact:true}).click(); await sender.getByRole('button', {name:'Send', exact:true}).click();
         const incomingLink = recipient.locator('.message-history').getByRole('link', {name:'Open original GIPHY link'}).last();
         const outgoingLink = sender.locator('.message-history').getByRole('link', {name:'Open original GIPHY link'}).last();
@@ -3442,14 +3487,39 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
       await setTheme(sender, theme);
       for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
         await sender.setViewportSize(viewport);
-        await sender.getByRole('button', {name:'Open emoji picker'}).click();
+        const draft = sender.getByRole('textbox', {name:'Message', exact:true});
+        const emojiTrigger = sender.getByRole('button', {name:'Open emoji picker'});
+        const giphyTrigger = sender.getByRole('button', {name:'Open GIPHY picker'});
+        await draft.fill('preserved draft');
+        await draft.focus();
+        await emojiTrigger.click();
+        await expect(draft).toBeFocused();
+        await expect(emojiTrigger).toHaveAttribute('aria-expanded', 'true');
         const geometry = await sender.locator('#emoji-picker').evaluate(element => { const r=element.getBoundingClientRect(); const t=document.querySelector<HTMLElement>('[aria-controls="emoji-picker"]')?.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,triggerTop:t?.top ?? 0,scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth}; });
         expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
         expect(geometry.left).toBeGreaterThanOrEqual(0); expect(geometry.right).toBeLessThanOrEqual(viewport.width + 1);
         expect(geometry.top).toBeGreaterThanOrEqual(0); expect(geometry.bottom).toBeLessThanOrEqual(viewport.height + 1);
         expect(geometry.bottom).toBeLessThanOrEqual(geometry.triggerTop + 1);
         if ((theme === 'light' && viewport.width === 2560) || (theme === 'dark' && viewport.width === 390)) await sender.screenshot({path:testInfo.outputPath(`emoji-picker-${theme}-${viewport.width}.png`)});
-        await sender.getByRole('button', {name:'Open emoji picker'}).click();
+        await giphyTrigger.click();
+        await expect(sender.locator('#emoji-picker')).toHaveCount(0);
+        const picker = sender.locator('#giphy-picker');
+        const query = picker.getByRole('searchbox', {name:'Search GIPHY'});
+        await expect(query).toBeFocused();
+        await query.fill('not sent');
+        await query.click();
+        await expect(picker).toBeVisible();
+        await emojiTrigger.click();
+        await expect(picker).toHaveCount(0);
+        await expect(sender.locator('#emoji-picker')).toBeVisible();
+        await giphyTrigger.click();
+        await expect(sender.locator('#emoji-picker')).toHaveCount(0);
+        await expect(query).toHaveValue('');
+        await draft.click();
+        await expect(picker).toHaveCount(0);
+        await expect(draft).toBeFocused();
+        await expect(draft).toHaveValue('preserved draft');
+        await draft.fill('');
       }
     }
 
@@ -3460,7 +3530,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     await emojiPickerTrigger.click();
     await expect(emojiPicker).toBeVisible();
     expect(await emojiPicker.locator('button').count()).toBeGreaterThanOrEqual(24);
-    expect(await emojiPicker.locator('button span').first().evaluate(element => getComputedStyle(element).fontSize)).toBe('28px');
+    await expect(emojiPicker.locator('button span').first()).toHaveCSS('font-size', '28px');
     await sender.getByRole('button', {name:'Insert Fire'}).click();
     const composer = sender.getByPlaceholder('Write a message…');
     await expect(composer).toHaveValue('🔥');
@@ -3468,21 +3538,21 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     await sender.getByRole('button', {name:'Send message'}).click();
     const mixedEmoji = sender.locator('.message-history .message-bubble').last().locator('p');
     await expect(mixedEmoji).toContainText('🔥 ordinary text');
-    expect(await mixedEmoji.locator('.message-emoji').evaluate(element => getComputedStyle(element).fontSize)).toBe('22px');
-    expect(await mixedEmoji.locator('span:not(.message-emoji)').evaluate(element => getComputedStyle(element).fontSize)).toBe('14px');
+    await expect(mixedEmoji.locator('.message-emoji')).toHaveCSS('font-size', '22px');
+    await expect(mixedEmoji.locator('span:not(.message-emoji)')).toHaveCSS('font-size', '14px');
     await sender.getByPlaceholder('Write a message…').fill('🎉');
     await sender.getByRole('button', {name:'Send message'}).click();
     const standaloneEmoji = sender.locator('.message-history .message-bubble').last().locator('p');
     await expect(standaloneEmoji).toContainText('🎉');
     await expect(standaloneEmoji).toHaveClass(/message-single-emoji/);
-    expect(await standaloneEmoji.locator('.message-emoji').evaluate(element => getComputedStyle(element).fontSize)).toBe('38px');
+    await expect(standaloneEmoji.locator('.message-emoji')).toHaveCSS('font-size', '38px');
     for (const emoji of ['👍🏽','🇺🇸','1️⃣','👨‍👩‍👧‍👦']) {
       await sender.getByPlaceholder('Write a message…').fill(emoji);
       await sender.getByRole('button', {name:'Send message'}).click();
       const rendered = sender.locator('.message-history .message-bubble').last().locator('p');
       await expect(rendered).toContainText(emoji);
       await expect(rendered).toHaveClass(/message-single-emoji/);
-      expect(await rendered.locator('.message-emoji').evaluate(element => getComputedStyle(element).fontSize)).toBe('38px');
+      await expect(rendered.locator('.message-emoji')).toHaveCSS('font-size', '38px');
     }
     await sender.screenshot({path:testInfo.outputPath('emoji-messages-dark-1440.png')});
 
@@ -3492,6 +3562,12 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
       await sender.getByRole('button', {name: 'Open GIPHY picker'}).click();
       const rateLimitPicker = sender.locator('#giphy-picker');
       const rateLimitQuery = rateLimitPicker.getByRole('searchbox', {name: 'Search GIPHY'});
+      await rateLimitQuery.click();
+      await expect(rateLimitPicker).toBeVisible();
+      await sender.getByRole('textbox', {name:'Message', exact:true}).click();
+      await expect(rateLimitPicker).toHaveCount(0);
+      await expect(sender.getByRole('textbox', {name:'Message', exact:true})).toBeFocused();
+      await sender.getByRole('button', {name: 'Open GIPHY picker'}).click();
       expectedSearchQuery = 'limited';
       const beforeRateLimit = searchRequests;
       await rateLimitQuery.fill('limited'); await runGiphySearch();
@@ -3564,7 +3640,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     giphyKeyMode = 'failure';
     const keyRequestsBeforeFailure = giphyKeyRequests;
     const requestsBeforeKeyFailure = searchRequests;
-    await sender.reload();
+    await reloadSession(sender);
     await waitForPresenceReady(sender);
     await sender.getByRole('button', {name: 'Back to chats'}).click();
     await sender.locator('.person-option').filter({hasText: recipientEmail}).click();
@@ -3585,7 +3661,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     mediaPolicyMode = 'disabled';
     const disabledPolicyRequestCount = mediaPolicyRequests;
     const requestsBeforeDisabledPolicy = searchRequests;
-    await sender.reload();
+    await reloadSession(sender);
     await expect.poll(() => mediaPolicyRequests).toBe(disabledPolicyRequestCount + 1);
     await waitForPresenceReady(sender);
     await expect(sender.getByPlaceholder('Write a message…')).toBeVisible();
@@ -3598,7 +3674,7 @@ test('searches, stages, cancels, and sends GIPHY URLs in direct and group chats'
     mediaPolicyMode = 'failure';
     const failedPolicyRequestCount = mediaPolicyRequests;
     const requestsBeforePolicyFailure = searchRequests;
-    await sender.reload();
+    await reloadSession(sender);
     await expect.poll(() => mediaPolicyRequests).toBe(failedPolicyRequestCount + 1);
     await waitForPresenceReady(sender);
     await expect(sender.getByPlaceholder('Write a message…')).toBeVisible();
@@ -4608,9 +4684,8 @@ test('register, create conversation, and deliver a message', async ({ browser },
       expect(lightThemeColors.actionText).toBe('rgb(23, 32, 51)');
       expect(lightThemeColors.device).toBe('rgb(255, 255, 255)');
       expect(lightThemeColors.scrollThumb).not.toBe(darkThemeColors.scrollThumb);
-         await alice.locator('.cdk-overlay-backdrop').click({position: {x: 1, y: 1}});
          await expect(alice.getByRole('menuitem', {name: 'Switch to light theme'})).not.toBeVisible();
-         await alice.waitForTimeout(250);
+         await expect(alice.locator('.cdk-overlay-backdrop-showing')).toHaveCount(0);
          await alice.setViewportSize({width: 390, height: 844});
          await qualitySelect.click();
          await expect(alice.locator('.call-quality-listbox')).toBeVisible();
@@ -4826,7 +4901,8 @@ test('register, create conversation, and deliver a message', async ({ browser },
       await expect(bob.locator('.call-diagnostics')).not.toBeAttached();
    await bob.locator('.person-option').filter({hasText: 'Alice'}).click();
 
-   await bob.goto('/profile');
+   await bob.getByRole('button', {name: 'Account menu'}).click();
+  await bob.getByRole('menuitem', {name: 'Profile'}).click();
   await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
   await expect(alice.getByRole('heading', {name: 'Bob'})).toBeVisible();
   await expect(alice.getByText('Offline', {exact: true})).toBeVisible();
@@ -4842,8 +4918,11 @@ test('register, create conversation, and deliver a message', async ({ browser },
   await alice.getByRole('button', {name: 'Cancel', exact: true}).click();
   await expect(alice.getByRole('status', {name: 'Call status', exact: true}).getByText('Call cancelled.', {exact: true})).toBeVisible();
   await expect(alice.locator('app-direct-call-surface')).toHaveCount(0);
-  await bob.goto('/home');
+  await bob.getByRole('link', {name: 'Back to chats'}).click();
   await expect(bob.getByRole('heading', {name: 'Chats'})).toBeVisible();
+  // The heading can appear before Angular has registered the search control.
+  // Filling it earlier is overwritten by the control's initial model value.
+  await expect(bob.locator('input[name="userSearch"].ng-untouched')).toBeVisible();
   await bob.getByPlaceholder('Name or email').fill(aliceEmail);
   const restoredBobSearchResult = bob.locator('.search-result').filter({hasText: aliceEmail});
   await expect(restoredBobSearchResult).toBeVisible();
@@ -4875,7 +4954,7 @@ test('register, create conversation, and deliver a message', async ({ browser },
   const aliceConversationAfterReply = alice.locator('.person-option').filter({ hasText: 'Bob' });
   await expect(aliceConversationAfterReply.locator('.unread-count')).toHaveText('1', { timeout: 5_000 });
 
-  await alice.reload();
+  await reloadSession(alice);
   const restoredAliceConversation = alice.locator('.person-option').filter({ hasText: 'Bob' });
   await expect(restoredAliceConversation.locator('.unread-count')).toHaveText('1');
   await restoredAliceConversation.click();
@@ -4951,7 +5030,7 @@ test('message push click selects an authorized conversation and highlights the t
     expect(recipientConversations.status()).toBe(200);
     expect((await recipientConversations.json() as Array<{id: string; other_user_id?: string; other_display_name?: string}>)).toContainEqual(expect.objectContaining({id: conversation.id, other_user_id: senderID, other_display_name: 'Push Sender'}));
 
-    await recipient.reload(); // Memory-only access token is cleared; the HttpOnly refresh cookie survives.
+    await reloadSession(recipient); // Memory-only access token is cleared; the HttpOnly refresh cookie survives.
     await expect(recipient).toHaveURL(/\/home$/);
     const malformedClients = await dispatchServiceWorkerNotificationClick(recipient, {kind: 'message', conversation_id: conversation.id, message_id: 'not-a-uuid'});
     expect(malformedClients.clients).toBeGreaterThan(0);
@@ -4959,7 +5038,7 @@ test('message push click selects an authorized conversation and highlights the t
     await expect(recipient).toHaveURL(/\/home$/);
     await expect(recipient.locator('.chat-empty')).toBeVisible();
     // Let the Angular worker client initialize against the newly activated fixture.
-    await recipient.reload();
+    await reloadSession(recipient);
     await expect(recipient).toHaveURL(/\/home$/);
 
     const clients = await dispatchServiceWorkerNotificationClick(recipient, {
@@ -4985,9 +5064,12 @@ test('message push click selects an authorized conversation and highlights the t
     await recipient.screenshot({path: testInfo.outputPath('push-message-authorized-target-highlighted.png'), fullPage: false});
 
     // A failed refresh must not dispatch the click intent or navigate to its conversation.
-    await recipient.route('**/api/auth/refresh', route => route.fulfill({status: 503, contentType: 'application/json', body: '{"error":"refresh unavailable"}'}));
+    await recipient.route('**/api/auth/v2/refresh', route => route.fulfill({status: 503, contentType: 'application/json', body: '{"error":"refresh unavailable"}'}));
+    const failedRefresh = recipient.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/v2/refresh' && response.request().method() === 'POST');
     await recipient.reload();
-    await expect(recipient).toHaveURL(/\/(sign-in|login)$/);
+    expect((await failedRefresh).status()).toBe(503);
+    await expect(recipient).toHaveURL(/\/login$/);
+    await expect(recipient.getByRole('alert')).toContainText("We couldn't restore your session");
     const failedRefreshURL = recipient.url();
     const failedRefreshClients = await dispatchServiceWorkerNotificationClick(recipient, {kind: 'message', conversation_id: conversation.id, message_id: target.id});
     expect(failedRefreshClients.clients).toBeGreaterThan(0);
@@ -5026,9 +5108,9 @@ test('archived direct-message push click opens Archived without unarchiving', as
     const activeList = await context.request.get(`${chatBase}/api/chat/conversations`, {headers});
     expect((await activeList.json() as Array<{id: string}>).some(item => item.id === conversation.id)).toBe(false);
 
-    await page.reload();
+    await reloadSession(page);
     await expect(page).toHaveURL(/\/home$/);
-    await page.reload(); // Allow Angular's worker client to initialize after refresh restoration.
+    await reloadSession(page); // Allow Angular's worker client to initialize after refresh restoration.
     await expect(page.locator('.chat-empty')).toBeVisible();
     const click = await dispatchServiceWorkerNotificationClick(page, {kind: 'message', conversation_id: conversation.id, message_id: target.id});
     expect(click.clients).toBeGreaterThan(0);
@@ -5061,7 +5143,7 @@ test('archived direct-message push click opens Archived without unarchiving', as
     const stillArchived = await context.request.get(`${chatBase}/api/chat/conversations?archived=true`, {headers});
     expect(stillArchived.status()).toBe(200);
     expect((await stillArchived.json() as Array<{id: string}>).some(item => item.id === conversation.id)).toBe(true);
-    await page.reload();
+    await reloadSession(page);
     await page.getByRole('button', {name: 'Archived'}).click();
     await expect(page.locator('.person-option')).toContainText('Archived Push Sender');
     const reloadArchived = await context.request.get(`${chatBase}/api/chat/conversations?archived=true`, {headers});
@@ -5133,6 +5215,7 @@ test('direct-call push click restores an offline recipient to ringing without an
 
     // Closing the page drops the recipient's live socket while preserving the
     // same browser context and its restricted HttpOnly refresh cookie.
+    const recipientBinding = await recipient.evaluate(() => localStorage.getItem('zwei.intended-session'));
     await recipient.close();
     await caller.getByRole('button', {name: 'Start audio call'}).click();
     await expect(caller.getByText('Ringing...', {exact: true})).toBeVisible({timeout: 10_000});
@@ -5143,7 +5226,7 @@ test('direct-call push click restores an offline recipient to ringing without an
     const recipientSocketTraffic = new Promise<void>(resolve => {
       recipient.on('websocket', socket => socket.on('framesent', () => resolve()));
     });
-    await recipient.goto('/home');
+    await restoreSession(recipient, () => recipient.goto('/home'), 'home', recipientBinding);
     await expect(recipient).toHaveURL(/\/home$/);
     // The selected conversation displays the peer's "Online" presence instead
     // of the generic "Live connection" label; wait for actual socket traffic
@@ -5200,6 +5283,62 @@ test('direct-call push click restores an offline recipient to ringing without an
   }
 });
 
+test('starting a group call after an offline direct call does not join itself', async ({browser}, testInfo) => {
+  test.setTimeout(120_000);
+  const ownerEmail = uniqueEmail('offline-direct-group-owner');
+  const recipientEmail = uniqueEmail('offline-direct-group-recipient');
+  const ownerContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const recipientContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  const recipient = await recipientContext.newPage();
+  try {
+    await installDeterministicGroupMedia(owner, '#b84a3a');
+    await owner.addInitScript(() => {
+      const commands: string[] = [];
+      Object.defineProperty(window, '__groupCommands', {value: commands});
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function(data: Parameters<WebSocket['send']>[0]): void {
+        if (typeof data === 'string') {
+          try {
+            const command = JSON.parse(data) as {type?: string};
+            if (command.type?.startsWith('group.call.')) commands.push(command.type);
+          } catch { /* Do not record frame contents. */ }
+        }
+        send.call(this, data);
+      };
+    });
+    await register(owner, ownerEmail, 'Group Owner');
+    await register(recipient, recipientEmail, 'Offline Recipient');
+    await Promise.all([waitForLiveConnection(owner), waitForLiveConnection(recipient)]);
+    const token = await authenticatedToken(ownerContext, ownerEmail, 'offline-direct-group');
+    const memberID = await userID(ownerContext, token, recipientEmail);
+    const created = await ownerContext.request.post(`${chatBase}/api/chat/groups`, {
+      headers: {Authorization: `${token.token_type} ${token.access_token}`},
+      data: {name: 'Offline call group', member_ids: [memberID]},
+    });
+    expect(created.status()).toBe(201);
+    await reloadSession(owner);
+    await waitForLiveConnection(owner);
+    await owner.getByPlaceholder('Name or email').fill(recipientEmail);
+    await owner.locator('.search-result').filter({hasText: recipientEmail}).click();
+    await recipient.close();
+    await expect(owner.getByText('Offline', {exact: true})).toBeVisible({timeout: 10_000});
+    await owner.getByRole('button', {name: 'Start audio call'}).click();
+    await expect(owner.getByText('Ringing...', {exact: true})).toBeVisible({timeout: 10_000});
+    await owner.getByRole('button', {name: 'Cancel', exact: true}).click();
+    await expect(owner.getByRole('status', {name: 'Call status', exact: true}).getByText('Call cancelled.', {exact: true})).toBeVisible();
+    await owner.locator('.person-option').filter({hasText: 'Offline call group'}).click();
+    await owner.getByRole('button', {name: 'Join or start group audio call'}).click();
+    await expect(owner.locator('.group-call-panel')).toContainText('1 participant', {timeout: 10_000});
+    const commands = await owner.evaluate(() => (window as Window & {__groupCommands: string[]}).__groupCommands);
+    expect(commands).toContain('group.call.start');
+    expect(commands).not.toContain('group.call.join');
+    await owner.screenshot({path: testInfo.outputPath('offline-direct-then-group-start.png'), fullPage: false});
+  } finally {
+    await Promise.allSettled([ownerContext.close(), recipientContext.close()]);
+  }
+});
+
 test('group-call push click discovers an authorized room without joining', async ({browser}, testInfo) => {
   test.setTimeout(120_000);
   const ownerEmail = uniqueEmail('push-group-owner');
@@ -5219,7 +5358,7 @@ test('group-call push click discovers an authorized room without joining', async
     });
     expect(created.status()).toBe(201);
     const group = await created.json() as {id: string};
-    await owner.reload();
+    await reloadSession(owner);
     await waitForLiveConnection(owner);
     const ownerGroup = owner.locator('.person-option').filter({hasText: 'Push call group'});
     await expect(ownerGroup).toBeVisible();
@@ -5241,7 +5380,7 @@ test('group-call push click discovers an authorized room without joining', async
         originalSend.call(this, data);
       };
     });
-    await recipient.reload(); // Restore through the HttpOnly cookie before handling the notification.
+    await reloadSession(recipient); // Restore through the HttpOnly cookie before handling the notification.
     await expect(recipient).toHaveURL(/\/home$/);
     const clients = await dispatchServiceWorkerNotificationClick(recipient, {kind: 'group_call', conversation_id: group.id});
     expect(clients.clients).toBeGreaterThan(0);
@@ -5483,14 +5622,15 @@ test('replays a message sent while the recipient is offline', async ({ browser }
   await bobSearchResult.click();
   await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled({timeout: 10_000});
 
-  await bob.goto('/profile');
+  await bob.getByRole('button', {name: 'Account menu'}).click();
+  await bob.getByRole('menuitem', {name: 'Profile'}).click();
   await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
   const offlineMessage = `offline-${Date.now()}`;
   await alice.getByPlaceholder('Write a message…').fill(offlineMessage);
   await alice.getByPlaceholder('Write a message…').press('Enter');
   await expect(alice.getByText(offlineMessage)).toBeVisible();
 
-  await bob.goto('/home');
+  await bob.getByRole('link', {name: 'Back to chats'}).click();
   await expect(bob.getByPlaceholder('Write a message…')).toBeEnabled({timeout: 10_000});
   await expect(bob.getByText(offlineMessage)).toBeVisible({timeout: 10_000});
 
@@ -5530,7 +5670,7 @@ test('shares read and unread state across a user\'s browser devices', async ({ b
   await expect(alice.getByText(message)).toBeVisible({timeout: 5_000});
   const bobMessage = bob.locator('.message-bubble').filter({hasText: message});
   await expect(bobMessage.locator('.message-read[aria-label="Read by peer"]')).toBeVisible({timeout: 10_000});
-  await aliceSecond.reload();
+  await reloadSession(aliceSecond);
   await expect(aliceSecond.locator('.person-option').filter({hasText: 'Bob'})).toBeVisible();
   await expect(aliceSecond.locator('.person-option').filter({hasText: 'Bob'}).locator('.unread-count')).not.toBeVisible({timeout: 5_000});
 
@@ -5664,10 +5804,8 @@ test('group HTTP surface enforces ownership and membership visibility', async ({
   try {
     await register(owner, ownerEmail, 'Group owner');
     await register(member, memberEmail, 'Group member');
-    const ownerLogin = await ownerContext.request.post(`${adminBase}/api/auth/login`, {data: {email: ownerEmail, password, device_id: `group-owner-${Date.now()}`, device_name: 'E2E'}});
-    const memberLogin = await memberContext.request.post(`${adminBase}/api/auth/login`, {data: {email: memberEmail, password, device_id: `group-member-${Date.now()}`, device_name: 'E2E'}});
-    const ownerToken = (await ownerLogin.json() as {access_token: string; token_type: string});
-    const memberToken = (await memberLogin.json() as {access_token: string; token_type: string});
+    const ownerToken = await fixtureToken(adminBase, ownerEmail, password, 'group-owner');
+    const memberToken = await fixtureToken(adminBase, memberEmail, password, 'group-member');
     const memberSearch = await ownerContext.request.get(`${chatBase}/api/chat/users/search?q=${encodeURIComponent(memberEmail)}`, {headers: {Authorization: `${ownerToken.token_type} ${ownerToken.access_token}`}});
     expect(memberSearch.status()).toBe(200);
     const memberID = (await memberSearch.json() as Array<{id: string}>).find(item => item.id)?.id;
@@ -5733,7 +5871,7 @@ test('keeps load older messages readable in both themes and responsive layouts',
       expect(response.status(), `Creating history message ${index}`).toBe(201);
     }
 
-    await alice.reload();
+    await reloadSession(alice);
     await waitForLiveConnection(alice);
     await alice.getByRole('button', {name: 'History Peer', exact: true}).click();
     const loadOlder = alice.getByRole('button', {name: 'Load older messages'});
@@ -5955,7 +6093,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     await owner.getByRole('button', {name: 'Add member'}).click();
     const memberRow = owner.locator('.group-members li').filter({has: owner.locator('strong').getByText('Member', {exact: true})});
     await expect(memberRow).toBeVisible();
-    await member.reload();
+    await reloadSession(member);
     await waitForLiveConnection(member);
     await member.locator('.person-option').filter({hasText: 'Departure quarantine group'}).click();
     await owner.getByPlaceholder('Write a message…').fill('Private departure history');
@@ -6495,7 +6633,7 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await addMember(memberEmail);
     const memberPresenceSnapshots = observePresenceSnapshots(member);
     const ownerID = await currentUserID(ownerContext, ownerToken);
-    await member.reload();
+    await reloadSession(member);
     await waitForLiveConnection(member);
     await expect(member.locator('.person-option').filter({hasText: 'Browser acceptance group'})).toBeVisible({timeout: 10_000});
     await member.locator('.person-option').filter({hasText: 'Browser acceptance group'}).click();
@@ -6598,7 +6736,7 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
       data: {role: 'admin'},
     });
     expect(restoreAdmin.status()).toBe(200);
-    await owner.reload();
+    await reloadSession(owner);
     const ownerGroupOption = owner.locator('.person-option').filter({hasText: 'Browser acceptance group'});
     await expect(ownerGroupOption).toBeVisible({timeout: 10_000});
     await ownerGroupOption.click();
@@ -6633,7 +6771,7 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     expect((await successfulRename).status()).toBe(200);
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group renamed'})).toBeVisible();
 
-    await member.reload();
+    await reloadSession(member);
     await expect(member.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'})).toBeVisible({timeout: 10_000});
     await member.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
     await expect(member.getByRole('button', {name: 'Manage group'})).toBeVisible();
@@ -6693,7 +6831,7 @@ test('attributes group messages and system actions to their members', async ({br
       headers: {Authorization: `${token.token_type} ${token.access_token}`}, data: {name: 'Attribution group', member_ids: []},
     });
     expect(created.status()).toBe(201);
-    await owner.reload();
+    await reloadSession(owner);
     await waitForLiveConnection(owner);
     await expect(owner.locator('.person-option').filter({hasText: 'Attribution group'})).toBeVisible({timeout: 10_000});
     await owner.locator('.person-option').filter({hasText: 'Attribution group'}).click();
@@ -6803,7 +6941,7 @@ test('attributes group messages and system actions to their members', async ({br
     for (const page of [owner, member]) {
       await page.setViewportSize({width: 1440, height: 900});
       await page.evaluate(() => window.localStorage.removeItem('zwei_selected_conversation'));
-      await page.reload();
+      await reloadSession(page);
       await expect(page).toHaveURL(/\/home$/);
       await expect(page.getByRole('button', {name: 'Account menu'})).toBeVisible();
       await expect(page.getByRole('heading', {name: 'Choose a conversation'})).toBeVisible();
@@ -7038,7 +7176,7 @@ test('contains group member, message, and rail lists across the required viewpor
     });
     expect(adminResponse.status()).toBe(200);
     const firstGroupMessage = `group-visual-message-${Date.now()}`;
-    await owner.reload();
+    await reloadSession(owner);
     await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'})).toBeVisible({timeout: 10_000});
     await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
     await owner.setViewportSize({width: 2560, height: 1440});
@@ -7055,7 +7193,7 @@ test('contains group member, message, and rail lists across the required viewpor
       });
       expect(response.status()).toBe(201);
     }
-    await owner.reload();
+    await reloadSession(owner);
     await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'})).toBeVisible({timeout: 10_000});
     await owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'}).click();
     await owner.getByRole('button', {name: 'Manage group'}).click();
@@ -7189,7 +7327,7 @@ test('contains group member, message, and rail lists across the required viewpor
     }
     await owner.setViewportSize({width: 1440, height: 900});
     await owner.evaluate(() => window.localStorage.removeItem('zwei_selected_conversation'));
-    await owner.reload();
+    await reloadSession(owner);
     await waitForLiveConnection(owner);
     const ownerGroup = owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'});
     await expect(ownerGroup).toBeVisible();
@@ -7268,7 +7406,7 @@ test('removing a member from an active group call stops only that member media a
     });
     expect(created.status()).toBe(201);
     await Promise.all([owner, removed, remaining].map(async page => {
-      await page.reload();
+      await reloadSession(page);
       const conversation = page.locator('.person-option').filter({hasText: 'Active call membership group'});
       await expect(conversation).toBeVisible({timeout: 10_000});
       await conversation.click();
@@ -7355,7 +7493,7 @@ test('hands a three-person group call from A to B to C and lets C leave and rejo
     expect(created.status()).toBe(201);
     const handoffGroupID = (await created.json() as {id: string}).id;
     for (const page of [a, b, c]) {
-      await page.reload();
+      await reloadSession(page);
       await waitForLiveConnection(page);
       const group = page.locator('.person-option').filter({hasText: 'Three-person handoff'});
       await expect(group).toBeVisible({timeout: 10_000});
@@ -7427,16 +7565,18 @@ test('hands a three-person group call from A to B to C and lets C leave and rejo
       expect((rect?.x ?? 390) + (rect?.width ?? 390)).toBeLessThanOrEqual(390);
       await c.screenshot({path: testInfo.outputPath(`handoff-b-c-left-${theme}-390.png`), fullPage: false});
     }
+    await setTheme(c, 'light');
     await c.evaluate(() => { (window as Window & {__denyGroupMicrophone: boolean}).__denyGroupMicrophone = true; });
     await c.getByRole('button', {name: 'Join or start group audio call'}).click();
     await expect(c.locator('.group-call-terminal')).toContainText('Microphone permission was denied.');
     await expect(c.getByRole('button', {name: 'Join or start group audio call'})).toBeVisible();
     await expect(c.getByRole('button', {name: 'Join or start group audio call'})).toBeEnabled();
     await expect(c.locator('.group-call-panel')).toHaveCount(0);
-    expect(await c.evaluate(() => window.innerWidth)).toBe(390);
+    await assertTerminalCapture(c, 'light', {width: 390, height: 844});
     await c.screenshot({path: testInfo.outputPath('handoff-b-c-rejoin-permission-denied-light-390.png'), fullPage: false});
     console.log(`HANDOFF_REJOIN_FAILURE_SCREENSHOT ${testInfo.outputPath('handoff-b-c-rejoin-permission-denied-light-390.png')}`);
     await c.evaluate(() => { (window as Window & {__denyGroupMicrophone: boolean}).__denyGroupMicrophone = false; });
+    await setTheme(c, 'dark');
     await c.getByRole('button', {name: 'Join or start group audio call'}).click();
     await Promise.all([a, b, c].map(page => expect(page.locator('.group-call-panel')).toContainText('3 participants in the group call.', {timeout: 10_000})));
     await assertGroupCallAudioConnected(c);
@@ -7524,7 +7664,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     expect(otherConversation.status()).toBe(201);
 
     for (const page of [owner, member, observer]) {
-      await page.reload();
+      await reloadSession(page);
       const group = page.locator('.person-option').filter({hasText: 'Deterministic media group'});
       await expect(group).toBeVisible({timeout: 10_000});
       await group.click();
@@ -8273,6 +8413,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     dropObserverTerminal = true;
     await setTheme(owner, 'light');
     await setTheme(observer, 'dark');
+    await Promise.all([owner, observer].map(page => page.setViewportSize({width: 1440, height: 900})));
     await owner.getByRole('button', {name: 'Minimize group call'}).click();
     await expect(owner.locator('.call-minimized-banner:not(.call-minimized-banner-rail):not(.call-minimized-banner-chat)')).toBeVisible();
     await owner.getByRole('button', {name: 'End group call for everyone'}).click();
@@ -8294,9 +8435,11 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     const ownerTerminalStyle = await ownerTerminal.evaluate(element => ({background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color}));
     const ownerTerminalContrast = await measureRenderedTextContrastAtSurface(ownerTerminal.locator('.call-terminal-message'));
     expect(ownerTerminalContrast.ratio, `light owner terminal contrast: ${JSON.stringify({ownerTerminalStyle, ownerTerminalContrast})}`).toBeGreaterThanOrEqual(4.5);
+    await assertTerminalCapture(owner, 'light', {width: 1440, height: 900});
     await owner.screenshot({path: testInfo.outputPath('group-call-terminal-owner-light-1440-immediate.png'), fullPage: false, timeout: 15_000});
     await owner.setViewportSize({width: 390, height: 844});
     await expect(ownerTerminal).toBeVisible();
+    await assertTerminalCapture(owner, 'light', {width: 390, height: 844});
     await owner.screenshot({path: testInfo.outputPath('group-call-terminal-owner-light-390-immediate.png'), fullPage: false, timeout: 15_000});
     await owner.setViewportSize({width: 1440, height: 900});
     await expect.poll(() => observer.evaluate(() => (window as Window & {__groupSyncRequests?: string[]}).__groupSyncRequests?.length ?? 0), {timeout: 20_000}).toBeGreaterThan(observerSyncsBeforeTerminal);
@@ -8314,6 +8457,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     const observerTerminalContrast = await measureRenderedTextContrastAtSurface(observerTerminal.locator('.call-terminal-message'));
     expect(observerTerminalStyle.text).toBe('Group call ended.');
     expect(observerTerminalContrast.ratio, `dark terminal notice contrast: ${JSON.stringify({observerTerminalStyle, observerTerminalContrast})}`).toBeGreaterThanOrEqual(4.5);
+    await assertTerminalCapture(observer, 'dark', {width: 1440, height: 900});
     await observer.screenshot({path: testInfo.outputPath('group-call-terminal-dark-1440-immediate.png'), fullPage: false, timeout: 15_000});
     await observer.setViewportSize({width: 390, height: 844});
     await expect(observerTerminal).toBeVisible();
@@ -8329,6 +8473,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     expect(observerTerminalCopyGeometry.radius).toBe('50%');
     expect(observerTerminalCopyGeometry.left).toBeGreaterThanOrEqual((observerTerminalCopyGeometry.notice?.left ?? 0) - 1);
     expect(observerTerminalCopyGeometry.right).toBeLessThanOrEqual((observerTerminalCopyGeometry.notice?.right ?? 0) + 1);
+    await assertTerminalCapture(observer, 'dark', {width: 390, height: 844});
     await observer.screenshot({path: testInfo.outputPath('group-call-terminal-dark-390-immediate.png'), fullPage: false, timeout: 15_000});
     // A fresh room begins at revision 1 even when the previous room ended at
     // a higher revision. The former member must receive a new Join prompt now,
@@ -8446,7 +8591,7 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
     });
     expect(created.status()).toBe(201);
     for (const page of pages) {
-      await page.reload();
+      await reloadSession(page);
       const group = page.locator('.person-option').filter({hasText: 'Mention acceptance group'});
       await expect(group).toBeVisible({timeout: 10_000});
     }
@@ -8551,7 +8696,7 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
     await expect(directMessage.locator('.message-mention')).toHaveText(`@${users[1].name}`);
     const bobDirectMessage = bob.locator('.message-bubble').filter({hasText: 'hello from a selected mention'}).last();
     await expect(bobDirectMessage.locator('.message-mention')).toHaveText(`@${users[1].name}`);
-    await bob.reload();
+    await reloadSession(bob);
     await expect(bob.locator('.chat-presence')).toHaveText('Online', {timeout: 10_000});
     await bob.locator('.person-option').filter({hasText: users[0].name}).click();
     await expect(bob.locator('.message-bubble').filter({hasText: 'hello from a selected mention'}).last().locator('.message-mention')).toHaveText(`@${users[1].name}`);
@@ -8618,7 +8763,8 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
     // message on reconnect, with the normal unread cursor behavior.
     await bob.setViewportSize({width: 390, height: 844});
     await bob.getByRole('button', {name: 'Back to chats'}).click();
-    await bob.goto('/profile');
+    await bob.getByRole('button', {name: 'Account menu'}).click();
+  await bob.getByRole('menuitem', {name: 'Profile'}).click();
     await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
     await owner.setViewportSize({width: 1440, height: 900});
     await composer.fill('@Bo');
@@ -8628,7 +8774,7 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
     await expect(composer).toHaveValue(`@${users[1].name} `);
     await composer.fill(`${await composer.inputValue()}offline mention replay`);
     await owner.getByRole('button', {name: 'Send message'}).click();
-    await bob.goto('/home');
+    await bob.getByRole('link', {name: 'Back to chats'}).click();
     await waitForLiveConnection(bob);
     const bobDirectRow = bob.locator('.person-option').filter({hasText: users[0].name});
     await expect(bobDirectRow.locator('.unread-count')).toBeVisible({timeout: 10_000});
@@ -8638,7 +8784,7 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
 
     // In the group, candidates are exactly the other members; keyboard selection
     // and recipient-side rendering are checked again on the group protocol path.
-    await owner.reload();
+    await reloadSession(owner);
     const ownerGroup = owner.locator('.person-option').filter({hasText: 'Mention acceptance group'});
     await expect(ownerGroup).toBeVisible({timeout: 10_000});
     await ownerGroup.click();
@@ -8819,7 +8965,8 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
 
     await bob.setViewportSize({width: 390, height: 844});
     await bob.getByRole('button', {name: 'Back to chats'}).click();
-    await bob.goto('/profile');
+    await bob.getByRole('button', {name: 'Account menu'}).click();
+  await bob.getByRole('menuitem', {name: 'Profile'}).click();
     await expect(bob.getByRole('heading', {name: 'Profile'})).toBeVisible();
     await groupComposer.fill('@Bob');
     await expect(groupPicker.getByRole('option')).toHaveText([users[1].name]);
@@ -8828,7 +8975,7 @@ test('offers chat-scoped @mentions and renders only selected mentions in direct 
     await expect(groupComposer).toHaveValue(`@${users[1].name} `);
     await groupComposer.fill(`${await groupComposer.inputValue()}offline group mention replay`);
     await owner.getByRole('button', {name: 'Send message'}).click();
-    await bob.goto('/home');
+    await bob.getByRole('link', {name: 'Back to chats'}).click();
     await waitForLiveConnection(bob);
     const bobGroupRow = bob.locator('.person-option').filter({hasText: 'Mention acceptance group'});
     await expect(bobGroupRow.locator('.unread-count')).toBeVisible({timeout: 10_000});

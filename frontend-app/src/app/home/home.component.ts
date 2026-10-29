@@ -1,4 +1,4 @@
-import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, Inject, OnDestroy, OnInit, Optional, ViewChild} from '@angular/core';
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, Inject, OnDestroy, OnInit, Optional, ViewChild} from '@angular/core';
 import {BehaviorSubject, finalize, map, Observable, Subscription} from 'rxjs';
 import {Conversation, GroupConversation, GroupMember, GroupPeerReadCursor, GroupRole} from './conversation.model';
 import {compareConversationActivityDescending} from './conversation-activity';
@@ -745,13 +745,8 @@ export class HomeComponent implements OnInit, OnDestroy {
         return /\uFE0F/u.test(value) || /\p{Emoji_Presentation}/u.test(value);
     }
     public shouldAutoLoadGiphy(message: Message): boolean {
-        if (!this.giphyEnabled || this.profile?.auto_load_approved_media !== true) return false;
-        let approvedMediaCount = 0;
-        for (const candidate of this.messages) {
-            if (parseGiphyMedia(candidate.body)?.kind === 'image') approvedMediaCount++;
-            if (candidate.id === message.id) return approvedMediaCount <= 3;
-        }
-        return false;
+        return this.giphyEnabled && this.profile?.auto_load_approved_media === true
+            && parseGiphyMedia(message.body)?.kind === 'image';
     }
     public draftMentionNames(): string[] {
         const members = this.selectedConversation?.kind === 'group' ? this.selectedConversation.members : this.selectedConversation?.kind === 'direct' ? [{userId: this.selectedConversation.otherUserId, displayName: this.selectedConversation.otherDisplayName}] : [];
@@ -776,10 +771,20 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphyPickerOpen = true;
     }
 
-    public closeGiphyPicker(): void {
+    @ViewChild('emojiPickerWrap') private emojiPickerWrap?: ElementRef<HTMLElement>;
+    @ViewChild('giphyPickerWrap') private giphyPickerWrap?: ElementRef<HTMLElement>;
+
+    @HostListener('document:click', ['$event'])
+    public dismissPickersOnOutsideClick(event: MouseEvent): void {
+        const path = event.composedPath();
+        if (!this.emojiPickerWrap || !path.includes(this.emojiPickerWrap.nativeElement)) this.emojiPickerOpen = false;
+        if (this.giphyPickerOpen && (!this.giphyPickerWrap || !path.includes(this.giphyPickerWrap.nativeElement))) this.closeGiphyPicker(false);
+    }
+
+    public closeGiphyPicker(restoreFocus = true): void {
         this.giphyPickerOpen = false;
         this.clearGiphyPicker();
-        this.giphyPickerTrigger?.nativeElement.focus();
+        if (restoreFocus) this.giphyPickerTrigger?.nativeElement.focus();
     }
 
     public get giphySearchCoolingDown(): boolean { return Date.now() < this.giphySearchCooldownUntil; }
@@ -1160,6 +1165,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     private selectConversationInternal(conversation: Conversation, preserveCallSurface: boolean): void {
+        this.groupCall?.cancelDeferredIntentForConversation(conversation.id);
         this.stopTyping();
         this.clearRemoteTypingState();
         if (!preserveCallSurface && this.isOngoingCall()) this.minimizeCall();

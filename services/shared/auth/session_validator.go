@@ -44,8 +44,12 @@ func (v *SessionValidator) Validate(ctx context.Context, identity Identity, requ
 	if identity.UserID == uuid.Nil || (requireDevice && identity.DeviceID == "") {
 		return ErrSessionInvalid
 	}
-	var currentVersion int64
-	if err := v.reader.QueryRow(ctx, `SELECT session_version FROM users WHERE id = $1`, identity.UserID).Scan(&currentVersion); err != nil || currentVersion != identity.SessionVersion {
+	if identity.BrowserID == uuid.Nil || identity.BrowserGeneration == uuid.Nil {
+		return ErrSessionInvalid
+	}
+	var active bool
+	err := v.reader.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users u JOIN browser_auth_heads h ON h.user_id = u.id WHERE u.id = $1 AND u.session_version = $2 AND h.browser_id = $3 AND h.generation = $4 AND h.current_refresh_hash IS NOT NULL)`, identity.UserID, identity.SessionVersion, identity.BrowserID, identity.BrowserGeneration).Scan(&active)
+	if err != nil || !active {
 		return ErrSessionInvalid
 	}
 	return nil

@@ -1,16 +1,108 @@
 package httptransport
 
 import (
+	"bytes"
+	"context"
 	"crypto/elliptic"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KovalMax/zwei/services/auth/internal/application"
+	"github.com/KovalMax/zwei/services/auth/internal/domain/user"
+	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
+
+type logoutRepository struct {
+	application.Repository
+	owner       uuid.UUID
+	err         error
+	revoked     bool
+	revokedUser uuid.UUID
+	revokeErr   error
+	hash        []byte
+}
+
+func (r *logoutRepository) RefreshTokenOwner(_ context.Context, hash []byte) (uuid.UUID, error) {
+	r.hash = append([]byte(nil), hash...)
+	return r.owner, r.err
+}
+func (r *logoutRepository) RevokeAllSessions(_ context.Context, userID uuid.UUID) error {
+	r.revoked = true
+	r.revokedUser = userID
+	return r.revokeErr
+}
+
+func TestLogoutRefreshCookieOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		cookie           bool
+		owner            string
+		lookupErr        error
+		revokeErr        error
+		status           int
+		revoked, cleared bool
+	}{
+		{"different account", true, "other", nil, nil, http.StatusConflict, true, false},
+		{"matching account", true, "same", nil, nil, http.StatusNoContent, true, true},
+		{"no cookie", false, "", nil, nil, http.StatusNoContent, true, false},
+		{"unknown cookie", true, "", nil, nil, http.StatusConflict, true, false},
+		{"lookup failure", true, "", errors.New("sensitive database details"), nil, http.StatusInternalServerError, true, false},
+		{"revocation failure with mismatch", true, "other", nil, errors.New("sensitive database details"), http.StatusInternalServerError, true, false},
+		{"revocation failure with matching cookie", true, "same", nil, errors.New("sensitive database details"), http.StatusInternalServerError, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, existing, handler, bearer := authenticatedTestHandler(t, false)
+			repo := &logoutRepository{err: tc.lookupErr, revokeErr: tc.revokeErr}
+			if tc.owner == "same" {
+				repo.owner = existing.profile.ID
+			}
+			if tc.owner == "other" {
+				repo.owner = uuid.New()
+			}
+			handler.auth = application.NewService(repo, nil, nil, time.Minute, time.Hour)
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+			request.Header.Set("Authorization", "Bearer "+bearer)
+			if tc.cookie {
+				request.AddCookie(&http.Cookie{Name: "zwei_refresh", Value: "secret-refresh"})
+			}
+			response := httptest.NewRecorder()
+			handler.logout(response, request)
+			if repo.revoked && repo.revokedUser != existing.profile.ID {
+				t.Fatalf("revoked wrong account: %v", repo.revokedUser)
+			}
+			if tc.revoked && tc.revokeErr == nil && (tc.status == http.StatusConflict || tc.lookupErr != nil) && !strings.Contains(response.Body.String(), "sessions revoked") {
+				t.Fatalf("response does not communicate revocation: %s", response.Body.String())
+			}
+			if tc.cookie {
+				want := sha256.Sum256([]byte("secret-refresh"))
+				if !bytes.Equal(repo.hash, want[:]) {
+					t.Fatal("repository did not receive refresh token hash")
+				}
+			}
+			cleared := false
+			marker := false
+			for _, cookie := range response.Result().Cookies() {
+				if cookie.Name == signedOutCookie {
+					marker = true
+				} else if cookie.Name == legacyRefreshCookie && cookie.MaxAge < 0 {
+					cleared = true
+				}
+			}
+			if response.Code != tc.status || repo.revoked != tc.revoked || cleared != tc.cleared || marker != (tc.revokeErr == nil && tc.revoked) || strings.Contains(response.Body.String(), "secret-refresh") || strings.Contains(response.Body.String(), "sensitive database details") {
+				t.Fatalf("status=%d revoked=%v cookies=%d body=%s", response.Code, repo.revoked, len(response.Result().Cookies()), response.Body.String())
+			}
+		})
+	}
+}
 
 func TestRefreshCookiesAreRestrictedToAuthEndpoints(t *testing.T) {
 	response := httptest.NewRecorder()
@@ -47,6 +139,43 @@ func TestRefreshWithoutCookieReturnsUnauthorized(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+type failingRefreshRepository struct {
+	application.Repository
+	err error
+}
+
+func (r failingRefreshRepository) RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error {
+	return r.err
+}
+
+func (r failingRefreshRepository) RotateRefreshCandidates(context.Context, [][]byte, []byte, time.Time, func(user.Session, []byte) error) error {
+	return r.err
+}
+
+func TestRefreshMapsRotationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"invalid", application.ErrRefreshToken, http.StatusUnauthorized},
+		{"infrastructure", errors.New("sensitive database details"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := application.NewService(failingRefreshRepository{err: tc.err}, nil, nil, time.Minute, time.Hour)
+			handler := &Handler{auth: service, allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}}
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+			request.Header.Set("Origin", "https://chat.localhost")
+			request.AddCookie(&http.Cookie{Name: "zwei_refresh", Value: "token"})
+			response := httptest.NewRecorder()
+			handler.refresh(response, request)
+			if response.Code != tc.status || strings.Contains(response.Body.String(), "sensitive database details") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 
@@ -88,6 +217,137 @@ func TestPushSubscriptionRequestRejectsCallerSuppliedIdentity(t *testing.T) {
 		var payload pushSubscriptionRequest
 		if decodeJSON(response, request, &payload) {
 			t.Fatalf("accepted caller-supplied identity: %s", body)
+		}
+	}
+}
+
+func TestPushVerificationRequiresAuthenticationAndIsNeverCached(t *testing.T) {
+	mux := http.NewServeMux()
+	(&Handler{sessions: sharedauth.NewSessionValidator(nil, nil)}).Register(mux)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/auth/push-subscription/verify", strings.NewReader(`{}`)))
+	if response.Code != http.StatusUnauthorized || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d cache-control=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestDeleteCurrentPushSubscriptionRequiresAuthentication(t *testing.T) {
+	mux := http.NewServeMux()
+	(&Handler{sessions: sharedauth.NewSessionValidator(nil, nil)}).Register(mux)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/auth/push-subscription/current", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want unauthorized", response.Code)
+	}
+}
+
+type currentPushDeleteRepository struct {
+	application.Repository
+	userID, deviceID uuid.UUID
+	version          int64
+	err              error
+}
+
+type pushStoreRepository struct {
+	application.Repository
+	userID, deviceID, browserID, generation uuid.UUID
+	version                                 int64
+	err                                     error
+}
+
+type endpointPushDeleteRepository struct {
+	application.Repository
+	userID, deviceID, browserID, generation uuid.UUID
+	version                                 int64
+	endpoint                                string
+	err                                     error
+}
+
+func (r *endpointPushDeleteRepository) DeletePushSubscription(_ context.Context, userID, deviceID uuid.UUID, version int64, browserID, generation uuid.UUID, endpoint string) error {
+	r.userID, r.deviceID, r.version, r.browserID, r.generation, r.endpoint = userID, deviceID, version, browserID, generation, endpoint
+	return r.err
+}
+
+func TestDeletePushSubscriptionAuthenticatedBinding(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	userID, deviceID, browserID, generation := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{DeviceID: deviceID.String(), SessionVersion: 1, BrowserID: browserID.String(), BrowserGeneration: generation.String(), RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{{nil, http.StatusNoContent}, {application.ErrPushSessionRevoked, http.StatusUnauthorized}, {errors.New("private details"), http.StatusInternalServerError}} {
+		repo := &endpointPushDeleteRepository{err: tc.err}
+		mux := http.NewServeMux()
+		NewHandler(application.NewService(repo, nil, nil, time.Minute, time.Hour), nil, sharedauth.NewSessionValidator(httpSessionReader{}, secret), nil, nil, "").Register(mux)
+		request := httptest.NewRequest(http.MethodDelete, "/api/auth/push-subscription", strings.NewReader(`{"endpoint":"https://fcm.googleapis.com/send/token"}`))
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != tc.status || repo.userID != userID || repo.deviceID != deviceID || repo.version != 1 || repo.browserID != browserID || repo.generation != generation || repo.endpoint != "https://fcm.googleapis.com/send/token" || strings.Contains(response.Body.String(), "private details") {
+			t.Fatalf("status=%d body=%s binding=%v/%v", response.Code, response.Body, repo.browserID, repo.generation)
+		}
+	}
+}
+
+func (r *pushStoreRepository) StorePushSubscription(_ context.Context, userID, deviceID uuid.UUID, version int64, browserID, generation uuid.UUID, _ application.PushSubscription) error {
+	r.userID, r.deviceID, r.version, r.browserID, r.generation = userID, deviceID, version, browserID, generation
+	return r.err
+}
+
+func TestStorePushSubscriptionAuthenticatedBinding(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	userID, deviceID, browserID, generation := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{DeviceID: deviceID.String(), SessionVersion: 1, BrowserID: browserID.String(), BrowserGeneration: generation.String(), RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{{nil, http.StatusNoContent}, {application.ErrPushSessionRevoked, http.StatusUnauthorized}} {
+		repo := &pushStoreRepository{err: tc.err}
+		mux := http.NewServeMux()
+		NewHandler(application.NewService(repo, nil, nil, time.Minute, time.Hour), nil, sharedauth.NewSessionValidator(httpSessionReader{}, secret), nil, nil, "").Register(mux)
+		body := `{"endpoint":"https://fcm.googleapis.com/send/token","keys":{"p256dh":"BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","auth":"AAAAAAAAAAAAAAAAAAAAAA"}}`
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/push-subscription", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != tc.status || repo.userID != userID || repo.deviceID != deviceID || repo.version != 1 || repo.browserID != browserID || repo.generation != generation {
+			t.Fatalf("status=%d body=%s binding=%v/%v", response.Code, response.Body, repo.browserID, repo.generation)
+		}
+	}
+}
+
+func (r *currentPushDeleteRepository) DeleteCurrentPushSubscription(_ context.Context, userID, deviceID uuid.UUID, version int64, browserID, generation uuid.UUID) error {
+	r.userID, r.deviceID, r.version = userID, deviceID, version
+	return r.err
+}
+
+func TestDeleteCurrentPushSubscriptionAuthenticated(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	userID, deviceID := uuid.New(), uuid.New()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{DeviceID: deviceID.String(), SessionVersion: 1, BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(), RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{{nil, http.StatusNoContent}, {application.ErrPushSessionRevoked, http.StatusUnauthorized}, {errors.New("private details"), http.StatusInternalServerError}} {
+		repo := &currentPushDeleteRepository{err: tc.err}
+		handler := NewHandler(application.NewService(repo, nil, nil, time.Minute, time.Hour), nil, sharedauth.NewSessionValidator(httpSessionReader{}, secret), nil, nil, "")
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		request := httptest.NewRequest(http.MethodDelete, "/api/auth/push-subscription/current", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != tc.status || repo.userID != userID || repo.deviceID != deviceID || repo.version != 1 || strings.Contains(response.Body.String(), "private details") {
+			t.Fatalf("status=%d body=%s identity=%v/%v/%d", response.Code, response.Body, repo.userID, repo.deviceID, repo.version)
 		}
 	}
 }

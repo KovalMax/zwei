@@ -42,6 +42,18 @@ describe('PwaService', () => {
         updates.activateUpdate.mockClear();
     });
 
+    it('discovers updates on startup and return to the page without activating them', async () => {
+        updates.isEnabled = true;
+        const service = TestBed.inject(PwaService);
+        expect(updates.checkForUpdate).toHaveBeenCalledTimes(1);
+        document.dispatchEvent(new Event('visibilitychange'));
+        expect(updates.checkForUpdate).toHaveBeenCalledTimes(2);
+        versionUpdates.next({type: 'VERSION_READY'});
+        expect(service.updateAvailable).toBe(true);
+        expect(updates.activateUpdate).not.toHaveBeenCalled();
+        service.ngOnDestroy();
+    });
+
     it('offers installation only after authentication and consumes the deferred prompt', async () => {
         const service = TestBed.inject(PwaService);
         const prompt = vi.fn().mockName('prompt').mockResolvedValue(undefined);
@@ -177,13 +189,13 @@ describe('PwaService', () => {
     it('checks for an update and reloads the app when refresh is selected', async () => {
         updates.isEnabled = true;
         const reload = vi.fn();
-        TestBed.overrideProvider(DOCUMENT, {useValue: {defaultView: {location: {reload}}}});
+        TestBed.overrideProvider(DOCUMENT, {useValue: {defaultView: {location: {reload}}, addEventListener: vi.fn(), removeEventListener: vi.fn()}});
         const service = TestBed.inject(PwaService);
         service.setAuthenticated(true);
 
         await service.refreshApp();
 
-        expect(updates.checkForUpdate).toHaveBeenCalledTimes(1);
+        expect(updates.checkForUpdate).toHaveBeenCalledTimes(2);
         expect(updates.activateUpdate).not.toHaveBeenCalled();
         expect(reload).toHaveBeenCalledTimes(1);
     });
@@ -192,7 +204,7 @@ describe('PwaService', () => {
         updates.isEnabled = true;
         updates.checkForUpdate.mockResolvedValue(true);
         const reload = vi.fn();
-        TestBed.overrideProvider(DOCUMENT, {useValue: {defaultView: {location: {reload}}}});
+        TestBed.overrideProvider(DOCUMENT, {useValue: {defaultView: {location: {reload}}, addEventListener: vi.fn(), removeEventListener: vi.fn()}});
         const service = TestBed.inject(PwaService);
         service.setAuthenticated(true);
 

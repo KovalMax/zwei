@@ -185,6 +185,7 @@ if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts ]] && [[ "${E2E_SKIP_FR
   # Build the exact production artifact in the running frontend container. The
   # frontend source bind mount makes this output available to the E2E container.
   "${TEST_COMPOSE[@]}" exec -T frontend npm run build -- --configuration production
+  bash "$SCRIPT_DIR/e2e-pwa-build.sh" "${TEST_COMPOSE[@]}"
 fi
 "${COMPOSE[@]}" stop auth chat realtime >/dev/null || true
 if [[ -n "$MIGRATION_OVERLAY" ]]; then
@@ -207,6 +208,7 @@ if [[ "$TEST_SCRIPT" == parallel-group ]]; then
 fi
 if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts || "$TEST_SCRIPT" == parallel-group ]]; then
   run_args=(-v "$ROOT_DIR/frontend-app/dist/messenger/browser:/production-app:ro" "${run_args[@]}")
+  run_args=(-v "$ROOT_DIR/frontend-app/dist/pwa-update/browser:/production-app-update:ro" "${run_args[@]}")
 fi
 if [[ "$TEST_SCRIPT" == baseline ]]; then
   run_args+=("$SPEC" --update-snapshots)

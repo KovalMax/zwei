@@ -180,7 +180,7 @@ func TestPushSubscriptionOwnershipAndLogoutAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository := NewRepository(db, codec)
+	repository := NewRepository(db, codec, "current")
 	firstUser, firstDevice := createPushTestUser(t, ctx, repository, db)
 	secondUser, secondDevice := createPushTestUser(t, ctx, repository, db)
 	t.Cleanup(func() {
@@ -199,8 +199,34 @@ func TestPushSubscriptionOwnershipAndLogoutAreAtomic(t *testing.T) {
 	key := base64.RawURLEncoding.EncodeToString(append([]byte{4}, make([]byte, 64)...))
 	auth := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
 	subscription := application.PushSubscription{Endpoint: "https://fcm.googleapis.com/fcm/send/" + uuid.NewString(), P256DH: key, Auth: auth}
-	if err := repository.StorePushSubscription(ctx, firstUser, firstDevice, 1, subscription); err != nil {
+	if err := repository.StorePushSubscription(ctx, firstUser, firstDevice, 1, firstUser, firstUser, subscription); err != nil {
 		t.Fatalf("store first account subscription: %v", err)
+	}
+	for _, tc := range []struct {
+		name         string
+		user, device uuid.UUID
+		version      int64
+		sub          application.PushSubscription
+		want         bool
+		revoked      bool
+	}{
+		{"match", firstUser, firstDevice, 1, subscription, true, false},
+		{"other user", secondUser, secondDevice, 1, subscription, false, false},
+		{"stale session", firstUser, firstDevice, 2, subscription, false, true},
+		{"endpoint", firstUser, firstDevice, 1, application.PushSubscription{Endpoint: subscription.Endpoint + "x", P256DH: key, Auth: auth}, false, false},
+		{"key", firstUser, firstDevice, 1, application.PushSubscription{Endpoint: subscription.Endpoint, P256DH: key + "x", Auth: auth}, false, false},
+		{"auth", firstUser, firstDevice, 1, application.PushSubscription{Endpoint: subscription.Endpoint, P256DH: key, Auth: auth + "x"}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repository.VerifyPushSubscription(ctx, tc.user, tc.device, tc.version, tc.sub)
+			if got != tc.want || tc.revoked != errors.Is(err, application.ErrPushSessionRevoked) || (!tc.revoked && err != nil) {
+				t.Fatalf("verification = %v, error = %v", got, err)
+			}
+		})
+	}
+	oldVAPID := NewRepository(db, codec, "old")
+	if got, err := oldVAPID.VerifyPushSubscription(ctx, firstUser, firstDevice, 1, subscription); err != nil || got {
+		t.Fatalf("old VAPID verification = %v, error = %v", got, err)
 	}
 	var writtenVersion string
 	if err := db.QueryRow(ctx, `SELECT encryption_version FROM push_subscriptions WHERE user_id=$1 AND device_id=$2`, firstUser, firstDevice).Scan(&writtenVersion); err != nil || writtenVersion != "v2" {
@@ -211,13 +237,13 @@ func TestPushSubscriptionOwnershipAndLogoutAreAtomic(t *testing.T) {
 	}
 	disabledSubscription := subscription
 	disabledSubscription.Endpoint += "-disabled"
-	if err := repository.StorePushSubscription(ctx, secondUser, secondDevice, 1, disabledSubscription); !errors.Is(err, application.ErrPushUnavailable) {
+	if err := repository.StorePushSubscription(ctx, secondUser, secondDevice, 1, secondUser, secondUser, disabledSubscription); !errors.Is(err, application.ErrPushUnavailable) {
 		t.Fatalf("disabled account enrollment error = %v, want push disabled", err)
 	}
 	if _, err := db.Exec(ctx, `UPDATE users SET alert_mode = 'notifications' WHERE id = $1`, secondUser); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.StorePushSubscription(ctx, secondUser, secondDevice, 1, subscription); !errors.Is(err, application.ErrPushSubscriptionOwned) {
+	if err := repository.StorePushSubscription(ctx, secondUser, secondDevice, 1, secondUser, secondUser, subscription); !errors.Is(err, application.ErrPushSubscriptionOwned) {
 		t.Fatalf("cross-account endpoint ownership error = %v, want protected ownership error", err)
 	}
 	var storedPayload []byte
@@ -231,7 +257,7 @@ func TestPushSubscriptionOwnershipAndLogoutAreAtomic(t *testing.T) {
 	}
 	updatedSubscription := subscription
 	updatedSubscription.Endpoint += "-rotated"
-	if err := repository.StorePushSubscription(ctx, firstUser, firstDevice, 1, updatedSubscription); err != nil {
+	if err := repository.StorePushSubscription(ctx, firstUser, firstDevice, 1, firstUser, firstUser, updatedSubscription); err != nil {
 		t.Fatalf("update browser subscription: %v", err)
 	}
 	var storedVersion string
@@ -250,7 +276,7 @@ func TestPushSubscriptionOwnershipAndLogoutAreAtomic(t *testing.T) {
 	if err := repository.RevokeAllSessions(ctx, firstUser); err != nil {
 		t.Fatalf("logout: %v", err)
 	}
-	if err := repository.StorePushSubscription(ctx, firstUser, firstDevice, 1, subscription); !errors.Is(err, application.ErrPushSessionRevoked) {
+	if err := repository.StorePushSubscription(ctx, firstUser, firstDevice, 1, firstUser, firstUser, subscription); !errors.Is(err, application.ErrPushSessionRevoked) {
 		t.Fatalf("stale subscription write error = %v, want session revoked", err)
 	}
 	var pushCount int
@@ -306,7 +332,7 @@ func TestConcurrentSubscriptionWriteCannotOutliveLogout(t *testing.T) {
 	auth := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
 	writeResult := make(chan error, 1)
 	go func() {
-		writeResult <- repository.StorePushSubscription(ctx, userID, deviceID, version, application.PushSubscription{
+		writeResult <- repository.StorePushSubscription(ctx, userID, deviceID, version, userID, userID, application.PushSubscription{
 			Endpoint: "https://fcm.googleapis.com/fcm/send/" + uuid.NewString(), P256DH: key, Auth: auth,
 		})
 	}()
@@ -364,7 +390,7 @@ func TestConcurrentSubscriptionWritesRespectPerAccountQuota(t *testing.T) {
 		go func(deviceID uuid.UUID) {
 			key := base64.RawURLEncoding.EncodeToString(append([]byte{4}, make([]byte, 64)...))
 			auth := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
-			writes <- write{deviceID: deviceID, err: repository.StorePushSubscription(ctx, userID, deviceID, 1, application.PushSubscription{
+			writes <- write{deviceID: deviceID, err: repository.StorePushSubscription(ctx, userID, deviceID, 1, userID, userID, application.PushSubscription{
 				Endpoint: "https://fcm.googleapis.com/fcm/send/" + uuid.NewString(), P256DH: key, Auth: auth,
 			})}
 		}(deviceID)
@@ -390,6 +416,423 @@ func TestConcurrentSubscriptionWritesRespectPerAccountQuota(t *testing.T) {
 	}
 	if count != maxPushSubscriptionsPerAccount {
 		t.Fatalf("stored subscriptions=%d, want %d", count, maxPushSubscriptionsPerAccount)
+	}
+}
+
+func TestReplaceBrowserSessionRetiresOnlyOldDeviceAndRollsBack(t *testing.T) {
+	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL for isolated PostgreSQL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	codec, err := pushcrypto.New(make([]byte, 32), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db, codec)
+	owner, device := createPushTestUser(t, ctx, repo, db)
+	target, targetDevice := createPushTestUser(t, ctx, repo, db)
+	defer db.Exec(context.Background(), `DELETE FROM users WHERE id=ANY($1)`, []uuid.UUID{owner, target})
+	second, err := repo.EnsureDevice(ctx, owner, uuid.NewString(), "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, generation, next := uuid.New(), uuid.New(), uuid.New()
+	defer db.Exec(context.Background(), `DELETE FROM browser_auth_heads WHERE browser_id=$1`, browser)
+	oldHash, newHash := sha256.Sum256([]byte(uuid.NewString())), sha256.Sum256([]byte(uuid.NewString()))
+	issue := func(user.Session) error { return nil }
+	if err = repo.CreateBrowserSession(ctx, browser, generation, owner, device, oldHash[:], 1, time.Now().Add(time.Hour), issue); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "https://fcm.googleapis.com/send/" + uuid.NewString()
+	for _, pair := range [][2]uuid.UUID{{owner, device}, {owner, second}, {target, targetDevice}} {
+		sub := application.PushSubscription{Endpoint: "https://fcm.googleapis.com/send/" + uuid.NewString(), P256DH: "key", Auth: "auth"}
+		if pair[1] == device {
+			sub.Endpoint = endpoint
+		}
+		if err = repo.StorePushSubscription(ctx, pair[0], pair[1], 1, pair[0], pair[0], sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failure := errors.New("issuance failed")
+	replace := func(callback func(user.Session) error) error {
+		return repo.ReplaceBrowserSession(ctx, browser, generation, oldHash[:], next, target, targetDevice, newHash[:], 1, time.Now().Add(time.Hour), callback)
+	}
+	if err = replace(func(user.Session) error { return failure }); !errors.Is(err, failure) {
+		t.Fatalf("rollback: %v", err)
+	}
+	var count int
+	if err = db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE device_id=$1`, device).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("rollback count=%d err=%v", count, err)
+	}
+	if err = replace(issue); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   uuid.UUID
+		want int
+	}{{device, 0}, {second, 1}, {targetDevice, 1}} {
+		if err = db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE device_id=$1`, tc.id).Scan(&count); err != nil || count != tc.want {
+			t.Fatalf("device=%s count=%d want=%d err=%v", tc.id, count, tc.want, err)
+		}
+	}
+	// Reusing the browser endpoint on the new account must no longer conflict.
+	if err = repo.StorePushSubscription(ctx, target, targetDevice, 1, browser, next, application.PushSubscription{Endpoint: endpoint, P256DH: "key", Auth: "auth"}); err != nil {
+		t.Fatalf("endpoint reuse: %v", err)
+	}
+}
+
+func TestDeleteCurrentPushSubscriptionIsIdempotentAndDeviceScoped(t *testing.T) {
+	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL for PostgreSQL integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	codec, err := pushcrypto.New(make([]byte, 32), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db, codec)
+	owner, device := createPushTestUser(t, ctx, repo, db)
+	other, otherDevice := createPushTestUser(t, ctx, repo, db)
+	defer db.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{owner, other})
+	browser, generation := uuid.New(), uuid.New()
+	defer db.Exec(context.Background(), `DELETE FROM browser_auth_heads WHERE browser_id=$1`, browser)
+	hash := sha256.Sum256([]byte(uuid.NewString()))
+	if err := repo.CreateBrowserSession(ctx, browser, generation, owner, device, hash[:], 1, time.Now().Add(time.Hour), func(user.Session) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	second, err := repo.EnsureDevice(ctx, owner, uuid.NewString(), "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]uuid.UUID{{owner, device}, {owner, second}, {other, otherDevice}} {
+		sub := application.PushSubscription{Endpoint: "https://fcm.googleapis.com/send/" + uuid.NewString(), P256DH: "key", Auth: "auth"}
+		if err := repo.StorePushSubscription(ctx, pair[0], pair[1], 1, pair[0], pair[0], sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		user, device uuid.UUID
+		version      int64
+	}{{owner, device, 2}, {owner, otherDevice, 1}} {
+		if err := repo.DeleteCurrentPushSubscription(ctx, tc.user, tc.device, tc.version, browser, generation); !errors.Is(err, application.ErrPushSessionRevoked) {
+			t.Fatalf("invalid identity: %v", err)
+		}
+	}
+	if _, err := db.Exec(ctx, `UPDATE users SET alert_mode='off' WHERE id=$1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := repo.DeleteCurrentPushSubscription(ctx, owner, device, 1, browser, generation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		id   uuid.UUID
+		want int
+	}{{device, 0}, {second, 1}, {otherDevice, 1}} {
+		var count int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE device_id=$1`, tc.id).Scan(&count); err != nil || count != tc.want {
+			t.Fatalf("device %s count=%d err=%v", tc.id, count, err)
+		}
+	}
+}
+
+func TestDeleteCurrentPushSubscriptionSerializesWithBrowserReplacement(t *testing.T) {
+	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL for isolated PostgreSQL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	codec, err := pushcrypto.New(make([]byte, 32), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db, codec)
+	owner, device := createPushTestUser(t, ctx, repo, db)
+	defer db.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, owner)
+	for _, replacementFirst := range []bool{true, false} {
+		browser, generation, nextGeneration := uuid.New(), uuid.New(), uuid.New()
+		defer db.Exec(context.Background(), `DELETE FROM browser_auth_heads WHERE browser_id=$1`, browser)
+		oldHash := sha256.Sum256([]byte(uuid.NewString()))
+		nextHash := sha256.Sum256([]byte(uuid.NewString()))
+		issue := func(user.Session) error { return nil }
+		if err := repo.CreateBrowserSession(ctx, browser, generation, owner, device, oldHash[:], 1, time.Now().Add(time.Hour), issue); err != nil {
+			t.Fatal(err)
+		}
+		sub := application.PushSubscription{Endpoint: "https://fcm.googleapis.com/send/" + uuid.NewString(), P256DH: "key", Auth: "auth"}
+		if err := repo.StorePushSubscription(ctx, owner, device, 1, browser, generation, sub); err != nil {
+			t.Fatal(err)
+		}
+		deleteResult, replaceResult := make(chan error, 1), make(chan error, 1)
+		replace := func(issue func(user.Session) error) {
+			replaceResult <- repo.ReplaceBrowserSession(ctx, browser, generation, oldHash[:], nextGeneration, owner, device, nextHash[:], 1, time.Now().Add(time.Hour), issue)
+		}
+		deleteCurrent := func() { deleteResult <- repo.DeleteCurrentPushSubscription(ctx, owner, device, 1, browser, generation) }
+		if replacementFirst {
+			locked, release := make(chan struct{}), make(chan struct{})
+			go replace(func(user.Session) error { close(locked); <-release; return nil })
+			<-locked
+			go deleteCurrent()
+			waitForLockWait(t, ctx, db, "%SELECT session_version, alert_mode FROM users%")
+			close(release)
+			if err := <-replaceResult; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-deleteResult; !errors.Is(err, application.ErrPushSessionRevoked) {
+				t.Fatalf("stale delete: %v", err)
+			}
+		} else {
+			// Block the head so deletion owns the user lock before replacement starts.
+			tx, err := db.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.Background())
+			if _, err := tx.Exec(ctx, `SELECT browser_id FROM browser_auth_heads WHERE browser_id=$1 FOR UPDATE`, browser); err != nil {
+				t.Fatal(err)
+			}
+			go deleteCurrent()
+			waitForLockWait(t, ctx, db, "%SELECT true FROM browser_auth_heads WHERE browser_id=%")
+			go replace(issue)
+			waitForLockWait(t, ctx, db, "%SELECT id, session_version FROM users WHERE id=ANY%")
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-deleteResult; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-replaceResult; err != nil {
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE device_id=$1`, device).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if count != want {
+			t.Fatalf("replacementFirst=%v count=%d want=%d", replacementFirst, count, want)
+		}
+		if _, err := db.Exec(ctx, `DELETE FROM push_subscriptions WHERE user_id=$1`, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDeletePushSubscriptionSerializesWithBrowserReplacement(t *testing.T) {
+	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL for isolated PostgreSQL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	codec, err := pushcrypto.New(make([]byte, 32), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db, codec)
+	owner, device := createPushTestUser(t, ctx, repo, db)
+	defer db.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, owner)
+	for _, replacementFirst := range []bool{true, false} {
+		browser, generation, nextGeneration := uuid.New(), uuid.New(), uuid.New()
+		defer db.Exec(context.Background(), `DELETE FROM browser_auth_heads WHERE browser_id=$1`, browser)
+		oldHash, nextHash := sha256.Sum256([]byte(uuid.NewString())), sha256.Sum256([]byte(uuid.NewString()))
+		issue := func(user.Session) error { return nil }
+		if err := repo.CreateBrowserSession(ctx, browser, generation, owner, device, oldHash[:], 1, time.Now().Add(time.Hour), issue); err != nil {
+			t.Fatal(err)
+		}
+		sub := application.PushSubscription{Endpoint: "https://fcm.googleapis.com/send/" + uuid.NewString(), P256DH: "key", Auth: "auth"}
+		if err := repo.StorePushSubscription(ctx, owner, device, 1, browser, generation, sub); err != nil {
+			t.Fatal(err)
+		}
+		for _, binding := range [][2]uuid.UUID{{uuid.New(), generation}, {browser, uuid.New()}} {
+			if err := repo.DeletePushSubscription(ctx, owner, device, 1, binding[0], binding[1], sub.Endpoint); !errors.Is(err, application.ErrPushSessionRevoked) {
+				t.Fatalf("invalid browser binding: %v", err)
+			}
+		}
+		if err := repo.DeletePushSubscription(ctx, owner, device, 1, browser, generation, sub.Endpoint+"-other"); err != nil {
+			t.Fatal(err)
+		}
+		var before int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE user_id=$1 AND device_id=$2`, owner, device).Scan(&before); err != nil || before != 1 {
+			t.Fatalf("nonmatching endpoint removed subscription: count=%d err=%v", before, err)
+		}
+		deletes, replacements := make(chan error, 1), make(chan error, 1)
+		replace := func(callback func(user.Session) error) {
+			replacements <- repo.ReplaceBrowserSession(ctx, browser, generation, oldHash[:], nextGeneration, owner, device, nextHash[:], 1, time.Now().Add(time.Hour), callback)
+		}
+		deleteEndpoint := func() {
+			deletes <- repo.DeletePushSubscription(ctx, owner, device, 1, browser, generation, sub.Endpoint)
+		}
+		if replacementFirst {
+			locked, release := make(chan struct{}), make(chan struct{})
+			go replace(func(user.Session) error { close(locked); <-release; return nil })
+			<-locked
+			go deleteEndpoint()
+			waitForLockWait(t, ctx, db, "%SELECT session_version, alert_mode FROM users%")
+			close(release)
+		} else {
+			tx, err := db.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.Background())
+			if _, err := tx.Exec(ctx, `SELECT browser_id FROM browser_auth_heads WHERE browser_id=$1 FOR UPDATE`, browser); err != nil {
+				t.Fatal(err)
+			}
+			go deleteEndpoint()
+			waitForLockWait(t, ctx, db, "%SELECT true FROM browser_auth_heads WHERE browser_id=%")
+			go replace(issue)
+			waitForLockWait(t, ctx, db, "%SELECT id, session_version FROM users WHERE id=ANY%")
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := <-replacements; err != nil {
+			t.Fatal(err)
+		}
+		err := <-deletes
+		if replacementFirst && !errors.Is(err, application.ErrPushSessionRevoked) {
+			t.Fatalf("stale delete: %v", err)
+		}
+		if !replacementFirst && err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE user_id=$1 AND device_id=$2`, owner, device).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if count != want {
+			t.Fatalf("replacementFirst=%v count=%d want=%d", replacementFirst, count, want)
+		}
+		if _, err := db.Exec(ctx, `DELETE FROM push_subscriptions WHERE user_id=$1`, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestStorePushSubscriptionSerializesWithBrowserChanges(t *testing.T) {
+	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set ZWEI_TEST_DATABASE_URL for isolated PostgreSQL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	codec, err := pushcrypto.New(make([]byte, 32), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db, codec)
+	owner, device := createPushTestUser(t, ctx, repo, db)
+	defer db.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, owner)
+	for _, rotate := range []bool{false, true} {
+		for _, changeFirst := range []bool{false, true} {
+			browser, generation, nextGeneration := uuid.New(), uuid.New(), uuid.New()
+			oldHash, nextHash := sha256.Sum256([]byte(uuid.NewString())), sha256.Sum256([]byte(uuid.NewString()))
+			issue := func(user.Session) error { return nil }
+			if err := repo.CreateBrowserSession(ctx, browser, generation, owner, device, oldHash[:], 1, time.Now().Add(time.Hour), issue); err != nil {
+				t.Fatal(err)
+			}
+			sub := application.PushSubscription{Endpoint: "https://fcm.googleapis.com/send/" + uuid.NewString(), P256DH: "key", Auth: "auth"}
+			for _, binding := range [][2]uuid.UUID{{uuid.New(), generation}, {browser, uuid.New()}, {owner, generation}} {
+				if err := repo.StorePushSubscription(ctx, owner, device, 1, binding[0], binding[1], sub); !errors.Is(err, application.ErrPushSessionRevoked) {
+					t.Fatalf("invalid browser binding accepted: %v", err)
+				}
+			}
+			stores, changes := make(chan error, 1), make(chan error, 1)
+			store := func() { stores <- repo.StorePushSubscription(ctx, owner, device, 1, browser, generation, sub) }
+			change := func(callback func(user.Session) error) {
+				if rotate {
+					changes <- repo.RotateBrowserSession(ctx, browser, generation, oldHash[:], nextHash[:], time.Now().Add(time.Hour), callback)
+				} else {
+					changes <- repo.ReplaceBrowserSession(ctx, browser, generation, oldHash[:], nextGeneration, owner, device, nextHash[:], 1, time.Now().Add(time.Hour), callback)
+				}
+			}
+			if changeFirst {
+				locked, release := make(chan struct{}), make(chan struct{})
+				go change(func(user.Session) error { close(locked); <-release; return nil })
+				<-locked
+				go store()
+				waitForLockWait(t, ctx, db, "%SELECT session_version, alert_mode FROM users%")
+				close(release)
+			} else {
+				tx, err := db.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(context.Background())
+				if _, err := tx.Exec(ctx, `SELECT browser_id FROM browser_auth_heads WHERE browser_id=$1 FOR UPDATE`, browser); err != nil {
+					t.Fatal(err)
+				}
+				go store()
+				waitForLockWait(t, ctx, db, "%SELECT true FROM browser_auth_heads WHERE browser_id=%")
+				go change(issue)
+				if rotate {
+					waitForLockWait(t, ctx, db, "%SELECT u.id FROM users u JOIN sessions%")
+				} else {
+					waitForLockWait(t, ctx, db, "%SELECT id, session_version FROM users WHERE id=ANY%")
+				}
+				if err := tx.Commit(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := <-changes; err != nil {
+				t.Fatalf("rotate=%v changeFirst=%v: %v", rotate, changeFirst, err)
+			}
+			err := <-stores
+			if changeFirst && !rotate {
+				if !errors.Is(err, application.ErrPushSessionRevoked) {
+					t.Fatalf("stale store: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("store rotate=%v changeFirst=%v: %v", rotate, changeFirst, err)
+			}
+			var count int
+			if err := db.QueryRow(ctx, `SELECT count(*) FROM push_subscriptions WHERE device_id=$1`, device).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if !rotate {
+				want = 0
+			}
+			if count != want {
+				t.Fatalf("rotate=%v changeFirst=%v count=%d want=%d", rotate, changeFirst, count, want)
+			}
+			if _, err := db.Exec(ctx, `DELETE FROM push_subscriptions WHERE user_id=$1`, owner); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
 
@@ -421,6 +864,9 @@ func createPushTestUser(t *testing.T, ctx context.Context, repository *Repositor
 	if _, err := db.Exec(ctx, `UPDATE users SET alert_mode = 'notifications' WHERE id = $1`, userID); err != nil {
 		t.Fatalf("enable test notifications: %v", err)
 	}
+	if _, err := db.Exec(ctx, `INSERT INTO browser_auth_heads(browser_id,generation,user_id,current_refresh_hash) VALUES($1,$1,$1,decode(repeat('01',32),'hex'))`, userID); err != nil {
+		t.Fatal(err)
+	}
 	return userID, deviceID
 }
 
@@ -434,6 +880,9 @@ func createPushTestUserWithDevice(t *testing.T, ctx context.Context, repository 
 		return uuid.Nil, uuid.Nil, err
 	}
 	if _, err := db.Exec(ctx, `UPDATE users SET alert_mode = 'notifications' WHERE id = $1`, userID); err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO browser_auth_heads(browser_id,generation,user_id,current_refresh_hash) VALUES($1,$1,$1,decode(repeat('01',32),'hex'))`, userID); err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
 	return userID, deviceID, nil

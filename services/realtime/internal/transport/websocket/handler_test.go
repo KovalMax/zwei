@@ -26,7 +26,7 @@ import (
 func TestAuthenticateConsumesWebSocketTicketOnce(t *testing.T) {
 	secret := []byte("01234567890123456789012345678901")
 	userID := uuid.New()
-	ticket, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{
+	ticket, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(),
 		SessionVersion: 3,
 		DeviceID:       "browser-device",
 		Purpose:        "websocket",
@@ -494,7 +494,7 @@ func newNetworkHandler(secret []byte, consumer *networkTicketConsumer) *Handler 
 
 func signedTicket(t *testing.T, secret []byte, purpose string, expiresAt time.Time) string {
 	t.Helper()
-	ticket, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{
+	ticket, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(),
 		SessionVersion: 3,
 		DeviceID:       "browser-device",
 		Purpose:        purpose,
@@ -717,6 +717,6 @@ func (r sessionVersionRow) Scan(dest ...any) error {
 	if len(dest) != 1 {
 		return errors.New("unexpected scan destination")
 	}
-	*dest[0].(*int64) = r.version
+	*dest[0].(*bool) = r.version == 3
 	return nil
 }

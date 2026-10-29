@@ -28,10 +28,11 @@
             <p *ngIf="push?.state === 'denied'" role="status">Notifications are blocked. Allow them in this browser’s site settings, then re-enable here.</p>
             <p *ngIf="push?.state === 'permission-required'" role="status">Enable browser notifications to receive alerts when Zwei is closed.</p>
             <p *ngIf="push?.state === 'not-enrolled'" role="status">This browser is not currently registered to receive push notifications.</p>
-            <button *ngIf="push?.state !== 'unsupported'" type="button" [disabled]="pushSaving" [attr.aria-label]="pushSaving ? 'Enabling…' : push?.state === 'enabled' ? 'Refresh browser subscription' : 'Enable on this browser'" (click)="enablePush()">{{ pushSaving ? 'Enabling…' : push?.state === 'enabled' ? 'Refresh browser subscription' : 'Enable on this browser' }}</button>
-            <p *ngIf="push?.state === 'enabled'" role="status">Push notifications are enabled on this browser. Use the button to repair or refresh this subscription.</p>
-            <p *ngIf="pushSaving" role="status">Registering this browser…</p>
-            <p *ngIf="pushSuccess && push?.state !== 'enabled'" role="status">Push notifications are enabled on this browser.</p>
+            <p *ngIf="push?.state === 'unverified'" role="status">Push registration for this account could not be confirmed. Enable it again or retry disabling it.</p>
+            <label class="media-preference"><input type="checkbox" [checked]="push?.state === 'enabled'" [indeterminate]="push?.state === 'unverified'" [disabled]="pushSaving || push?.state === 'unsupported' || push?.state === 'denied'" (change)="changePush($event)"> Enable push notifications on this browser</label>
+            <button *ngIf="push?.state === 'unverified'" type="button" [disabled]="pushSaving" (click)="setPushEnabled(false)">Disable push for this account</button>
+            <p *ngIf="push?.state === 'enabled'" role="status">Push notifications are enabled on this browser.</p>
+            <p *ngIf="pushSaving" role="status">Updating this browser…</p>
             <p *ngIf="pushError" class="profile-error" role="alert">{{ pushError }}</p>
         </section>
         <section *ngIf="profile" class="alert-settings" aria-labelledby="media-settings-title">

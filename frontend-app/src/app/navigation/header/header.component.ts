@@ -1,11 +1,12 @@
 import {ChangeDetectorRef, Component, HostListener, OnDestroy, OnInit, ViewChild} from '@angular/core';
 import {MatMenuTrigger} from '@angular/material/menu';
-import {AuthService} from '../../auth/auth.service';
+import {AuthService, LogoutCookieUnclearedError} from '../../auth/auth.service';
 import {Router} from '@angular/router';
 import {Subscription} from 'rxjs';
 import {Profile} from '../../auth/profile.model';
 import {PwaService} from '../../pwa/pwa.service';
 import {PushEnrollmentService} from '../../pwa/push-enrollment.service';
+import {AUTH_LOCK_RECOVERY, AuthCookieLockUnavailableError} from '../../auth/auth-cookie-lock.service';
 
 @Component({
     standalone: false,
@@ -18,6 +19,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
     public isAuthenticated = false;
     public profile?: Profile;
     public isDarkTheme = true;
+    public logoutError = false;
+    public logoutCookieUncleared = false;
+    public logoutLockUnavailable = false;
+    public readonly lockRecovery = AUTH_LOCK_RECOVERY;
     private readonly subscriptions = new Subscription();
     private readonly themeKey = 'zwei_theme';
 
@@ -56,9 +61,21 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     public onLogout(): void {
-        this.authService.logout().subscribe(async () => {
-            await this.push.unsubscribeLocal();
-            await this.router.navigate(['login']);
+        this.logoutError = false;
+        this.logoutCookieUncleared = false;
+        this.logoutLockUnavailable = false;
+        this.authService.logout().subscribe({
+            next: async () => {
+                await this.push.unsubscribeLocal();
+                await this.router.navigate(['login']);
+            },
+            error: (error: unknown) => {
+                this.logoutError = true;
+                this.logoutCookieUncleared = error instanceof LogoutCookieUnclearedError;
+                this.logoutLockUnavailable = error instanceof AuthCookieLockUnavailableError;
+                if (this.logoutCookieUncleared) void this.push.unsubscribeLocal();
+                this.changeDetector.markForCheck();
+            },
         });
     }
 

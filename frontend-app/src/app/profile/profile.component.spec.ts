@@ -110,11 +110,11 @@ describe('ProfileComponent enabled push presentation', () => {
     const profile: Profile = {id: 'user-1', email: 'person@example.test', display_name: 'Person', retention_period: '30 days', auto_load_approved_media: false, alert_mode: 'notifications'};
     let fixture: ComponentFixture<ProfileComponent>;
     let auth: {profile: ReturnType<typeof vi.fn>};
-    let push: {state: string; enrollFromUserGesture: ReturnType<typeof vi.fn>};
+    let push: {state: string; enrollFromUserGesture: ReturnType<typeof vi.fn>; disable: ReturnType<typeof vi.fn>; reconcile: ReturnType<typeof vi.fn>};
 
     beforeEach(async () => {
         auth = {profile: vi.fn().mockReturnValue(of(profile))};
-        push = {state: 'enabled', enrollFromUserGesture: vi.fn().mockResolvedValue(undefined)};
+        push = {state: 'enabled', enrollFromUserGesture: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), reconcile: vi.fn().mockResolvedValue(undefined)};
         await TestBed.configureTestingModule({
             imports: [AppModule],
             providers: [
@@ -130,46 +130,72 @@ describe('ProfileComponent enabled push presentation', () => {
         fixture.detectChanges();
     });
 
-    it('renders one enabled confirmation and keeps an accessible refresh action available', () => {
-        const button = Array.from(fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>)
-            .find(candidate => candidate.textContent?.includes('browser subscription'));
+    it('renders a checked browser push control and one enabled confirmation', () => {
+        const checkbox = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
         const status = fixture.nativeElement.querySelectorAll('[role="status"]') as NodeListOf<HTMLElement>;
 
-        expect(button?.textContent?.trim()).toBe('Refresh browser subscription');
-        expect(button?.getAttribute('aria-label')).toBe('Refresh browser subscription');
-        expect(button?.disabled).toBe(false);
+        expect(checkbox.checked).toBe(true);
+        expect(checkbox.disabled).toBe(false);
         expect(Array.from(status).filter(message => message.textContent?.includes('Push notifications are enabled'))).toHaveLength(1);
     });
 
-    it('uses the saving label while refreshing', async () => {
-        const button = fixture.nativeElement.querySelector('button:not([role="radio"])') as HTMLButtonElement;
-        expect(button.textContent?.trim()).toBe('Refresh browser subscription');
-        expect(button.getAttribute('aria-label')).toBe('Refresh browser subscription');
-
+    it('disables the checkbox while removing the account registration', async () => {
+        const checkbox = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
         let finishEnrollment!: () => void;
-        push.enrollFromUserGesture.mockReturnValue(new Promise<void>(resolve => { finishEnrollment = resolve; }));
-        button.click();
+        push.disable.mockReturnValue(new Promise<void>(resolve => { finishEnrollment = resolve; }));
+        checkbox.click();
         fixture.detectChanges();
-        expect(button.textContent?.trim()).toBe('Enabling…');
-        expect(button.getAttribute('aria-label')).toBe('Enabling…');
-        expect(button.disabled).toBe(true);
+        expect(checkbox.disabled).toBe(true);
+        expect(push.disable).toHaveBeenCalled();
 
         finishEnrollment();
         await fixture.whenStable();
         fixture.detectChanges();
     });
 
-    it('shows actionable push-service timeout guidance and leaves retry available', async () => {
-        push.enrollFromUserGesture.mockRejectedValueOnce(new Error('push-service-timeout'));
-        fixture.nativeElement.querySelector('button:not([role="radio"])').click();
+    it('shows an actionable removal retry when server removal fails', async () => {
+        push.disable.mockImplementationOnce(async () => {
+            push.state = 'unverified';
+            throw new Error('server-removal-failed');
+        });
+        const checkbox = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
+        checkbox.click();
+        await vi.waitFor(() => expect(fixture.componentInstance.pushError).toContain('Please try again'));
+        fixture.detectChanges();
+        const retry = Array.from(fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>)
+            .find(button => button.textContent?.includes('Disable push for this account'));
+        expect(retry).toBeDefined();
+        expect(retry?.disabled).toBe(false);
+        retry?.click();
         await fixture.whenStable();
+        expect(push.disable).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows actionable push-service timeout guidance and leaves retry available', async () => {
+        push.state = 'not-enrolled';
+        fixture.changeDetectorRef.markForCheck();
+        fixture.detectChanges();
+        push.enrollFromUserGesture.mockRejectedValueOnce(new Error('push-service-timeout'));
+        const checkbox = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
+        checkbox.checked = false;
+        checkbox.click();
+        await vi.waitFor(() => expect(fixture.componentInstance.pushError).toContain('push service did not respond'));
         fixture.detectChanges();
 
         expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('This browser’s push service did not respond');
         expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('Safari or Google Chrome');
-        const retry = fixture.nativeElement.querySelector('button:not([role="radio"])') as HTMLButtonElement;
+        const retry = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
         expect(retry.disabled).toBe(false);
-        expect(retry.textContent?.trim()).toBe('Refresh browser subscription');
+    });
+
+    it('explains a VAPID mismatch without suggesting silent shared removal', async () => {
+        push.state = 'not-enrolled';
+        push.enrollFromUserGesture.mockRejectedValueOnce(new Error('subscription-key-mismatch'));
+        await fixture.componentInstance.enablePush();
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('different server key');
+        expect(fixture.componentInstance.pushError).toContain('other accounts');
+        expect(push.disable).not.toHaveBeenCalled();
     });
 });
 
@@ -183,6 +209,7 @@ describe('ProfileComponent inline-media disclosure', () => {
             providers: [
                 {provide: AuthService, useValue: {profile: vi.fn().mockReturnValue(of(profile))}},
                 {provide: BrowserNotificationService, useValue: {setMode: vi.fn()}},
+                {provide: PushEnrollmentService, useValue: {reconcile: vi.fn().mockResolvedValue(undefined)}},
             ],
         }).compileComponents();
         fixture = TestBed.createComponent(ProfileComponent);

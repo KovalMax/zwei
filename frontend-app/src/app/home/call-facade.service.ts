@@ -72,6 +72,8 @@ export class CallFacade implements OnDestroy {
     private pendingCandidates: RTCIceCandidateInit[] = [];
     private remoteDescriptionReady = false;
     private callGeneration = 0;
+    private inputOperationQueue: Promise<void> = Promise.resolve();
+    private readonly pendingMicrophones = new Set<MediaStream>();
     private localRenegotiationPending = false;
     private remoteAudio?: HTMLAudioElement;
     private dismissTimer?: number;
@@ -144,6 +146,7 @@ export class CallFacade implements OnDestroy {
         if (!state.localStream) return;
         const muted = !state.muted;
         state.localStream.getAudioTracks().forEach(track => track.enabled = !muted);
+        for (const pending of this.pendingMicrophones) pending.getAudioTracks().forEach(track => track.enabled = !muted);
         this.setState({...state, muted, statusLabel: muted ? 'Microphone muted.' : 'Microphone on.'});
     }
     public async toggleScreenShare(): Promise<void> {
@@ -310,10 +313,15 @@ export class CallFacade implements OnDestroy {
         void video.play().catch(() => undefined);
     }
 
-    public async selectInputDevice(deviceID: string): Promise<void> {
-        if (!deviceID || !this.state.localStream || deviceID === this.selectedInputDeviceID) return;
-        if (!window.isSecureContext || typeof navigator.mediaDevices?.getUserMedia !== 'function') return;
+    public selectInputDevice(deviceID: string): Promise<void> {
         const generation = this.callGeneration;
+        const queued = this.inputOperationQueue.then(() => this.selectInputDeviceNow(deviceID, generation));
+        this.inputOperationQueue = queued.catch(() => undefined);
+        return queued;
+    }
+    private async selectInputDeviceNow(deviceID: string, generation: number): Promise<void> {
+        if (!this.isCurrentGeneration(generation) || !deviceID || !this.state.localStream || deviceID === this.selectedInputDeviceID) return;
+        if (!window.isSecureContext || typeof navigator.mediaDevices?.getUserMedia !== 'function') return;
         const currentStream = this.state.localStream;
         const connection = this.connection;
         let replacement: MediaStream;
@@ -336,6 +344,7 @@ export class CallFacade implements OnDestroy {
             return;
         }
         track.enabled = !this.state.muted;
+        this.pendingMicrophones.add(replacement);
         try {
             sender = connection?.getSenders().find(item => item.track?.kind === 'audio');
             if (!sender) throw new Error('audio sender unavailable');
@@ -359,6 +368,8 @@ export class CallFacade implements OnDestroy {
                 // failure. Keep the active call and its existing microphone stream.
                 this.setState({...this.state, statusLabel: 'Could not change the microphone.', errorLabel: 'Could not change the microphone.'});
             }
+        } finally {
+            this.pendingMicrophones.delete(replacement);
         }
     }
 
@@ -723,6 +734,8 @@ export class CallFacade implements OnDestroy {
         this.stopStream(this.state.localStream);
         this.stopStream(this.state.screenShareStream);
         this.connection?.close();
+        for (const pending of this.pendingMicrophones) this.stopStream(pending);
+        this.pendingMicrophones.clear();
         this.connection = undefined;
         this.screenSender = undefined;
         this.screenAudioSender = undefined;
@@ -775,12 +788,14 @@ export class CallFacade implements OnDestroy {
     private isCurrentGeneration(generation: number): boolean { return generation === this.callGeneration; }
     private beginCallGeneration(): number {
         this.callGeneration += 1;
+        this.inputOperationQueue = Promise.resolve();
         this.pendingRequestGenerations.clear();
         this.signalingChain = Promise.resolve();
         return this.callGeneration;
     }
     private invalidateCallGeneration(): void {
         this.callGeneration += 1;
+        this.inputOperationQueue = Promise.resolve();
         this.pendingRequestGenerations.clear();
         this.signalingChain = Promise.resolve();
         this.pendingCandidates = [];

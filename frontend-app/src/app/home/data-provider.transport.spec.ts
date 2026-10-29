@@ -227,9 +227,14 @@ describe('DataProviderService transport', () => {
         const ended = { room_id: 'room-1', generation: 7, status: 'ended' as const, support_ref: 'group-ref-1' };
         socket.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'sync-ended', payload: ended });
         socket.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'sync-ended-with-roster', payload: { ...ended, participants: [] } });
+        socket.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'owned', payload: { ...ended, ownership_status: 'owned_elsewhere' } });
+        socket.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'bad-status', payload: { ...ended, ownership_status: 'active' } });
+        socket.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'bad-active', payload: { ...payload, ownership_status: 'participant_absent' } });
+        socket.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'unknown', payload: { ...ended, ownership_status: 'unknown' } });
         expect(received).toEqual([
             { version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'sync-1', payload },
             { version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'sync-ended', payload: ended },
+            { version: WEBSOCKET_PROTOCOL_VERSION, type: 'group.call.synced', request_id: 'owned', payload: { ...ended, ownership_status: 'owned_elsewhere' } },
         ]);
     });
 

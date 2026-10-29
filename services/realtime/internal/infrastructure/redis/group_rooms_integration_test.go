@@ -344,9 +344,83 @@ func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 	if err != nil || room.StateRevision != 1 {
 		t.Fatalf("start room = %#v, err=%v; state_revision should start at 1", room, err)
 	}
+	for _, test := range []struct {
+		name        string
+		participant application.GroupParticipant
+		want        string
+	}{
+		{"ringing owner", owner, "active"},
+		{"ringing sibling", application.GroupParticipant{UserID: owner.UserID, DeviceID: owner.DeviceID, ConnectionID: "sibling"}, "owned_elsewhere"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, status, err := coordinator.SyncGroupRoomOwnership(ctx, conversationID, roomID, 5, 12, test.participant)
+			if err != nil || status != test.want || (status == "active" && (got.Status != application.GroupRoomRinging || len(got.Participants) != 1)) || (status != "active" && len(got.Participants) != 0) {
+				t.Fatalf("ringing ownership = %q room=%#v err=%v", status, got, err)
+			}
+		})
+	}
+	if legacy, active, err := coordinator.SyncGroupRoom(ctx, roomID, 5, owner); err != nil || active || legacy.Status != application.GroupRoomEnded || len(legacy.Participants) != 0 {
+		t.Fatalf("legacy ringing sync changed: %#v active=%v err=%v", legacy, active, err)
+	}
+	if err := coordinator.client.HSet(ctx, groupRoomKey(roomID), "expires_at", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got, status, err := coordinator.SyncGroupRoomOwnership(ctx, conversationID, roomID, 5, 12, owner); err != nil || status != "room_unavailable" || len(got.Participants) != 0 {
+		t.Fatalf("expired ringing: %q %#v %v", status, got, err)
+	}
+	if err := coordinator.client.HSet(ctx, groupRoomKey(roomID), "expires_at", room.ExpiresAt.UTC().Format(time.RFC3339Nano)).Err(); err != nil {
+		t.Fatal(err)
+	}
 	room, err = joinAdmittedGroupRoom(ctx, coordinator, roomID, member, 12)
 	if err != nil || room.StateRevision != 2 || room.Status != application.GroupRoomActive {
 		t.Fatalf("join room = %#v, err=%v", room, err)
+	}
+	if absent, err := coordinator.GroupReservationAbsent(ctx, member.UserID); err != nil || absent {
+		t.Fatalf("revoked member still reserved: absent=%v err=%v", absent, err)
+	}
+	for _, test := range []struct {
+		name                 string
+		conversation         uuid.UUID
+		generation, revision int64
+		participant          application.GroupParticipant
+		want                 string
+	}{
+		{"owner", conversationID, 5, 12, owner, "active"},
+		{"sibling socket", conversationID, 5, 12, application.GroupParticipant{UserID: owner.UserID, DeviceID: owner.DeviceID, ConnectionID: "sibling"}, "owned_elsewhere"},
+		{"other device", conversationID, 5, 12, application.GroupParticipant{UserID: owner.UserID, DeviceID: "other", ConnectionID: "other"}, "owned_elsewhere"},
+		{"absent", conversationID, 5, 12, application.GroupParticipant{UserID: uuid.New(), DeviceID: "absent", ConnectionID: "absent"}, "participant_absent"},
+		{"wrong conversation", uuid.New(), 5, 12, owner, "room_unavailable"},
+		{"wrong generation", conversationID, 6, 12, owner, "room_unavailable"},
+		{"stale membership", conversationID, 5, 13, owner, "room_unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, status, err := coordinator.SyncGroupRoomOwnership(ctx, test.conversation, roomID, test.generation, test.revision, test.participant)
+			if err != nil || status != test.want || (status == "active" && len(got.Participants) != 2) || (status != "active" && len(got.Participants) != 0) {
+				t.Fatalf("ownership = %q room=%#v err=%v", status, got, err)
+			}
+		})
+	}
+	if err := coordinator.client.Del(ctx, groupRoomUserKey(owner.UserID)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name                 string
+		conversation         uuid.UUID
+		generation, revision int64
+	}{
+		{"stale membership", conversationID, 5, 13},
+		{"wrong generation", conversationID, 6, 12},
+		{"wrong conversation", uuid.New(), 5, 12},
+	} {
+		t.Run("missing reservation/"+test.name, func(t *testing.T) {
+			got, status, err := coordinator.SyncGroupRoomOwnership(ctx, test.conversation, roomID, test.generation, test.revision, owner)
+			if err != nil || status != "room_unavailable" || len(got.Participants) != 0 {
+				t.Fatalf("ownership = %q room=%#v err=%v, want room_unavailable", status, got, err)
+			}
+		})
+	}
+	if err := coordinator.client.Set(ctx, groupRoomUserKey(owner.UserID), roomID.String(), groupRoomActiveTTL).Err(); err != nil {
+		t.Fatal(err)
 	}
 	active, ok, err := coordinator.SyncGroupRoom(ctx, roomID, 5, owner)
 	if err != nil || !ok || active.StateRevision != 2 || len(active.Participants) != 2 {
@@ -384,6 +458,15 @@ func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 	if err != nil || room.StateRevision != 4 || room.Status != application.GroupRoomEnded {
 		t.Fatalf("end room=%#v err=%v", room, err)
 	}
+	if absent, err := coordinator.GroupReservationAbsent(ctx, member.UserID); err != nil || !absent {
+		t.Fatalf("released member: absent=%v err=%v", absent, err)
+	}
+	for _, requestedRoom := range []uuid.UUID{roomID, uuid.New()} {
+		got, status, err := coordinator.SyncGroupRoomOwnership(ctx, conversationID, requestedRoom, 5, 13, member)
+		if err != nil || status != "participant_absent" || got.ID != uuid.Nil || len(got.Participants) != 0 {
+			t.Fatalf("stale/released ownership: %q %#v %v", status, got, err)
+		}
+	}
 	if _, ok, err := coordinator.SyncGroupRoom(ctx, roomID, 5, owner); err != nil || ok {
 		t.Fatalf("ended room sync active=%v err=%v", ok, err)
 	}
@@ -397,6 +480,103 @@ func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 	}
 	if _, err := coordinator.EndGroupRoomForMembershipChange(ctx, conversationID, roomID, 4, room.StateRevision, 13); !errors.Is(err, application.ErrCallNotFound) {
 		t.Fatalf("stale membership cleanup ended terminal/newer room: %v", err)
+	}
+}
+
+func TestGroupRoomOwnershipTerminalAbsenceIntegration(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	roomID, conversationID := uuid.New(), uuid.New()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: "device", ConnectionID: "socket"}
+	defer c.client.Del(ctx, groupRoomKey(roomID), groupRoomConversationKey(conversationID), groupRoomUserKey(owner.UserID))
+	check := func(name, want string) {
+		t.Helper()
+		room, status, err := c.SyncGroupRoomOwnership(ctx, conversationID, roomID, 1, 1, owner)
+		if err != nil || status != want || len(room.Participants) != 0 {
+			t.Fatalf("%s: status=%q room=%#v err=%v, want %s", name, status, room, err, want)
+		}
+	}
+	check("missing", "participant_absent")
+	if _, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.LeaveGroupRoom(ctx, roomID, owner); err != nil {
+		t.Fatal(err)
+	}
+	check("last participant left", "participant_absent")
+	if n, err := c.client.Exists(ctx, groupRoomUserKey(owner.UserID), groupRoomConversationKey(conversationID)).Result(); err != nil || n != 0 {
+		t.Fatalf("leave left reservation indexes: count=%d err=%v", n, err)
+	}
+	if err := c.client.HSet(ctx, groupRoomKey(roomID), "status", "active", "expires_at", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	check("expired", "participant_absent")
+	if err := c.client.Set(ctx, groupRoomUserKey(owner.UserID), uuid.NewString(), time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+	check("expired with other reservation", "room_unavailable")
+	if err := c.client.Del(ctx, groupRoomKey(roomID)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	check("missing with other reservation", "room_unavailable")
+	if err := c.client.Set(ctx, groupRoomUserKey(owner.UserID), "", time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+	check("missing with empty reservation key", "room_unavailable")
+	if err := c.client.Del(ctx, groupRoomUserKey(owner.UserID)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.client.HSet(ctx, groupRoomKey(roomID), "status", "ended").Err(); err != nil {
+		t.Fatal(err)
+	}
+	check("corrupt room", "room_unavailable")
+}
+
+func TestGroupRoomOwnershipAfterExpiryCleanupIntegration(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	roomID, conversationID := uuid.New(), uuid.New()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: "device", ConnectionID: "socket"}
+	defer c.client.Del(ctx, groupRoomKey(roomID), groupRoomConversationKey(conversationID), groupRoomUserKey(owner.UserID))
+	defer c.client.ZRem(ctx, groupRoomExpiryKey, roomID.String())
+	if _, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.client.HSet(ctx, groupRoomKey(roomID), "expires_at", time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano), "expires_at_unix_ms", time.Now().Add(-time.Second).UnixMilli()).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(time.Now().Add(-time.Second).UnixMilli()), Member: roomID.String()}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ExpireGroupRooms(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []int64{1, 2} {
+		_, status, err := c.SyncGroupRoomOwnership(ctx, conversationID, roomID, 1, revision, owner)
+		if err != nil || status != "participant_absent" {
+			t.Fatalf("after expiry revision=%d: status=%q err=%v", revision, status, err)
+		}
+	}
+	if n, err := c.client.Exists(ctx, groupRoomUserKey(owner.UserID), groupRoomConversationKey(conversationID)).Result(); err != nil || n != 0 {
+		t.Fatalf("expiry left reservation indexes: count=%d err=%v", n, err)
 	}
 }
 

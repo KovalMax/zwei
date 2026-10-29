@@ -15,7 +15,8 @@ const contentTypes: Record<string, string> = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
-async function startProductionServer(): Promise<{server: Server; origin: string}> {
+async function startProductionServer(): Promise<{server: Server; origin: string; deployUpdate: () => void}> {
+  let activeRoot = productionRoot;
   const server = createServer(async (request, response) => {
     const requestPath = new URL(request.url ?? '/', 'http://localhost').pathname;
     if (requestPath === '/api/private-probe') {
@@ -26,8 +27,8 @@ async function startProductionServer(): Promise<{server: Server; origin: string}
 
     const decodedPath = decodeURIComponent(requestPath);
     const normalizedPath = normalize(decodedPath).replace(/^([/\\])+/, '');
-    const filePath = join(productionRoot, normalizedPath || 'index.html');
-    const pathFromRoot = relative(productionRoot, filePath);
+    const filePath = join(activeRoot, normalizedPath || 'index.html');
+    const pathFromRoot = relative(activeRoot, filePath);
     if (pathFromRoot.startsWith(`..${sep}`) || pathFromRoot === '..') {
       response.writeHead(400).end();
       return;
@@ -44,7 +45,7 @@ async function startProductionServer(): Promise<{server: Server; origin: string}
       if (!extname(requestPath) && request.headers.accept?.includes('text/html')) {
         try {
           response.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
-          response.end(await readFile(join(productionRoot, 'index.html')));
+          response.end(await readFile(join(activeRoot, 'index.html')));
           return;
         } catch {
           // Return a normal 404 below if the production build is missing.
@@ -60,8 +61,48 @@ async function startProductionServer(): Promise<{server: Server; origin: string}
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Production static server did not bind a TCP port');
-  return {server, origin: `http://localhost:${address.port}`};
+  return {server, origin: `http://localhost:${address.port}`, deployUpdate: () => activeRoot = '/production-app-update'};
 }
+
+test('real Angular worker detects and activates a second production version', async ({page}) => {
+  test.setTimeout(60_000);
+  const {server, origin, deployUpdate} = await startProductionServer();
+  try {
+    const firstManifest = JSON.parse(await readFile(join(productionRoot, 'ngsw.json'), 'utf8')) as {appData?: unknown};
+    const secondManifest = JSON.parse(await readFile('/production-app-update/ngsw.json', 'utf8')) as {appData?: {e2eVersion?: string}};
+    expect(firstManifest.appData).not.toEqual(secondManifest.appData);
+    expect(secondManifest.appData?.e2eVersion).toBe('second-production-build');
+    await page.goto(`${origin}/login`);
+    await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
+    await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL)).toContain('/ngsw-worker.js');
+    await page.evaluate(() => {
+      const state = window as typeof window & {workerEvents: unknown[]};
+      state.workerEvents = [];
+      navigator.serviceWorker.addEventListener('message', event => state.workerEvents.push(event.data));
+    });
+    deployUpdate();
+    await page.evaluate(() => navigator.serviceWorker.controller?.postMessage({action: 'CHECK_FOR_UPDATES', nonce: 10001}));
+    await expect.poll(() => page.evaluate(() => {
+      const events = (window as typeof window & {workerEvents: Array<{type?: string; latestVersion?: {appData?: {e2eVersion?: string}}}>}).workerEvents;
+      return events.some(event => event.type === 'VERSION_READY' && event.latestVersion?.appData?.e2eVersion === 'second-production-build');
+    }), {timeout: 30_000}).toBe(true);
+    // Detection must not itself navigate the document; activation is explicit.
+    const timeOrigin = await page.evaluate(() => performance.timeOrigin);
+    await page.evaluate(() => navigator.serviceWorker.controller?.postMessage({action: 'ACTIVATE_UPDATE', nonce: 10002}));
+    await expect.poll(() => page.evaluate(() => {
+      const events = (window as typeof window & {workerEvents: Array<{type?: string; nonce?: number; result?: boolean}>}).workerEvents;
+      return events.some(event => event.type === 'OPERATION_COMPLETED' && event.nonce === 10002 && event.result === true);
+    })).toBe(true);
+    expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin);
+    await page.reload();
+    await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
+    await expect.poll(() => page.evaluate(() => performance.timeOrigin)).not.toBe(timeOrigin);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
 
 test('production service worker renders the login app shell offline without caching private data', async ({page, context}, testInfo) => {
   const {server, origin} = await startProductionServer();

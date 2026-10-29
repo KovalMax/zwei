@@ -1,4 +1,5 @@
 import {expect, test} from '@playwright/test';
+import {fixtureToken} from './session-helpers';
 
 // Stable-reference matrix: anonymous empty login plus authenticated Home-empty,
 // search-open, and group-create states × {light, dark} × {1440×900, 390×844}.
@@ -11,11 +12,7 @@ const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
 const adminEmail = process.env.E2E_ADMIN_EMAIL ?? 'e2e-admin@example.test';
 
 async function registerBaselineUser(page: import('@playwright/test').Page, email: string, nickName: string): Promise<void> {
-  const loginResponse = await page.context().request.post(`${adminBase}/api/auth/login`, {
-    data: {email: adminEmail, password: visualBaselinePassword, device_id: `visual-baseline-admin-${crypto.randomUUID()}`, device_name: 'E2E'},
-  });
-  expect(loginResponse.status()).toBe(200);
-  const loginPayload = await loginResponse.json() as {access_token: string; token_type: string};
+  const loginPayload = await fixtureToken(adminBase, adminEmail, visualBaselinePassword, 'E2E');
   const invitationResponse = await page.context().request.post(`${adminBase}/api/admin/invitations`, {
     headers: {Authorization: `${loginPayload.token_type} ${loginPayload.access_token}`},
     data: {email},
@@ -30,7 +27,7 @@ async function registerBaselineUser(page: import('@playwright/test').Page, email
   await page.locator('[formControlName="nickName"]').fill(nickName);
   await page.locator('[formControlName="password"]').fill(visualBaselinePassword);
   await page.locator('[formControlName="confirmPassword"]').fill(visualBaselinePassword);
-  const registration = page.waitForResponse(response => response.url().endsWith('/api/auth/register') && response.request().method() === 'POST');
+  const registration = page.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   const response = await registration;
   expect(response.status()).toBe(201);
@@ -126,9 +123,11 @@ for (const theme of themes) {
             return (Math.max(fg, backgroundLuminance) + .05) / (Math.min(fg, backgroundLuminance) + .05);
           });
           const buttonElement = element('.submit-button');
+          const buttonLabel = buttonElement.querySelector<HTMLElement>('.mdc-button__label');
+          if (!buttonLabel) throw new Error('Missing sign-in button label');
           const buttonBackground = getComputedStyle(buttonElement).backgroundColor;
           const buttonBackgroundLuminance = luminance(color(buttonBackground));
-          const buttonForeground = getComputedStyle(buttonElement).color;
+          const buttonForeground = getComputedStyle(buttonLabel).color;
           const buttonForegroundLuminance = luminance(color(buttonForeground));
           const fieldNodes = Array.from(document.querySelectorAll<HTMLElement>('.auth-form mat-form-field'));
           return {
@@ -156,6 +155,8 @@ for (const theme of themes) {
             buttonBackground,
             buttonForeground,
             buttonOpacity: getComputedStyle(buttonElement).opacity,
+            buttonLabelOpacity: getComputedStyle(buttonLabel).opacity,
+            buttonLabel: box(buttonLabel),
             buttonContrast: (Math.max(buttonBackgroundLuminance, buttonForegroundLuminance) + .05) / (Math.min(buttonBackgroundLuminance, buttonForegroundLuminance) + .05),
           };
         });
@@ -185,7 +186,14 @@ for (const theme of themes) {
         expect(metrics.buttonBackground, label).toBe('rgb(102, 112, 133)');
         expect(metrics.buttonForeground, label).toBe('rgb(255, 255, 255)');
         expect(metrics.buttonOpacity, label).toBe('1');
+        expect(metrics.buttonLabelOpacity, label).toBe('1');
         expect(metrics.buttonContrast, label).toBeGreaterThanOrEqual(4.5);
+        expect(metrics.buttonLabel.width, label).toBeGreaterThan(0);
+        expect(metrics.buttonLabel.height, label).toBeGreaterThan(0);
+        expect(metrics.buttonLabel.left, label).toBeGreaterThanOrEqual(metrics.button.left);
+        expect(metrics.buttonLabel.right, label).toBeLessThanOrEqual(metrics.button.right);
+        expect(metrics.buttonLabel.top, label).toBeGreaterThanOrEqual(metrics.button.top);
+        expect(metrics.buttonLabel.bottom, label).toBeLessThanOrEqual(metrics.button.bottom);
         expect(metrics.fields, label).toHaveLength(2);
         for (const field of metrics.fields) {
           expect(field.field.width, label).toBeGreaterThan(250);

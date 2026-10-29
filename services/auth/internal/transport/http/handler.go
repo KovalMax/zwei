@@ -16,14 +16,25 @@ import (
 )
 
 type Handler struct {
-	auth           *application.Service
-	admins         *application.AdminService
-	sessions       *sharedauth.SessionValidator
-	adminIPs       *IPAllowlist
-	allowedOrigins map[string]struct{}
-	vapidPublicKey string
-	giphyAPIKey    string
+	auth                 *application.Service
+	admins               *application.AdminService
+	sessions             *sharedauth.SessionValidator
+	adminIPs             *IPAllowlist
+	allowedOrigins       map[string]struct{}
+	vapidPublicKey       string
+	giphyAPIKey          string
+	uniqueRefreshCookies bool
+	browserDiscovery     application.BrowserHeadDiscovery
 }
+
+// SetBrowserDiscovery wires the read-only v2 discovery capability.
+func (h *Handler) SetBrowserDiscovery(discovery application.BrowserHeadDiscovery) {
+	h.browserDiscovery = discovery
+}
+
+// EnableUniqueRefreshCookies changes issuance only; all instances must support
+// reading both formats before enabling this on any instance.
+func (h *Handler) EnableUniqueRefreshCookies() { h.uniqueRefreshCookies = true }
 
 func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}, vapidPublicKey string, giphyAPIKey ...string) *Handler {
 	key := ""
@@ -33,14 +44,13 @@ func NewHandler(auth *application.Service, admins *application.AdminService, ses
 	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins, vapidPublicKey: vapidPublicKey, giphyAPIKey: key}
 }
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/auth/register", h.register)
-	mux.HandleFunc("POST /api/auth/login", h.login)
-	mux.HandleFunc("POST /api/auth/refresh", h.refresh)
 	mux.HandleFunc("POST /api/auth/logout", h.logout)
 	mux.HandleFunc("GET /api/auth/push/vapid-public-key", h.vapidPublicKeyEndpoint)
 	mux.HandleFunc("GET /api/auth/giphy-key", h.giphyKey)
 	mux.HandleFunc("POST /api/auth/push-subscription", h.storePushSubscription)
+	mux.HandleFunc("POST /api/auth/push-subscription/verify", h.verifyPushSubscription)
 	mux.HandleFunc("DELETE /api/auth/push-subscription", h.deletePushSubscription)
+	mux.HandleFunc("DELETE /api/auth/push-subscription/current", h.deleteCurrentPushSubscription)
 	mux.HandleFunc("POST /api/auth/ws-ticket", h.websocketTicket)
 	mux.HandleFunc("POST /api/auth/activate", h.activate)
 	mux.HandleFunc("GET /api/auth/me", h.me)
@@ -100,6 +110,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		runtime.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "pending"})
 		return
 	}
+	clearObservedSignedOutCookie(w, r)
 	h.writeTokens(w, http.StatusCreated, result.Tokens)
 }
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +139,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
+	clearObservedSignedOutCookie(w, r)
 	h.writeTokens(w, http.StatusOK, tokens)
 }
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
@@ -137,12 +149,34 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	if !h.authHostAllowed(w, r) {
 		return
 	}
-	refreshToken := refreshTokenFromCookie(r)
-	if refreshToken == "" {
+	cookies, parseErr := refreshCandidateCookies(r)
+	if parseErr != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
+		return
+	}
+	if hasSignedOutCookie(r) {
+		errorJSON(w, http.StatusUnauthorized, "signed out")
+		return
+	}
+	if len(cookies) == 0 {
 		errorJSON(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
-	tokens, err := h.auth.Refresh(r.Context(), refreshToken)
+	// A legacy response would overwrite an independently observed legacy cookie
+	// if selection chose a different name. Do not consume either credential.
+	if !h.uniqueRefreshCookies && len(cookies) > 1 {
+		for _, cookie := range cookies {
+			if cookie.Name == legacyRefreshCookie {
+				errorJSON(w, http.StatusConflict, "refresh cookie selection unavailable")
+				return
+			}
+		}
+	}
+	values := make([]string, len(cookies))
+	for i, cookie := range cookies {
+		values[i] = cookie.Value
+	}
+	tokens, selected, err := h.auth.RefreshCandidatesSelected(r.Context(), values)
 	if errors.Is(err, application.ErrInvalidInput) {
 		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
 		return
@@ -154,6 +188,13 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "could not rotate refresh token")
 		return
+	}
+	newName := legacyRefreshCookie
+	if h.uniqueRefreshCookies {
+		newName = uniqueRefreshCookieName(tokens.RefreshToken)
+	}
+	if cookies[selected].Name != newName {
+		writeRefreshCookie(w, cookies[selected].Name, "", -1)
 	}
 	h.writeTokens(w, http.StatusOK, tokens)
 }
@@ -178,11 +219,38 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	cookies, cookieErr := refreshCandidateCookies(r)
+	var owned []*http.Cookie
+	if cookieErr == nil {
+		for _, cookie := range cookies {
+			err := h.auth.CheckLogoutCookie(r.Context(), userID, cookie.Value)
+			if err == nil {
+				owned = append(owned, cookie)
+			} else if cookieErr == nil || !errors.Is(err, application.ErrLogoutCookieMismatch) {
+				cookieErr = err
+			}
+		}
+	}
+	// The bearer authorizes revocation independently of the cookie's ownership.
+	// Never clear an unverified cookie, even when revocation succeeds.
 	if err := h.auth.Logout(r.Context(), userID); err != nil {
 		errorJSON(w, http.StatusInternalServerError, "could not revoke sessions")
 		return
 	}
-	clearRefreshCookie(w)
+	// A foreign cookie must not silently restore another account after logout.
+	// Only explicit successful login/registration removes this browser fence.
+	writeRefreshCookie(w, signedOutCookie, "1", 400*24*60*60)
+	for _, cookie := range owned {
+		writeRefreshCookie(w, cookie.Name, "", -1)
+	}
+	if cookieErr != nil {
+		if errors.Is(cookieErr, application.ErrLogoutCookieMismatch) {
+			errorJSON(w, http.StatusConflict, "sessions revoked; refresh cookie ownership mismatch")
+		} else {
+			errorJSON(w, http.StatusInternalServerError, "sessions revoked; could not verify refresh cookie")
+		}
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -240,6 +308,35 @@ func (h *Handler) deletePushSubscription(w http.ResponseWriter, r *http.Request)
 	h.pushSubscriptionError(w, h.auth.DeletePushSubscription(r.Context(), identity, request.Endpoint))
 }
 
+func (h *Handler) deleteCurrentPushSubscription(w http.ResponseWriter, r *http.Request) {
+	identity, ok := h.authenticatedIdentity(w, r)
+	if !ok {
+		return
+	}
+	h.pushSubscriptionError(w, h.auth.DeleteCurrentPushSubscription(r.Context(), identity))
+}
+
+func (h *Handler) verifyPushSubscription(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	identity, ok := h.authenticatedIdentity(w, r)
+	if !ok {
+		return
+	}
+	var request pushSubscriptionRequest
+	if !decodeJSON(w, r, &request) || request.ExpirationTime != nil && *request.ExpirationTime < 0 {
+		errorJSON(w, http.StatusBadRequest, "invalid push subscription")
+		return
+	}
+	matches, err := h.auth.VerifyPushSubscription(r.Context(), identity, application.PushSubscription{
+		Endpoint: request.Endpoint, P256DH: request.Keys.P256DH, Auth: request.Keys.Auth,
+	})
+	if err != nil {
+		h.pushSubscriptionError(w, err)
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, map[string]bool{"matches": matches})
+}
+
 func (h *Handler) pushSubscriptionError(w http.ResponseWriter, err error) {
 	switch {
 	case err == nil:
@@ -260,25 +357,21 @@ func (h *Handler) pushSubscriptionError(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) writeTokens(w http.ResponseWriter, status int, tokens application.Tokens) {
-	setRefreshCookie(w, tokens.RefreshToken)
+	if h.uniqueRefreshCookies {
+		writeRefreshCookie(w, uniqueRefreshCookieName(tokens.RefreshToken), tokens.RefreshToken, 30*24*60*60)
+	} else {
+		setRefreshCookie(w, tokens.RefreshToken)
+	}
 	tokens.RefreshToken = ""
 	runtime.WriteJSON(w, status, tokens)
 }
 
-func refreshTokenFromCookie(r *http.Request) string {
-	cookie, err := r.Cookie("zwei_refresh")
-	if err != nil {
-		return ""
-	}
-	return cookie.Value
-}
-
 func setRefreshCookie(w http.ResponseWriter, token string) {
-	http.SetCookie(w, &http.Cookie{Name: "zwei_refresh", Value: token, Path: "/api/auth", HttpOnly: true, Secure: true, SameSite: http.SameSiteNoneMode, MaxAge: 30 * 24 * 60 * 60})
+	writeRefreshCookie(w, legacyRefreshCookie, token, 30*24*60*60)
 }
 
 func clearRefreshCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "zwei_refresh", Value: "", Path: "/api/auth", HttpOnly: true, Secure: true, SameSite: http.SameSiteNoneMode, MaxAge: -1})
+	writeRefreshCookie(w, legacyRefreshCookie, "", -1)
 }
 func (h *Handler) websocketTicket(w http.ResponseWriter, r *http.Request) {
 	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))

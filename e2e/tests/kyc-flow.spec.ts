@@ -1,4 +1,5 @@
 import {expect, Page, APIRequestContext, TestInfo, test} from '@playwright/test';
+import {fixtureToken, restoreSession} from './session-helpers';
 
 const password = process.env.E2E_ADMIN_PASSWORD ?? 'Password123!';
 const adminEmail = process.env.E2E_ADMIN_EMAIL ?? 'e2e-admin@example.test';
@@ -23,7 +24,7 @@ async function register(page: Page, email: string, invitationCode?: string): Pro
   const suffix = invitationCode ? `?invite=1&code=${encodeURIComponent(invitationCode)}` : '';
   await page.goto(`/sign-up${suffix}`);
   await fillRegistration(page, email);
-  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/register') && response.request().method() === 'POST');
+  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   const response = await responsePromise;
   const payload = await response.json() as {access_token?: string};
@@ -33,7 +34,7 @@ async function register(page: Page, email: string, invitationCode?: string): Pro
 async function registerFromInvitationLink(page: Page, email: string, link: string): Promise<{status: number; accessToken?: string}> {
   await page.goto(link);
   await fillRegistration(page, email);
-  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/register') && response.request().method() === 'POST');
+  const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   const response = await responsePromise;
   const payload = await response.json() as {access_token?: string};
@@ -41,7 +42,7 @@ async function registerFromInvitationLink(page: Page, email: string, link: strin
 }
 
 async function login(page: Page, email: string): Promise<void> {
-  await page.goto('/login');
+  await page.goto(`${process.env.BASE_URL ?? 'https://chat.localhost'}/login`);
   await page.locator('[formControlName="email"]').fill(email);
   await page.locator('[formControlName="password"]').fill(password);
   await page.getByRole('button', {name: 'Sign in'}).click();
@@ -104,22 +105,16 @@ test('admin media source settings use enabled contract and deny anonymous reads'
     await page.screenshot({path: testInfo.outputPath('admin-media-sources-dark-mobile.png')});
   } finally {
     if (initialEnabled !== undefined) {
-      const tokenResponse = await context.request.post(`${adminBase}/api/auth/login`, {data: {email: adminEmail, password, device_id: `restore-giphy-${Date.now()}`, device_name: 'E2E'}});
-      if (tokenResponse.ok()) {
-        const token = await tokenResponse.json() as {access_token: string; token_type: string};
-        await context.request.put(`${adminBase}/api/admin/media-sources/giphy`, {headers: {Authorization: `${token.token_type} ${token.access_token}`}, data: {enabled: initialEnabled}});
-      }
+      const token = await fixtureToken(adminBase, adminEmail, password, 'restore-giphy');
+      const restored = await context.request.put(`${adminBase}/api/admin/media-sources/giphy`, {headers: {Authorization: `${token.token_type} ${token.access_token}`}, data: {enabled: initialEnabled}});
+      expect(restored.ok()).toBeTruthy();
     }
     await context.close();
   }
 });
 
 async function reloadAdmin(page: Page): Promise<void> {
-  const refresh = page.waitForResponse(response => response.url().endsWith('/api/auth/refresh') && response.request().method() === 'POST');
-  await page.reload();
-  const response = await refresh;
-  expect(response.status(), `refresh failed: ${await response.text()}`).toBe(200);
-  await expect(page).toHaveURL(/\/admin$/);
+  await restoreSession(page, () => page.reload(), 'admin');
 }
 
 async function activationLink(request: APIRequestContext, email: string): Promise<string> {
@@ -370,6 +365,8 @@ async function switchAdminTheme(page: Page, theme: 'dark' | 'light'): Promise<vo
 }
 
 test('pending registration, admin approval, activation email, and blocked login', async ({browser, request}, testInfo) => {
+  // This flow includes the full admin theme/viewport matrix and email activation.
+  test.setTimeout(90_000);
   expect((await request.get(`${adminBase}/`)).status()).toBe(401);
   const pendingEmail = uniqueEmail('pending');
   const userContext = await browser.newContext();
@@ -553,7 +550,8 @@ test('pending registration, admin approval, activation email, and blocked login'
   await expect(activeRow.getByRole('button', {name: 'Block account'})).toBeEnabled();
   await activeRow.getByRole('button', {name: 'Block account'}).click();
   await expect(admin.getByText('Account blocked.')).toBeVisible();
-  await user.reload();
+  // Blocking may invalidate the active page before reload, so no refresh is guaranteed.
+  await user.goto("/home");
   await expect(user).toHaveURL(/\/login$/);
   await expect(user.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
   await searcher.getByPlaceholder('Name or email').fill('');

@@ -21,7 +21,11 @@ export class PushSubscriptionClient {
         return this.http.post<void>(this.host.authEndpoint('push-subscription'), subscription);
     }
 
-    public remove(endpoint: string): Observable<void> {
-        return this.http.delete<void>(this.host.authEndpoint('push-subscription'), {body: {endpoint}});
+    public verify(subscription: PushSubscriptionWire): Observable<{matches: boolean}> {
+        return this.http.post<{matches: boolean}>(`${this.host.authEndpoint('push-subscription')}/verify`, subscription);
+    }
+
+    public remove(): Observable<void> {
+        return this.http.delete<void>(`${this.host.authEndpoint('push-subscription')}/current`);
     }
 }

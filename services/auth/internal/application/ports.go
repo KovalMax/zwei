@@ -15,10 +15,14 @@ type Repository interface {
 	FindUserByEmail(context.Context, string) (user.User, error)
 	EnsureDevice(context.Context, uuid.UUID, string, string) (uuid.UUID, error)
 	CreateSession(context.Context, uuid.UUID, uuid.UUID, []byte, int64, time.Time) error
-	RotateRefreshToken(context.Context, []byte) (user.Session, error)
+	RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error
+	RotateRefreshCandidates(context.Context, [][]byte, []byte, time.Time, func(user.Session, []byte) error) error
+	RefreshTokenOwner(context.Context, []byte) (uuid.UUID, error)
 	RevokeAllSessions(context.Context, uuid.UUID) error
-	StorePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, PushSubscription) error
-	DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, string) error
+	StorePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, uuid.UUID, uuid.UUID, PushSubscription) error
+	VerifyPushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, PushSubscription) (bool, error)
+	DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, uuid.UUID, uuid.UUID, string) error
+	DeleteCurrentPushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, uuid.UUID, uuid.UUID) error
 	Profile(context.Context, uuid.UUID) (user.Profile, error)
 	UpdateProfile(context.Context, uuid.UUID, *string, *string, *string, *bool) error
 	GiphyEnabled(context.Context) (bool, error)

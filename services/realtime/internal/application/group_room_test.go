@@ -244,6 +244,121 @@ func boolCount(value bool) int {
 	return 0
 }
 
+type ownershipTestRooms struct {
+	groupTestRooms
+	status      string
+	reads       int
+	absent      bool
+	absenceErr  error
+	checkedUser uuid.UUID
+	participant GroupParticipant
+}
+
+func (r *ownershipTestRooms) GroupReservationAbsent(_ context.Context, userID uuid.UUID) (bool, error) {
+	r.checkedUser = userID
+	return r.absent, r.absenceErr
+}
+
+func (r *ownershipTestRooms) SyncGroupRoomOwnership(_ context.Context, _, _ uuid.UUID, _, _ int64, participant GroupParticipant) (GroupRoom, string, error) {
+	r.reads++
+	r.participant = participant
+	return r.room, r.status, nil
+}
+
+func TestGroupCallSyncOwnershipRingingSnapshot(t *testing.T) {
+	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+	presence := &groupTestPresence{revision: 9, memberIDs: []uuid.UUID{userID}}
+	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 9, Status: GroupRoomRinging, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}}, status: "active"}
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	request := []byte(`{"version":2,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(client.events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rooms.participant.UserID != userID || rooms.participant.DeviceID != "device" || rooms.participant.ConnectionID != "socket" || !bytes.Contains(encoded, []byte(`"status":"ringing"`)) || !bytes.Contains(encoded, []byte(`"ownership_status":"active"`)) || !bytes.Contains(encoded, []byte(`"participants"`)) || bytes.Contains(encoded, []byte("connection_id")) {
+		t.Fatalf("ringing snapshot: %s participant=%#v", encoded, rooms.participant)
+	}
+	rooms.status = "owned_elsewhere"
+	sibling := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "sibling"}
+	if err := hub.HandleVersion(context.Background(), sibling, 2, request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(sibling.events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rooms.participant.ConnectionID != "sibling" || !bytes.Contains(encoded, []byte(`"ownership_status":"owned_elsewhere"`)) || bytes.Contains(encoded, []byte("participants")) || bytes.Contains(encoded, []byte("conversation_id")) || bytes.Contains(encoded, []byte("connection_id")) {
+		t.Fatalf("sibling response: %s participant=%#v", encoded, rooms.participant)
+	}
+}
+
+func TestGroupCallSyncOwnershipIsOptInAndMinimal(t *testing.T) {
+	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+	presence := &groupTestPresence{revision: 9, memberIDs: []uuid.UUID{userID}}
+	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 9, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}}}
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	for _, status := range []string{"active", "participant_absent", "owned_elsewhere", "room_unavailable"} {
+		t.Run(status, func(t *testing.T) {
+			rooms.status = status
+			client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+			request := []byte(`{"version":2,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+			if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(client.events[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var event struct {
+				Payload map[string]json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(encoded, &event); err != nil {
+				t.Fatal(err)
+			}
+			if string(event.Payload["ownership_status"]) != `"`+status+`"` {
+				t.Fatalf("response: %s", encoded)
+			}
+			_, hasRoster := event.Payload["participants"]
+			if hasRoster != (status == "active") || bytes.Contains(encoded, []byte("connection_id")) {
+				t.Fatalf("disclosure: %s", encoded)
+			}
+		})
+	}
+	denied := &discoveryAuthorizer{groupTestPresence: presence, err: ErrCallNotAllowed}
+	deniedHub := NewHubWithGroupCallAuthorizer(nil, presence, denied, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	request := []byte(`{"version":2,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	reads := rooms.reads
+	if err := deniedHub.HandleVersion(context.Background(), client, 2, request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(client.events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rooms.reads != reads || !bytes.Contains(encoded, []byte(`"ownership_status":"room_unavailable"`)) || bytes.Contains(encoded, []byte("participants")) {
+		t.Fatalf("authorization denial classified or disclosed room: %s", encoded)
+	}
+	rooms.absent = true
+	client.events = nil
+	if err := deniedHub.HandleVersion(context.Background(), client, 2, request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(client.events[0])
+	if rooms.checkedUser != userID || !bytes.Contains(encoded, []byte(`"ownership_status":"participant_absent"`)) || bytes.Contains(encoded, []byte("participants")) || bytes.Contains(encoded, []byte("device")) || bytes.Contains(encoded, []byte("conversation_id")) {
+		t.Fatalf("denied absence response: %s", encoded)
+	}
+	rooms.absenceErr = errors.New("redis failed")
+	client.events = nil
+	if err := deniedHub.HandleVersion(context.Background(), client, 2, request); err == nil || len(client.events) != 0 {
+		t.Fatalf("absence failure must fail closed: %v %#v", err, client.events)
+	}
+}
+
 func TestGroupCallSyncReturnsOwnedActiveSnapshotOrMinimalTerminalAck(t *testing.T) {
 	ownerID, otherID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	room := GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 9, Generation: 3, StateRevision: 7, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner-device", ConnectionID: "owner-socket"}, {UserID: otherID, DeviceID: "other-device", ConnectionID: "other-socket"}}}

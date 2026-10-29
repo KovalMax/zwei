@@ -1,0 +1,13 @@
+<main class="auth-page">
+    <section class="auth-card" aria-labelledby="continue-title" [attr.aria-busy]="loading">
+        <div class="auth-intro"><h1 id="continue-title">Continue a session</h1><p>Choose a saved session to continue, or sign in to another account.</p></div>
+        <p role="status" *ngIf="loading">Checking your session…</p>
+        <p role="alert" *ngIf="error">{{ error }}</p>
+        <p *ngIf="!loading && !error && candidates.length === 0">No saved sessions found.</p>
+        <div class="auth-form" *ngIf="candidates.length">
+            <button *ngFor="let candidate of candidates" type="button" mat-flat-button color="primary" [disabled]="loading" (click)="continue(candidate)">Continue as {{ candidate.display_name }}</button>
+        </div>
+        <p><button *ngIf="error" class="retry-button" type="button" mat-button [disabled]="loading" (click)="discover()">Find saved sessions again</button></p>
+        <p class="auth-switch"><a routerLink="/login">Sign in</a></p>
+    </section>
+</main>

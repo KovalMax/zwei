@@ -217,6 +217,8 @@ group_compose "$PROJECT_A" 172.30.10.0/24 172.30.10.250 172.30.10.251 \
   up -d database frontend traefik mailpit redis coturn
 group_compose "$PROJECT_A" 172.30.10.0/24 172.30.10.250 172.30.10.251 \
   exec -T frontend npm run build -- --configuration production
+E2E_NETWORK_SUBNET=172.30.10.0/24 E2E_TRAEFIK_IP=172.30.10.250 E2E_COTURN_IP=172.30.10.251 \
+  TURN_EXTERNAL_IP=172.30.10.251 bash "$SCRIPT_DIR/e2e-pwa-build.sh" docker compose -p "$PROJECT_A" "${COMPOSE_FILES[@]}"
 
 run_group() {
   local project="$1" group="$2" subnet="$3" proxy_ip="$4" coturn_ip="$5" run_id="$6" status

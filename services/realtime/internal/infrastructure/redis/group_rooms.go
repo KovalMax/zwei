@@ -118,6 +118,84 @@ func (c *PresenceCoordinator) SyncGroupRoom(ctx context.Context, roomID uuid.UUI
 	return room, true, nil
 }
 
+// GroupReservationAbsent checks only the authenticated user's reservation key.
+func (c *PresenceCoordinator) GroupReservationAbsent(ctx context.Context, userID uuid.UUID) (bool, error) {
+	count, err := c.client.Exists(ctx, groupRoomUserKey(userID)).Result()
+	return count == 0 && err == nil, err
+}
+
+// SyncGroupRoomOwnership reads the room and this user's reservation in one
+// Redis turn. Classification never mutates or transfers a reservation.
+func (c *PresenceCoordinator) SyncGroupRoomOwnership(ctx context.Context, conversationID, roomID uuid.UUID, generation, revision int64, participant application.GroupParticipant) (application.GroupRoom, string, error) {
+	result, err := c.client.Eval(ctx, `return {redis.call('HGETALL', KEYS[1]), redis.call('EXISTS', KEYS[2]), redis.call('GET', KEYS[2]) or ''}`, []string{groupRoomKey(roomID), groupRoomUserKey(participant.UserID)}).Slice()
+	if err != nil {
+		return application.GroupRoom{}, "", err
+	}
+	if len(result) != 3 {
+		return application.GroupRoom{}, "", application.ErrCallUnavailable
+	}
+	fields, ok := result[0].([]interface{})
+	if !ok || len(fields)%2 != 0 {
+		return application.GroupRoom{}, "", application.ErrCallUnavailable
+	}
+	values := make(map[string]string, len(fields)/2)
+	for i := 0; i < len(fields); i += 2 {
+		key, keyOK := fields[i].(string)
+		value, valueOK := fields[i+1].(string)
+		if !keyOK || !valueOK {
+			return application.GroupRoom{}, "", application.ErrCallUnavailable
+		}
+		values[key] = value
+	}
+	exists, ok := result[1].(int64)
+	reservation, reservationOK := result[2].(string)
+	if !ok || !reservationOK || (exists != 0 && exists != 1) {
+		return application.GroupRoom{}, "", application.ErrCallUnavailable
+	}
+	if len(values) == 0 {
+		if exists == 0 {
+			return application.GroupRoom{}, "participant_absent", nil
+		}
+		return application.GroupRoom{}, "room_unavailable", nil
+	}
+	room, err := decodeGroupRoom(roomID, values)
+	if err != nil {
+		return application.GroupRoom{}, "room_unavailable", nil
+	}
+	// A retained live roster contradicts a missing reservation regardless of
+	// which conversation, generation, or membership revision was requested.
+	// Ended tombstones can retain former participants after releasing them.
+	if exists == 0 && room.Status != application.GroupRoomEnded {
+		for _, current := range room.Participants {
+			if current.UserID == participant.UserID {
+				return application.GroupRoom{}, "room_unavailable", nil
+			}
+		}
+	}
+	if room.ConversationID != conversationID || room.Generation != generation || room.MembershipRevision != revision {
+		if exists == 0 {
+			return application.GroupRoom{}, "participant_absent", nil
+		}
+		return application.GroupRoom{}, "room_unavailable", nil
+	}
+	if room.Status != application.GroupRoomActive && room.Status != application.GroupRoomRinging && room.Status != application.GroupRoomEnded {
+		return application.GroupRoom{}, "room_unavailable", nil
+	}
+	if room.Status == application.GroupRoomEnded || !room.ExpiresAt.After(time.Now()) {
+		if exists == 0 {
+			return application.GroupRoom{}, "participant_absent", nil
+		}
+		return application.GroupRoom{}, "room_unavailable", nil
+	}
+	if groupParticipantInRoom(room, participant) && exists == 1 && reservation == roomID.String() {
+		return room, "active", nil
+	}
+	if exists == 1 {
+		return application.GroupRoom{}, "owned_elsewhere", nil
+	}
+	return application.GroupRoom{}, "participant_absent", nil
+}
+
 func groupParticipantInRoom(room application.GroupRoom, participant application.GroupParticipant) bool {
 	for _, current := range room.Participants {
 		if current.UserID == participant.UserID && current.DeviceID == participant.DeviceID && current.ConnectionID == participant.ConnectionID {
@@ -261,6 +339,10 @@ func (c *PresenceCoordinator) groupRoom(ctx context.Context, roomID uuid.UUID) (
 	if err != nil {
 		return application.GroupRoom{}, err
 	}
+	return decodeGroupRoom(roomID, values)
+}
+
+func decodeGroupRoom(roomID uuid.UUID, values map[string]string) (application.GroupRoom, error) {
 	if len(values) == 0 {
 		return application.GroupRoom{}, application.ErrCallNotFound
 	}
@@ -329,6 +411,7 @@ func boolString(value bool) string {
 // The transport supplies current PostgreSQL membership revision on start/join.
 const startGroupRoomScript = `if ARGV[13] == '' or redis.call('GET', 'zwei:call:admission:' .. ARGV[5]) ~= ARGV[13] then return 4 end; if redis.call('EXISTS', KEYS[1]) == 1 then return 6 end; if redis.call('EXISTS', KEYS[2]) == 1 or redis.call('EXISTS', KEYS[3]) == 1 or redis.call('EXISTS', 'zwei:call:user:' .. ARGV[5]) == 1 then return 4 end; local participant = '[{"user_id":"' .. ARGV[5] .. '","device_id":"' .. ARGV[6] .. '"}]'; redis.call('HSET', KEYS[1], 'conversation_id', ARGV[2], 'membership_revision', ARGV[3], 'generation', ARGV[4], 'state_revision', 1, 'status', 'ringing', 'expires_at', ARGV[9], 'expires_at_unix_ms', ARGV[10], 'participants', participant, 'connections', ARGV[5] .. '|' .. ARGV[6] .. '|' .. ARGV[7], 'support_ref', ARGV[8]); redis.call('EXPIRE', KEYS[1], ARGV[11]); redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[11]); redis.call('SET', KEYS[3], ARGV[1], 'EX', ARGV[11]); redis.call('ZADD', KEYS[4], ARGV[10], ARGV[1]); return 1`
 const joinGroupRoomScript = `if ARGV[10] == '' or redis.call('GET', 'zwei:call:admission:' .. ARGV[1]) ~= ARGV[10] then return 4 end; if redis.call('EXISTS', KEYS[1]) == 0 then return 2 end; if redis.call('HGET', KEYS[1], 'status') == 'ended' then return 6 end; if tonumber(redis.call('HGET', KEYS[1], 'expires_at_unix_ms')) <= tonumber(ARGV[9]) then return 2 end; if redis.call('EXISTS', KEYS[2]) == 1 or redis.call('GET', 'zwei:call:admission:' .. ARGV[1]) ~= ARGV[10] or redis.call('EXISTS', 'zwei:call:user:' .. ARGV[1]) == 1 then return 4 end; if redis.call('HGET', KEYS[1], 'membership_revision') ~= ARGV[4] then return 3 end; local participants = cjson.decode(redis.call('HGET', KEYS[1], 'participants')); if #participants >= tonumber(ARGV[11]) then return 7 end; local roomID = string.sub(KEYS[1], 22); local conversationKey = 'zwei:group-call:conversation:' .. redis.call('HGET', KEYS[1], 'conversation_id'); local indexedRoom = redis.call('GET', conversationKey); if indexedRoom and indexedRoom ~= roomID then return 4 end; if not indexedRoom then local restored = redis.call('SET', conversationKey, roomID, 'EX', ARGV[7], 'NX'); if not restored and redis.call('GET', conversationKey) ~= roomID then return 4 end end; table.insert(participants, {user_id=ARGV[1], device_id=ARGV[2]}); redis.call('HSETNX', KEYS[1], 'state_revision', 1); redis.call('HINCRBY', KEYS[1], 'state_revision', 1); redis.call('HSET', KEYS[1], 'participants', cjson.encode(participants), 'connections', redis.call('HGET', KEYS[1], 'connections') .. ',' .. ARGV[1] .. '|' .. ARGV[2] .. '|' .. ARGV[3], 'status', 'active', 'expires_at', ARGV[5], 'expires_at_unix_ms', ARGV[6]); redis.call('EXPIRE', KEYS[1], ARGV[7]); redis.call('SET', KEYS[2], roomID, 'EX', ARGV[8]); for _, current in ipairs(participants) do local userKey = 'zwei:group-call:user:' .. current.user_id; if redis.call('GET', userKey) == roomID then redis.call('EXPIRE', userKey, ARGV[8]) end end; redis.call('EXPIRE', conversationKey, ARGV[7]); redis.call('ZADD', KEYS[3], ARGV[6], roomID); return 1`
+
 const leaveGroupRoomScript = `if redis.call('EXISTS', KEYS[1]) == 0 then return 2 end; local token = ARGV[1] .. '|' .. ARGV[2] .. '|' .. ARGV[3]; local connections = redis.call('HGET', KEYS[1], 'connections'); if not string.find(',' .. connections .. ',', ',' .. token .. ',', 1, true) then return 3 end; local participants = cjson.decode(redis.call('HGET', KEYS[1], 'participants')); local kept = {}; local keptConnections = {}; for _, participant in ipairs(participants) do if participant.user_id ~= ARGV[1] or participant.device_id ~= ARGV[2] then table.insert(kept, participant); local prefix = participant.user_id .. '|' .. participant.device_id .. '|'; for connection in string.gmatch(connections, '[^,]+') do if string.sub(connection, 1, string.len(prefix)) == prefix then table.insert(keptConnections, connection) end end end end; local presenter = redis.call('HGET', KEYS[1], 'presenter'); if presenter and presenter ~= '' then local decoded = cjson.decode(presenter); if decoded.user_id == ARGV[1] and decoded.device_id == ARGV[2] then redis.call('HDEL', KEYS[1], 'presenter') end end; local roomID = string.sub(KEYS[1], 22); if redis.call('GET', KEYS[2]) == roomID then redis.call('DEL', KEYS[2]) end; redis.call('HINCRBY', KEYS[1], 'state_revision', 1); if #kept == 0 then redis.call('HSET', KEYS[1], 'ended_participants', redis.call('HGET', KEYS[1], 'participants'), 'ended_connections', connections, 'participants', '[]', 'connections', '', 'status', 'ended'); redis.call('EXPIRE', KEYS[1], ARGV[4]); local conversationKey = 'zwei:group-call:conversation:' .. redis.call('HGET', KEYS[1], 'conversation_id'); if redis.call('GET', conversationKey) == roomID then redis.call('DEL', conversationKey) end; redis.call('ZREM', 'zwei:group-call:expirations', roomID); else redis.call('HSET', KEYS[1], 'participants', cjson.encode(kept), 'connections', table.concat(keptConnections, ',')) end; return 1`
 const endGroupRoomScript = `if redis.call('EXISTS', KEYS[1]) == 0 then return 2 end; local token = ARGV[1] .. '|' .. ARGV[2] .. '|' .. ARGV[3]; local connections = redis.call('HGET', KEYS[1], 'connections'); if not string.find(',' .. connections .. ',', ',' .. token .. ',', 1, true) then return 3 end; local participants = cjson.decode(redis.call('HGET', KEYS[1], 'participants')); local roomID = string.sub(KEYS[1], 22); for _, participant in ipairs(participants) do local userKey = 'zwei:group-call:user:' .. participant.user_id; if redis.call('GET', userKey) == roomID then redis.call('DEL', userKey) end end; redis.call('HINCRBY', KEYS[1], 'state_revision', 1); redis.call('HSET', KEYS[1], 'ended_participants', redis.call('HGET', KEYS[1], 'participants'), 'ended_connections', connections, 'participants', '[]', 'connections', '', 'status', 'ended'); redis.call('EXPIRE', KEYS[1], ARGV[4]); local conversationKey = 'zwei:group-call:conversation:' .. redis.call('HGET', KEYS[1], 'conversation_id'); if redis.call('GET', conversationKey) == roomID then redis.call('DEL', conversationKey) end; redis.call('ZREM', 'zwei:group-call:expirations', roomID); return 1`
 const setGroupPresenterScript = `if redis.call('EXISTS', KEYS[1]) == 0 then return 2 end; local token = ARGV[1] .. '|' .. ARGV[2] .. '|' .. ARGV[3]; if not string.find(',' .. redis.call('HGET', KEYS[1], 'connections') .. ',', ',' .. token .. ',', 1, true) then return 3 end; if ARGV[4] == '1' then redis.call('HSET', KEYS[1], 'presenter', '{"user_id":"' .. ARGV[1] .. '","device_id":"' .. ARGV[2] .. '"}') else local presenter = redis.call('HGET', KEYS[1], 'presenter'); if presenter and presenter ~= '' then local decoded = cjson.decode(presenter); if decoded.user_id ~= ARGV[1] or decoded.device_id ~= ARGV[2] then return 3 end end; redis.call('HDEL', KEYS[1], 'presenter') end; redis.call('HINCRBY', KEYS[1], 'state_revision', 1); return 1`

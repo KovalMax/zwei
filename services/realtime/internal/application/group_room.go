@@ -58,6 +58,13 @@ type GroupRoomCoordinator interface {
 	PublishGroupRoom(context.Context, GroupRoomChange) error
 }
 
+// GroupRoomOwnershipReader returns a single atomic, authorized-room snapshot.
+// Non-active outcomes must not include roster or connection metadata.
+type GroupRoomOwnershipReader interface {
+	SyncGroupRoomOwnership(context.Context, uuid.UUID, uuid.UUID, int64, int64, GroupParticipant) (GroupRoom, string, error)
+	GroupReservationAbsent(context.Context, uuid.UUID) (bool, error)
+}
+
 // GroupRoomChange is an internal pub/sub envelope. Connection IDs are retained
 // for routing but are never copied into browser payloads.
 type GroupRoomChange struct {

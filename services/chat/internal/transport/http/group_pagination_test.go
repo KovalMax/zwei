@@ -226,7 +226,7 @@ func testGroupListHandler(secret string, store *groupPageStoreFake, limiter *tes
 
 func authenticatedGroupRequest(t *testing.T, secret string, userID uuid.UUID, path string) *http.Request {
 	t.Helper()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{SessionVersion: 7, RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString([]byte(secret))
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(), SessionVersion: 7, RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}}).SignedString([]byte(secret))
 	if err != nil {
 		t.Fatal(err)
 	}

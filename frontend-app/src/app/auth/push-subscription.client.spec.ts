@@ -29,11 +29,20 @@ describe('PushSubscriptionClient', () => {
         request.flush(null);
     });
 
-    it('deletes the current browser endpoint without putting it in the URL', () => {
-        client.remove('https://push.example.test/sub').subscribe();
-        const request = http.expectOne(`${backends.auth}/api/auth/push-subscription`);
+    it('deletes the current account and device registration without a body', () => {
+        client.remove().subscribe();
+        const request = http.expectOne(`${backends.auth}/api/auth/push-subscription/current`);
         expect(request.request.method).toBe('DELETE');
-        expect(request.request.body).toEqual({endpoint: 'https://push.example.test/sub'});
+        expect(request.request.body).toBeNull();
         request.flush(null);
+    });
+
+    it('verifies the subscription with a read-only POST', () => {
+        const body = {endpoint: 'https://push.example.test/sub', expirationTime: null, keys: {p256dh: 'dh', auth: 'auth'}};
+        client.verify(body).subscribe(result => expect(result.matches).toBe(true));
+        const request = http.expectOne(`${backends.auth}/api/auth/push-subscription/verify`);
+        expect(request.request.method).toBe('POST');
+        expect(request.request.body).toEqual(body);
+        request.flush({matches: true});
     });
 });

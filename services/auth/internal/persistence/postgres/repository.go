@@ -122,16 +122,133 @@ func (r *Repository) CreateSession(ctx context.Context, userID, deviceID uuid.UU
 	return err
 }
 
-func (r *Repository) RotateRefreshToken(ctx context.Context, tokenHash []byte) (user.Session, error) {
-	var session user.Session
-	err := r.db.QueryRow(ctx, `SELECT s.id, s.user_id, s.device_id, s.user_session_version FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.refresh_token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.session_version = s.user_session_version`, tokenHash).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.SessionVersion)
+func (r *Repository) RotateRefreshToken(ctx context.Context, tokenHash, nextHash []byte, expiresAt time.Time, issue func(user.Session) error) error {
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return user.Session{}, err
+		return err
 	}
-	if _, err = r.db.Exec(ctx, `UPDATE sessions SET revoked_at = now(), last_used_at = now() WHERE id = $1`, session.ID); err != nil {
-		return user.Session{}, err
+	defer tx.Rollback(ctx)
+	var session user.Session
+	// Lock the account first, matching logout's lock order. Recheck the session
+	// after acquiring it so a waiting rotation cannot revive a logged-out user.
+	err = tx.QueryRow(ctx, `SELECT u.id FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.refresh_token_hash = $1 FOR UPDATE OF u`, tokenHash).Scan(&session.UserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.ErrRefreshToken
 	}
-	return session, nil
+	if err != nil {
+		return err
+	}
+	// Head-managed credentials may only rotate with their browser generation.
+	// The owner lock serializes this check with every head mutation.
+	var managed bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM browser_auth_heads WHERE current_refresh_hash = $1)`, tokenHash).Scan(&managed); err != nil {
+		return err
+	}
+	if managed {
+		return application.ErrRefreshToken
+	}
+	err = tx.QueryRow(ctx, `UPDATE sessions s SET revoked_at = now(), last_used_at = now() FROM users u WHERE s.refresh_token_hash = $1 AND s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > now() AND u.session_version = s.user_session_version RETURNING s.id, s.user_id, s.device_id, s.user_session_version`, tokenHash).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.SessionVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.ErrRefreshToken
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sessions (user_id, device_id, refresh_token_hash, user_session_version, expires_at) VALUES ($1, $2, $3, $4, $5)`, session.UserID, session.DeviceID, nextHash, session.SessionVersion, expiresAt); err != nil {
+		return err
+	}
+	if err = issue(session); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// RotateRefreshCandidates locks all known candidate accounts in a stable order,
+// then rechecks live sessions under those locks. Multiple accounts remain
+// ambiguous; for one account the newest session wins (UUID breaks time ties).
+func (r *Repository) RotateRefreshCandidates(ctx context.Context, hashes [][]byte, nextHash []byte, expiresAt time.Time, issue func(user.Session, []byte) error) error {
+	if len(hashes) == 0 || len(hashes) > application.MaxRefreshCandidates {
+		return application.ErrInvalidInput
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `SELECT u.id FROM users u WHERE u.id IN (SELECT s.user_id FROM sessions s WHERE s.refresh_token_hash = ANY($1::bytea[])) ORDER BY u.id FOR UPDATE`, hashes)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	// Fail closed for mixed legacy/head candidates, rather than silently choosing
+	// a different account or session. All known owners are already locked.
+	var managed bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM browser_auth_heads WHERE current_refresh_hash = ANY($1::bytea[]))`, hashes).Scan(&managed); err != nil {
+		return err
+	}
+	if managed {
+		return application.ErrRefreshToken
+	}
+	rows, err = tx.Query(ctx, `SELECT s.id, s.user_id, s.device_id, s.user_session_version, s.refresh_token_hash FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.refresh_token_hash = ANY($1::bytea[]) AND s.revoked_at IS NULL AND s.expires_at > now() AND u.session_version = s.user_session_version ORDER BY s.created_at DESC, s.id DESC`, hashes)
+	if err != nil {
+		return err
+	}
+	var session user.Session
+	var selectedHash []byte
+	count := 0
+	for rows.Next() {
+		var candidate user.Session
+		var hash []byte
+		if err := rows.Scan(&candidate.ID, &candidate.UserID, &candidate.DeviceID, &candidate.SessionVersion, &hash); err != nil {
+			rows.Close()
+			return err
+		}
+		if count == 0 {
+			session, selectedHash = candidate, hash
+		} else if candidate.UserID != session.UserID {
+			rows.Close()
+			return application.ErrRefreshToken
+		}
+		count++
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return application.ErrRefreshToken
+	}
+	if _, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at = now(), last_used_at = now() WHERE id = $1`, session.ID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO sessions (user_id, device_id, refresh_token_hash, user_session_version, expires_at) VALUES ($1, $2, $3, $4, $5)`, session.UserID, session.DeviceID, nextHash, session.SessionVersion, expiresAt); err != nil {
+		return err
+	}
+	if err = issue(session, selectedHash); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *Repository) RefreshTokenOwner(ctx context.Context, tokenHash []byte) (uuid.UUID, error) {
+	var owner uuid.UUID
+	err := r.db.QueryRow(ctx, `SELECT user_id FROM sessions WHERE refresh_token_hash = $1`, tokenHash).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, nil
+	}
+	return owner, err
 }
 
 func (r *Repository) RevokeAllSessions(ctx context.Context, userID uuid.UUID) error {
@@ -152,7 +269,7 @@ func (r *Repository) RevokeAllSessions(ctx context.Context, userID uuid.UUID) er
 	return tx.Commit(ctx)
 }
 
-func (r *Repository) StorePushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, subscription application.PushSubscription) error {
+func (r *Repository) StorePushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, browserID, generation uuid.UUID, subscription application.PushSubscription) error {
 	version, ciphertext, fingerprint, err := r.codec.Seal(pushcrypto.Subscription{Endpoint: subscription.Endpoint, P256DH: subscription.P256DH, Auth: subscription.Auth})
 	if err != nil {
 		return err
@@ -163,6 +280,9 @@ func (r *Repository) StorePushSubscription(ctx context.Context, userID, deviceID
 	}
 	defer tx.Rollback(ctx)
 	if err := lockPushAccount(ctx, tx, userID, sessionVersion, true); err != nil {
+		return err
+	}
+	if err := lockPushBrowser(ctx, tx, userID, browserID, generation); err != nil {
 		return err
 	}
 	if err := validatePushDevice(ctx, tx, userID, deviceID); err != nil {
@@ -197,7 +317,27 @@ func (r *Repository) StorePushSubscription(ctx context.Context, userID, deviceID
 
 const maxPushSubscriptionsPerAccount = 20
 
-func (r *Repository) DeletePushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, endpoint string) error {
+func (r *Repository) VerifyPushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, subscription application.PushSubscription) (bool, error) {
+	var version *string
+	var ciphertext []byte
+	err := r.db.QueryRow(ctx, `SELECT s.encryption_version, s.encrypted_subscription
+		FROM users u JOIN devices d ON d.user_id = u.id AND d.id = $2 AND d.revoked_at IS NULL
+		LEFT JOIN push_subscriptions s ON s.user_id = u.id AND s.device_id = d.id AND s.vapid_key_id = NULLIF($4, '') AND s.endpoint_fingerprint = $5
+		WHERE u.id = $1 AND u.session_version = $3`, userID, deviceID, sessionVersion, r.vapidKeyID, r.codec.Fingerprint(subscription.Endpoint)).Scan(&version, &ciphertext)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, application.ErrPushSessionRevoked
+	}
+	if err != nil || version == nil {
+		return false, err
+	}
+	stored, err := r.codec.Open(*version, ciphertext)
+	if err != nil {
+		return false, err
+	}
+	return stored.Endpoint == subscription.Endpoint && stored.P256DH == subscription.P256DH && stored.Auth == subscription.Auth, nil
+}
+
+func (r *Repository) DeletePushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, browserID, generation uuid.UUID, endpoint string) error {
 	fingerprint := r.codec.Fingerprint(endpoint)
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -207,6 +347,10 @@ func (r *Repository) DeletePushSubscription(ctx context.Context, userID, deviceI
 	if err := lockPushAccount(ctx, tx, userID, sessionVersion, false); err != nil {
 		return err
 	}
+	// Keep the same user-before-head fence as browser replacement and push storage.
+	if err := lockPushBrowser(ctx, tx, userID, browserID, generation); err != nil {
+		return err
+	}
 	if err := validatePushDevice(ctx, tx, userID, deviceID); err != nil {
 		return err
 	}
@@ -214,6 +358,41 @@ func (r *Repository) DeletePushSubscription(ctx context.Context, userID, deviceI
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *Repository) DeleteCurrentPushSubscription(ctx context.Context, userID, deviceID uuid.UUID, sessionVersion int64, browserID, generation uuid.UUID) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockPushAccount(ctx, tx, userID, sessionVersion, false); err != nil {
+		return err
+	}
+	// Match browser replacement's user-before-head ordering and hold both locks
+	// until deletion commits. Rotation preserves generation and remains valid.
+	if err := lockPushBrowser(ctx, tx, userID, browserID, generation); err != nil {
+		return err
+	}
+	if err := validatePushDevice(ctx, tx, userID, deviceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM push_subscriptions WHERE user_id = $1 AND device_id = $2`, userID, deviceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func lockPushBrowser(ctx context.Context, tx pgx.Tx, userID, browserID, generation uuid.UUID) error {
+	var present bool
+	err := tx.QueryRow(ctx, `SELECT true FROM browser_auth_heads WHERE browser_id=$1 AND generation=$2 AND user_id=$3 AND current_refresh_hash IS NOT NULL FOR UPDATE`, browserID, generation, userID).Scan(&present)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.ErrPushSessionRevoked
+	}
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func lockPushAccount(ctx context.Context, tx pgx.Tx, userID uuid.UUID, sessionVersion int64, requireNotifications bool) error {

@@ -1,4 +1,5 @@
 import {expect, Page, test} from '@playwright/test';
+import {fixtureToken} from './session-helpers';
 
 const password = 'Password123!';
 const chatBase = process.env.BASE_URL ?? 'https://chat.localhost';
@@ -14,11 +15,7 @@ function uniqueEmail(): string {
 }
 
 async function registerInvitedUser(page: Page, email: string): Promise<void> {
-  const login = await page.context().request.post(`${adminBase}/api/auth/login`, {
-    data: {email: adminEmail, password, device_id: `e2e-admin-${Date.now()}-${Math.random()}`, device_name: 'GIPHY live smoke'},
-  });
-  expect(login.status()).toBe(200);
-  const tokens = await login.json() as {access_token: string; token_type: string};
+  const tokens = await fixtureToken(adminBase, adminEmail, password, 'GIPHY live smoke');
   const invitationResponse = await page.context().request.post(`${adminBase}/api/admin/invitations`, {
     headers: {Authorization: `${tokens.token_type} ${tokens.access_token}`},
     data: {email},

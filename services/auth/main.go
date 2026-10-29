@@ -56,7 +56,8 @@ func main() {
 	if err := repository.EnsurePushFingerprintKeyIdentity(ctx); err != nil {
 		panic(err)
 	}
-	authService := application.NewService(repository, passwords, token.NewJWTIssuer(cfg.JWTSecret), cfg.AccessLifetime, cfg.RefreshLifetime)
+	issuer := token.NewJWTIssuer(cfg.JWTSecret)
+	authService := application.NewService(repository, passwords, issuer, cfg.AccessLifetime, cfg.RefreshLifetime)
 	adminService := application.NewAdminService(repository, passwords, email.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword), cfg.ActivationURL, cfg.InvitationURL)
 	adminIPs, err := httptransport.NewIPAllowlist(cfg.AdminAllowedIPs, cfg.TrustedProxyCIDRs)
 	if err != nil {
@@ -66,14 +67,27 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	handler := httptransport.NewHandler(authService, adminService, sharedauth.NewSessionValidator(db, cfg.JWTSecret), adminIPs, origins, cfg.VAPIDPublicKey, cfg.GiphyAPIKey)
+	validator := sharedauth.NewSessionValidator(db, cfg.JWTSecret)
+	handler := httptransport.NewHandler(authService, adminService, validator, adminIPs, origins, cfg.VAPIDPublicKey, cfg.GiphyAPIKey)
+	if cfg.UniqueRefreshCookies {
+		handler.EnableUniqueRefreshCookies()
+	}
 	mux := runtime.NewHealthHandler("auth")
 	handler.Register(mux)
+	registerBrowserV2(mux, cfg, handler, authService, repository, issuer, validator)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: runtime.WithCORS(cacheControl(mux), origins)}
 	runtime.ConfigureHTTPServer(server)
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {
 		panic(err)
 	}
+}
+
+func registerBrowserV2(mux *http.ServeMux, cfg config.Config, handler *httptransport.Handler, authService *application.Service, repository *postgres.Repository, issuer *token.JWTIssuer, validator *sharedauth.SessionValidator) {
+	browserSessions := application.NewBrowserSessions(repository, issuer, cfg.AccessLifetime, cfg.RefreshLifetime)
+	browser := httptransport.NewBrowserV2Handler(handler, authService, repository, browserSessions, validator)
+	browser.SetRegistration(application.NewBrowserRegistration(authService, browserSessions, repository))
+	browser.SetCandidateDiscovery(repository)
+	browser.Register(mux)
 }
 
 func runAdminCommand(ctx context.Context, repository application.Repository, passwords application.PasswordHasher, args []string) error {

@@ -3,6 +3,14 @@ import {backends} from '../../environments/environment';
 
 @Injectable({providedIn: 'root'})
 export class HostService {
+    public browserSessionEndpoints(): {discover: string; continue: string} {
+        const origin = this.isAdminHost() ? backends.admin : backends.auth;
+        return {discover: `${origin}/api/auth/v2/discovery`, continue: `${origin}/api/auth/v2/continue`};
+    }
+    public browserSessionEndpoint(kind: 'login' | 'refresh' | 'logout' | 'logout/retry' | 'register'): string {
+        const origin = this.isAdminHost() ? backends.admin : backends.auth;
+        return `${origin}/api/auth/v2/${kind}`;
+    }
     public isAdminHost(): boolean {
         return window.location.hostname === 'kyc.chat.false.tel' || window.location.hostname === 'kyc.localhost';
     }

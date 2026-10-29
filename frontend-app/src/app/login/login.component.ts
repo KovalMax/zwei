@@ -8,6 +8,7 @@ import {HttpErrorResponse} from '@angular/common/http';
 import {ControlsOf} from '../shared/model/controlOf';
 import {getDeviceID, Login} from './login';
 import {HostService} from '../auth/host.service';
+import {AUTH_LOCK_RECOVERY, AuthCookieLockUnavailableError} from '../auth/auth-cookie-lock.service';
 
 @Component({
     standalone: false,
@@ -19,6 +20,12 @@ import {HostService} from '../auth/host.service';
 export class LoginComponent {
     public isLoading = false;
     public readonly isAdminHost: boolean;
+    public readonly lockRecovery = typeof navigator === 'undefined' || typeof navigator.locks?.request !== 'function' ? AUTH_LOCK_RECOVERY : '';
+    public get restoreFailure() { return this.client.restoreFailure; }
+    public get pendingLogout() { return this.client.pendingLogout; }
+    public logoutRecoveryError = false;
+    public logoutUnconfirmed = false;
+    public canAbandonLogout = false;
     public loginForm: FormGroup<ControlsOf<Login>>;
 
     constructor(
@@ -48,7 +55,7 @@ export class LoginComponent {
     }
 
     public onSubmit(): void {
-        if (this.loginForm.invalid) {
+        if (this.loginForm.invalid || this.pendingLogout) {
             return;
         }
 
@@ -68,8 +75,39 @@ export class LoginComponent {
                     this.snackBar.dismiss();
                     void this.router.navigate([this.client.defaultAuthenticatedRoute()]);
                 },
-                error: (error: string | HttpErrorResponse) => this.showError(this.loginErrorMessage(error)),
+                error: (error: string | HttpErrorResponse | AuthCookieLockUnavailableError) => this.showError(this.loginErrorMessage(error)),
             });
+    }
+
+    public retryLogout(): void {
+        this.isLoading = true;
+        this.logoutRecoveryError = false;
+        this.client.retryPendingLogout().pipe(finalize(() => {
+            this.isLoading = false;
+            this.changeDetector.markForCheck();
+        })).subscribe({error: (error: unknown) => {
+            this.logoutRecoveryError = true;
+            this.canAbandonLogout = (error instanceof HttpErrorResponse && error.status === 401) ||
+                (error instanceof Error && error.message === 'Pending sign out unavailable');
+        }});
+    }
+
+    public abandonLogout(): void {
+        this.isLoading = true;
+        this.client.abandonPendingLogout().pipe(finalize(() => {
+            this.isLoading = false;
+            this.changeDetector.markForCheck();
+        })).subscribe({next: () => { this.logoutUnconfirmed = true; this.canAbandonLogout = false; }, error: () => this.logoutRecoveryError = true});
+    }
+
+    public retryRestore(): void {
+        this.isLoading = true;
+        this.client.restore().pipe(finalize(() => {
+            this.isLoading = false;
+            this.changeDetector.markForCheck();
+        })).subscribe(token => {
+            if (token) void this.router.navigate([this.client.defaultAuthenticatedRoute()]);
+        });
     }
 
     public get email() {
@@ -80,7 +118,8 @@ export class LoginComponent {
         return this.loginForm.controls.password;
     }
 
-    private loginErrorMessage(error: string | HttpErrorResponse): string {
+    private loginErrorMessage(error: string | HttpErrorResponse | AuthCookieLockUnavailableError): string {
+        if (error instanceof AuthCookieLockUnavailableError) return error.message;
         if (typeof error === 'string') {
             return error;
         }

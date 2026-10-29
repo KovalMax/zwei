@@ -1,4 +1,5 @@
 import {expect, Page, test} from '@playwright/test';
+import {restoreSession, fixtureToken} from './session-helpers';
 
 const authBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
 const chatBase = process.env.CHAT_BASE_URL ?? 'https://chat.localhost';
@@ -20,9 +21,7 @@ function uniqueEmail(name: string): string {
 }
 
 async function register(page: Page, email: string, name: string): Promise<void> {
-  const admin = await page.request.post(`${authBase}/api/auth/login`, {data: {email: adminEmail, password, device_id: `pagination-admin-${Date.now()}-${Math.random()}`, device_name: 'E2E'}});
-  expect(admin.status()).toBe(200);
-  const adminToken = await admin.json() as Token;
+  const adminToken = await fixtureToken(authBase, adminEmail, password, 'E2E');
   const invitation = await page.request.post(`${authBase}/api/admin/invitations`, {headers: {Authorization: `${adminToken.token_type} ${adminToken.access_token}`}, data: {email}});
   expect(invitation.status()).toBe(201);
   const {code} = await invitation.json() as {code: string};
@@ -33,16 +32,14 @@ async function register(page: Page, email: string, name: string): Promise<void> 
   await page.locator('[formControlName="nickName"]').fill(name);
   await page.locator('[formControlName="password"]').fill(password);
   await page.locator('[formControlName="confirmPassword"]').fill(password);
-  const response = page.waitForResponse(item => item.url().endsWith('/api/auth/register') && item.request().method() === 'POST');
+  const response = page.waitForResponse(item => item.url().endsWith('/api/auth/v2/register') && item.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   expect((await response).status()).toBe(201);
   await expect(page).toHaveURL(/\/home$/);
 }
 
 async function loginToken(page: Page, email: string): Promise<Token> {
-  const response = await page.request.post(`${authBase}/api/auth/login`, {data: {email, password, device_id: `pagination-${Date.now()}-${Math.random()}`, device_name: 'E2E'}});
-  expect(response.status()).toBe(200);
-  return response.json() as Promise<Token>;
+  return fixtureToken(authBase, email, password, 'E2E');
 }
 
 async function expectLastGroupRowReachable(page: Page, state: string): Promise<void> {
@@ -276,6 +273,7 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
     // 26 conversation.created events can race first-page refreshes: a refresh
     // that omits a previously observed group correctly quarantines it as a
     // generic verification row, independently of the 25-row page contract.
+    const targetBinding = await target.evaluate(() => localStorage.getItem('zwei.intended-session'));
     await target.close();
     const [firstOwnerGroups, secondOwnerGroups] = await Promise.all([
       createGroups(ownerOne, ownerOneToken, ownerOneTargetID, 'One'),
@@ -289,7 +287,7 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
       const url = new URL(response.url());
       return response.request().method() === 'GET' && url.pathname === '/api/chat/groups' && url.searchParams.get('limit') === '25' && !url.searchParams.has('cursor');
     });
-    await target.goto('/home');
+    await restoreSession(target, () => target.goto('/home'), 'home', targetBinding);
     const firstPageResponse = await firstPageResponsePromise;
     expect(firstPageResponse.status()).toBe(200);
     const firstPage = await firstPageResponse.json() as GroupPageWire;
