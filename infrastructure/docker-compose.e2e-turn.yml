@@ -1,0 +1,33 @@
+# Used only by the disposable TURN acceptance project, after the parallel overlay.
+services:
+  auth:
+    environment:
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      ACTIVATION_URL: https://chat.localhost/activate
+      INVITATION_URL: https://chat.localhost/sign-up
+  realtime:
+    image: ${E2E_TURN_IMAGE:?E2E_TURN_IMAGE is required}
+    build: !override
+      context: ..
+      dockerfile: infrastructure/golang/Dockerfile.e2e-turn
+    volumes: !reset []
+    environment:
+      TURN_URLS: turn:turn.chat.localhost:3478?transport=udp,turn:turn.chat.localhost:3478?transport=tcp
+      TURN_SHARED_SECRET: ${E2E_TURN_SECRET:?E2E_TURN_SECRET is required}
+  coturn:
+    # Keep even temporary container logs free of credential usernames and ICE.
+    command: !override
+      - -n
+      - --log-file=/dev/null
+      - --simple-log
+      - --no-stdout-log
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${E2E_TURN_SECRET:?E2E_TURN_SECRET is required}
+      - --realm=turn.chat.localhost
+      - --external-ip=${E2E_COTURN_IP:?E2E_COTURN_IP is required}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-cli
+      - --no-tcp-relay

@@ -1,4 +1,9 @@
 services:
+  e2e:
+    environment:
+      E2E_FIXTURE_DATABASE: messenger_test
+      E2E_FIXTURE_DB_USER: ${APP_DB_USER:-messenger_user}
+      E2E_FIXTURE_DB_PASSWORD: ${APP_DB_PASSWORD:-user-password}
   frontend:
     command: npm run start -- --configuration=e2e
   auth:

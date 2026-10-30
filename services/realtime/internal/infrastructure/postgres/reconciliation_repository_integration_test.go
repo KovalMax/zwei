@@ -44,17 +44,23 @@ func TestReconciliationRepositoryReturnsAuthorizedForwardBoundedMessages(t *test
 
 	sender := messaging.NewSender(db, "reconciliation-test-key")
 	for index := 1; index <= 3; index++ {
-		request := messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("reconcile-%d", index), Body: fmt.Sprintf("message %d", index)}
+		request := messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("reconcile-%d", index), Body: fmt.Sprintf("message %d", index), ContentType: "text"}
 		if index == 2 {
 			request.Body = "@message 2"
 			request.Mentions = []messaging.Mention{{UserID: peerID, Start: 0, End: 8}}
 		}
 		if index == 3 {
 			request.Body = "heart"
-			request.ContentType = "sticker"
+
 		}
-		if _, _, err := sender.Send(ctx, request); err != nil {
+		message, _, err := sender.Send(ctx, request)
+		if err != nil {
 			t.Fatalf("send message %d: %v", index, err)
+		}
+		if index == 3 {
+			if _, err := db.Exec(ctx, `UPDATE messages SET content_type = 'sticker' WHERE id = $1`, message.ID); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if _, err := db.Exec(ctx, `INSERT INTO user_read_cursors (user_id, conversation_id, last_read_sequence, unread_count) VALUES ($1, $2, 1, 2), ($3, $2, 2, 0) ON CONFLICT (user_id, conversation_id) DO UPDATE SET last_read_sequence = EXCLUDED.last_read_sequence, unread_count = EXCLUDED.unread_count`, ownerID, conversationID, peerID); err != nil {
@@ -158,7 +164,7 @@ func TestGroupReconciliationCursorsRespectMembershipVisibility(t *testing.T) {
 	}
 	sender := messaging.NewSender(db, "group-reconciliation-test-key")
 	for i := 1; i <= 3; i++ {
-		if _, _, err := sender.Send(ctx, messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("group-reconcile-%d", i), Body: fmt.Sprintf("message %d", i)}); err != nil {
+		if _, _, err := sender.Send(ctx, messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("group-reconcile-%d", i), Body: fmt.Sprintf("message %d", i), ContentType: "text"}); err != nil {
 			t.Fatalf("send message: %v", err)
 		}
 	}

@@ -41,7 +41,7 @@ type CallLogger interface {
 }
 
 const (
-	ProtocolVersion            = 2
+	ProtocolVersion            = 3
 	ReconciliationMessageLimit = 100
 	groupCallOperationTimeout  = 5 * time.Second
 	groupCallStartTimeout      = 3 * time.Second
@@ -104,7 +104,7 @@ type RealtimeRateCoordinator interface {
 	AllowSignal(context.Context, uuid.UUID) (bool, error)
 }
 
-// ReconciliationRateCoordinator admits bounded v2 recovery reads across replicas.
+// ReconciliationRateCoordinator admits bounded recovery reads across replicas.
 type ReconciliationRateCoordinator interface {
 	AllowReconciliation(context.Context, uuid.UUID) (bool, error)
 }
@@ -403,6 +403,41 @@ func (h *Hub) NotifyGroupProjection(parentCtx context.Context, conversationID uu
 
 func (h *Hub) notifyGroupProjectionLocked(ctx context.Context, conversationID uuid.UUID, revision int64, deleted bool, recipientUserIDs []uuid.UUID) error {
 	if rooms, ok := h.coord.(GroupRoomCoordinator); ok {
+		publishRetirement := func(room GroupRoom) error {
+			change := GroupRoomChange{
+				Type:                         "ended",
+				Room:                         room,
+				MembershipProjectionRevision: revision,
+				MembershipProjectionDeleted:  deleted,
+			}
+			change.ParticipantConnectionIDs = groupParticipantConnectionIDs(room)
+			h.deliverGroupRoomLockedContext(ctx, change)
+			return h.publishGroupRoom(ctx, change)
+		}
+		reader, canRecover := h.coord.(GroupMembershipRetirementReader)
+		recoverRetirement := func() (bool, error) {
+			if !canRecover {
+				return false, nil
+			}
+			retired, err := reader.GetGroupMembershipRetirement(ctx, conversationID, revision)
+			if errors.Is(err, ErrCallNotFound) {
+				// Evidence is bounded and may have expired. This permits the
+				// membership projection to proceed; it does not prove that a
+				// terminal event was published or delivered.
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			if retired.ConversationID != conversationID || retired.Status != GroupRoomEnded || retired.MembershipRevision >= revision {
+				return false, ErrCallUnavailable
+			}
+			return true, publishRetirement(retired)
+		}
+		published, err := recoverRetirement()
+		if err != nil {
+			return err
+		}
 		// Preserve the pre-terminal socket targets. Ending clears reservations, so
 		// reading afterward would omit precisely the removed member that needs to
 		// stop its peer connection.
@@ -422,17 +457,17 @@ func (h *Hub) notifyGroupProjectionLocked(ctx context.Context, conversationID uu
 				room.StateRevision = terminalRoom.StateRevision
 				room.Status = GroupRoomEnded
 				room.Presenter = nil
-				change := GroupRoomChange{
-					Type:                         "ended",
-					Room:                         room,
-					MembershipProjectionRevision: revision,
-					MembershipProjectionDeleted:  deleted,
-				}
-				change.ParticipantConnectionIDs = groupParticipantConnectionIDs(room)
-				h.deliverGroupRoomLockedContext(ctx, change)
-				if err := h.publishGroupRoom(ctx, change); err != nil {
+				if err := publishRetirement(room); err != nil {
 					return err
 				}
+				published = true
+			}
+		}
+		// Another replica can retire between the first lookup and the room read
+		// or CAS. Check once more before acknowledging the projection.
+		if !published {
+			if _, err := recoverRetirement(); err != nil {
+				return err
 			}
 		}
 	}
@@ -451,11 +486,18 @@ func (h *Hub) notifyGroupProjectionLocked(ctx context.Context, conversationID uu
 // its shutdown context, so no application goroutine is hidden in the hub.
 func (h *Hub) NotifyExpiredGroupRooms(ctx context.Context, rooms []GroupRoom) {
 	for _, room := range rooms {
-		room.Status = GroupRoomEnded
-		room.Presenter = nil
-		h.logCallLifecycle(ctx, "group call expiry room claimed", Call{ID: room.ID, SupportRef: room.SupportRef, ConversationID: room.ConversationID, Status: room.Status}, "event", "group.call.ended", "source", "expiry_sweep", "outcome", "claimed")
-		h.notifyGroupRoom(ctx, GroupRoomChange{Type: "ended", Source: "expiry_sweep", Room: room})
+		_ = h.NotifyExpiredGroupRoom(ctx, room)
 	}
+}
+
+// NotifyExpiredGroupRoom reports publication failure so the expiry owner can
+// retry while the bounded snapshot exists. Fan-out is best effort; clients
+// must reconcile when an event is lost.
+func (h *Hub) NotifyExpiredGroupRoom(ctx context.Context, room GroupRoom) error {
+	room.Status = GroupRoomEnded
+	room.Presenter = nil
+	h.logCallLifecycle(ctx, "group call expiry room claimed", Call{ID: room.ID, SupportRef: room.SupportRef, ConversationID: room.ConversationID, Status: room.Status}, "event", "group.call.ended", "source", "expiry_sweep", "outcome", "claimed")
+	return h.notifyGroupRoom(ctx, GroupRoomChange{Type: "ended", Source: "expiry_sweep", Room: room})
 }
 
 // NotifyExpiredCalls emits terminal projections for call reservations claimed
@@ -495,10 +537,10 @@ func (h *Hub) deliverGroupProjectionLocked(ctx context.Context, conversationID u
 			if ctx.Err() != nil {
 				return
 			}
-			if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() < 2 {
+			if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() < ProtocolVersion {
 				continue
 			}
-			recipient.SendJSON(serverEvent{Version: 2, Type: "group.membership.changed", Payload: struct {
+			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.membership.changed", Payload: struct {
 				ConversationID     uuid.UUID `json:"conversation_id"`
 				MembershipRevision int64     `json:"membership_revision"`
 				Deleted            bool      `json:"deleted"`
@@ -526,6 +568,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 			AfterSequence   int64               `json:"after_sequence"`
 			CallID          uuid.UUID           `json:"call_id"`
 			RoomID          uuid.UUID           `json:"room_id"`
+			AttemptID       uuid.UUID           `json:"attempt_id"`
 			Generation      int64               `json:"generation"`
 			OwnershipStatus bool                `json:"ownership_status"`
 			TargetUserID    uuid.UUID           `json:"target_user_id"`
@@ -553,17 +596,20 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 			}
 		}()
 	}
-	if protocolVersion == 2 && request.Type == "conversation.reconcile" {
+	if protocolVersion == ProtocolVersion && request.Type == "conversation.reconcile" {
 		return h.handleReconcile(ctx, client, request.RequestID, request.Payload.ConversationID, request.Payload.AfterSequence)
 	}
-	if protocolVersion == 2 && strings.HasPrefix(request.Type, "group.call.") {
+	if protocolVersion == ProtocolVersion && strings.HasPrefix(request.Type, "group.call.") {
 		if request.RequestID == "" {
 			return &RequestError{Err: errors.New("group call request ID is required")}
 		}
-		if request.Type != "group.call.start" && request.Type != "group.call.discover" && request.Payload.Generation <= 0 {
+		if request.Type != "group.call.start" && request.Type != "group.call.prepare_start" && request.Type != "group.call.cancel_start" && request.Type != "group.call.discover" && request.Payload.Generation <= 0 {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("positive group room generation is required")}
 		}
-		if len(request.Payload.Signal) > 16*1024 || (len(request.Payload.Signal) > 0 && (!json.Valid(request.Payload.Signal) || !validCallSignal(request.Payload.Signal))) {
+		if request.Type == "group.call.sync" && !request.Payload.OwnershipStatus {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("group call sync requires ownership status")}
+		}
+		if len(request.Payload.Signal) > 16*1024 || (len(request.Payload.Signal) > 0 && (!json.Valid(request.Payload.Signal) || !validGroupCallSignal(request.Payload.Signal))) {
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("invalid group call signal")}
 		}
 		timeout := groupCallOperationTimeout
@@ -584,12 +630,21 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 			return &RequestError{RequestID: request.RequestID, Err: errors.New("call rate limit exceeded")}
 		}
 		if request.Type == "group.call.sync" {
-			return h.handleGroupRoomSync(operationCtx, client, request.RequestID, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation, request.Payload.OwnershipStatus)
+			return h.handleGroupRoomSync(operationCtx, client, request.RequestID, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation)
+		}
+		if request.Type == "group.call.credentials" {
+			return h.handleGroupCredentials(operationCtx, client, request.RequestID, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation)
 		}
 		if request.Type == "group.call.discover" {
 			return h.handleGroupRoomDiscovery(operationCtx, client, request.RequestID, request.Payload.ConversationID)
 		}
-		return h.handleGroupRoom(operationCtx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation, request.Payload.TargetUserID, request.Payload.TargetDeviceID, request.Payload.Signal, supportRef)
+		if request.Type == "group.call.prepare_start" || request.Type == "group.call.cancel_start" {
+			return h.handleGroupStartAttempt(operationCtx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.AttemptID)
+		}
+		if request.Type == "group.call.start" && request.Payload.AttemptID == uuid.Nil {
+			return &RequestError{RequestID: request.RequestID, Err: errors.New("group call attempt is required")}
+		}
+		return h.handleGroupRoom(operationCtx, client, request.RequestID, request.Type, request.Payload.ConversationID, request.Payload.RoomID, request.Payload.Generation, request.Payload.TargetUserID, request.Payload.TargetDeviceID, request.Payload.Signal, supportRef, request.Payload.AttemptID)
 	}
 	if request.Type == "presence.refresh" {
 		limiter, ok := h.coord.(RealtimeRateCoordinator)
@@ -685,7 +740,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if request.Type != "message.send" {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported event")}
 	}
-	if protocolVersion < 2 && request.Payload.ContentType != "" && request.Payload.ContentType != "text" {
+	if request.Payload.ContentType != "text" {
 		return &RequestError{RequestID: request.RequestID, Err: messaging.ErrInvalidMessage}
 	}
 	limiter, ok := h.coord.(MessageRateCoordinator)
@@ -721,6 +776,25 @@ func allowRealtimeCallCommand(ctx context.Context, limiter RealtimeRateCoordinat
 // current membership revision. The conversation stripe serializes this read
 // with local group-call commands and the database lease serializes it with
 // membership changes across replicas.
+// retireStaleGroupRoomLocked publishes the atomically assigned terminal revision
+// with the observed socket owners. The caller releases its membership lease
+// before local delivery, which itself obtains fresh recipient leases.
+func (h *Hub) retireStaleGroupRoomLocked(ctx context.Context, rooms GroupRoomCoordinator, room GroupRoom, revision int64) (*GroupRoomChange, error) {
+	terminal, err := rooms.EndGroupRoomForMembershipChange(ctx, room.ConversationID, room.ID, room.Generation, room.StateRevision, revision)
+	if err != nil {
+		return nil, err
+	}
+	room.StateRevision = terminal.StateRevision
+	room.Status = GroupRoomEnded
+	room.Presenter = nil
+	change := GroupRoomChange{Type: "ended", Room: room, MembershipProjectionRevision: revision}
+	change.ParticipantConnectionIDs = groupParticipantConnectionIDs(room)
+	_, publishErr := h.publishGroupRoomAfterMutation(ctx, change)
+	// Retirement has committed even if the request was canceled during fanout.
+	// Retain the snapshot for local delivery; Pub/Sub remains best effort.
+	return &change, publishErr
+}
+
 func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, requestID string, conversationID uuid.UUID) error {
 	if requestID == "" || conversationID == uuid.Nil {
 		return &RequestError{RequestID: requestID, Err: errors.New("invalid group call discovery request")}
@@ -745,11 +819,17 @@ func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, reque
 		}
 		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
 	}
+	var terminalChange *GroupRoomChange
 	defer func() {
 		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		defer cancel()
 		if rollbackErr := lease.Rollback(rollbackCtx); rollbackErr != nil {
 			h.logCallWarning(ctx, "group call discovery lease rollback failed", rollbackErr, "request_id", requestID, "conversation_id", conversationID)
+		}
+		if terminalChange != nil {
+			deliveryCtx, cancelDelivery := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancelDelivery()
+			h.deliverGroupRoomLockedContext(deliveryCtx, *terminalChange)
 		}
 	}()
 	room, err := rooms.GetGroupRoomForConversation(ctx, conversationID)
@@ -757,7 +837,7 @@ func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, reque
 		return &RequestError{RequestID: requestID, Err: ctxErr}
 	}
 	if errors.Is(err, ErrCallNotFound) {
-		client.SendJSON(serverEvent{Version: 2, Type: "group.call.discovered", RequestID: requestID, Payload: struct {
+		client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.discovered", RequestID: requestID, Payload: struct {
 			ConversationID uuid.UUID  `json:"conversation_id"`
 			Room           *GroupRoom `json:"room"`
 		}{ConversationID: conversationID}})
@@ -772,14 +852,16 @@ func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, reque
 	} else if room.ConversationID == conversationID && room.Status != GroupRoomEnded && room.MembershipRevision < lease.MembershipRevision() {
 		// Retire only this observed generation/revision; a concurrent replacement
 		// is protected by the Redis adapter's conditional cleanup contract.
-		if _, cleanupErr := rooms.EndGroupRoomForMembershipChange(ctx, conversationID, room.ID, room.Generation, room.StateRevision, lease.MembershipRevision()); cleanupErr != nil && !errors.Is(cleanupErr, ErrCallNotFound) && !errors.Is(cleanupErr, ErrCallNotAllowed) {
+		var cleanupErr error
+		terminalChange, cleanupErr = h.retireStaleGroupRoomLocked(ctx, rooms, room, lease.MembershipRevision())
+		if cleanupErr != nil && !errors.Is(cleanupErr, ErrCallNotFound) && !errors.Is(cleanupErr, ErrCallNotAllowed) {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return &RequestError{RequestID: requestID, Err: ctxErr}
 			}
 			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
 		}
 	}
-	client.SendJSON(serverEvent{Version: 2, Type: "group.call.discovered", RequestID: requestID, Payload: struct {
+	client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.discovered", RequestID: requestID, Payload: struct {
 		ConversationID uuid.UUID  `json:"conversation_id"`
 		Room           *GroupRoom `json:"room"`
 	}{ConversationID: conversationID, Room: discoveredRoom}})
@@ -787,7 +869,54 @@ func (h *Hub) handleGroupRoomDiscovery(ctx context.Context, client Client, reque
 	return nil
 }
 
-func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID string, conversationID, roomID uuid.UUID, generation int64, ownershipStatus bool) error {
+func (h *Hub) handleGroupCredentials(ctx context.Context, client Client, requestID string, conversationID, roomID uuid.UUID, generation int64) error {
+	if conversationID == uuid.Nil || roomID == uuid.Nil || generation <= 0 || clientConnectionID(client) == "" {
+		return &RequestError{RequestID: requestID, Err: ErrCallNotAllowed}
+	}
+	unlock, err := h.lockGroupConversation(ctx, conversationID)
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	defer unlock()
+	reader, ok := h.coord.(GroupRoomOwnershipReader)
+	if !ok || h.groupCallAuth == nil || h.turn == nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	identity := client.Identity()
+	lease, err := h.groupCallAuth.BeginGroupCall(ctx, conversationID, identity.UserID)
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		_ = lease.Rollback(cleanup)
+	}()
+	participant := GroupParticipant{UserID: identity.UserID, DeviceID: identity.DeviceID, ConnectionID: clientConnectionID(client)}
+	room, ownership, err := reader.SyncGroupRoomOwnership(ctx, conversationID, roomID, generation, lease.MembershipRevision(), participant)
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	if ownership != "active" || room.ID != roomID || room.ConversationID != conversationID || room.Generation != generation || room.MembershipRevision != lease.MembershipRevision() || (room.Status != GroupRoomActive && room.Status != GroupRoomRinging) || !room.ExpiresAt.After(time.Now()) || !groupParticipantOwns(room, participant) {
+		return &RequestError{RequestID: requestID, Err: ErrCallNotAllowed}
+	}
+	server, err := h.turn.Issue(Call{ID: room.ID, ConversationID: room.ConversationID, Status: room.Status, ExpiresAt: room.ExpiresAt}, identity.UserID)
+	if err != nil || server.ExpiresAt.IsZero() || ctx.Err() != nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	if !client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.credentials", RequestID: requestID, Payload: struct {
+		ConversationID uuid.UUID   `json:"conversation_id"`
+		RoomID         uuid.UUID   `json:"room_id"`
+		Generation     int64       `json:"generation"`
+		ICEServers     []ICEServer `json:"ice_servers"`
+		ICEExpiresAt   time.Time   `json:"ice_expires_at"`
+	}{conversationID, roomID, generation, []ICEServer{server}, server.ExpiresAt}}) {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	return nil
+}
+
+func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID string, conversationID, roomID uuid.UUID, generation int64) error {
 	if requestID == "" || conversationID == uuid.Nil || roomID == uuid.Nil || generation <= 0 {
 		return &RequestError{RequestID: requestID, Err: errors.New("invalid group call sync request")}
 	}
@@ -802,94 +931,79 @@ func (h *Hub) handleGroupRoomSync(ctx context.Context, client Client, requestID 
 	}
 	identity := client.Identity()
 	participant := GroupParticipant{UserID: identity.UserID, DeviceID: identity.DeviceID, ConnectionID: clientConnectionID(client)}
-	var supportRef uuid.UUID
-	ended := func() {
-		client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
-			RoomID     uuid.UUID `json:"room_id"`
-			Generation int64     `json:"generation"`
-			Status     string    `json:"status"`
-			SupportRef uuid.UUID `json:"support_ref,omitzero"`
-		}{roomID, generation, GroupRoomEnded, supportRef}})
-	}
 	lease, err := h.groupCallAuth.BeginGroupCall(ctx, conversationID, identity.UserID)
 	if errors.Is(err, ErrCallNotAllowed) {
-		if ownershipStatus {
-			reader, ok := h.coord.(GroupRoomOwnershipReader)
-			if !ok {
-				return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
-			}
-			absent, readErr := reader.GroupReservationAbsent(ctx, identity.UserID)
-			if readErr != nil {
-				return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
-			}
-			status := "room_unavailable"
-			if absent {
-				status = "participant_absent"
-			}
-			client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
-				RoomID          uuid.UUID `json:"room_id"`
-				Generation      int64     `json:"generation"`
-				Status          string    `json:"status"`
-				OwnershipStatus string    `json:"ownership_status"`
-			}{roomID, generation, GroupRoomEnded, status}})
-			return nil
-		}
-		ended()
-		return nil
-	}
-	if err != nil {
-		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
-	}
-	defer func() {
-		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-		defer cancel()
-		_ = lease.Rollback(rollbackCtx)
-	}()
-	if ownershipStatus {
 		reader, ok := h.coord.(GroupRoomOwnershipReader)
 		if !ok {
 			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
 		}
-		room, ownership, err := reader.SyncGroupRoomOwnership(ctx, conversationID, roomID, generation, lease.MembershipRevision(), participant)
-		if err != nil {
+		absent, readErr := reader.GroupReservationAbsent(ctx, identity.UserID)
+		if readErr != nil {
 			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
 		}
-		if ownership == "active" {
-			client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
-				GroupRoom
-				OwnershipStatus string `json:"ownership_status"`
-			}{room, ownership}})
-			return nil
+		status := "room_unavailable"
+		if absent {
+			status = "participant_absent"
 		}
-		if ownership != "participant_absent" && ownership != "owned_elsewhere" && ownership != "room_unavailable" {
-			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
-		}
-		client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: struct {
+		client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.synced", RequestID: requestID, Payload: struct {
 			RoomID          uuid.UUID `json:"room_id"`
 			Generation      int64     `json:"generation"`
 			Status          string    `json:"status"`
 			OwnershipStatus string    `json:"ownership_status"`
-		}{roomID, generation, GroupRoomEnded, ownership}})
+		}{roomID, generation, GroupRoomEnded, status}})
 		return nil
 	}
-	room, active, err := rooms.SyncGroupRoom(ctx, roomID, generation, participant)
 	if err != nil {
 		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
 	}
-	supportRef = room.SupportRef
-	if !active || room.ConversationID != conversationID || room.MembershipRevision != lease.MembershipRevision() {
-		if active && room.MembershipRevision < lease.MembershipRevision() {
-			// Projection fan-out may have been missed; the sync itself deliberately
-			// returns no roster. Conditional cleanup cannot affect a newer room.
-			if _, endErr := rooms.EndGroupRoomForMembershipChange(ctx, conversationID, room.ID, room.Generation, room.StateRevision, lease.MembershipRevision()); endErr != nil && !errors.Is(endErr, ErrCallNotFound) && !errors.Is(endErr, ErrCallNotAllowed) {
-				h.logCallWarning(ctx, "stale group room cleanup failed", endErr, "request_id", requestID, "room_id", room.ID)
-			}
+	var terminalChange *GroupRoomChange
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		_ = lease.Rollback(rollbackCtx)
+		if terminalChange != nil {
+			deliveryCtx, cancelDelivery := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancelDelivery()
+			h.deliverGroupRoomLockedContext(deliveryCtx, *terminalChange)
 		}
-		ended()
+	}()
+	reader, ok := h.coord.(GroupRoomOwnershipReader)
+	if !ok {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	// Authorization and the membership lease precede any room lookup. Cleanup is
+	// conditional on the exact observed generation and state revision.
+	observed, lookupErr := rooms.GetGroupRoom(ctx, roomID)
+	if lookupErr != nil && !errors.Is(lookupErr, ErrCallNotFound) {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	if lookupErr == nil && observed.ID == roomID && observed.ConversationID == conversationID && observed.Generation == generation && observed.MembershipRevision < lease.MembershipRevision() && (observed.Status == GroupRoomActive || observed.Status == GroupRoomRinging) {
+		var endErr error
+		terminalChange, endErr = h.retireStaleGroupRoomLocked(ctx, rooms, observed, lease.MembershipRevision())
+		if endErr != nil && !errors.Is(endErr, ErrCallNotFound) && !errors.Is(endErr, ErrCallNotAllowed) {
+			h.logCallWarning(ctx, "stale group room cleanup failed", endErr, "request_id", requestID, "room_id", roomID)
+		}
+	}
+	room, ownership, err := reader.SyncGroupRoomOwnership(ctx, conversationID, roomID, generation, lease.MembershipRevision(), participant)
+	if err != nil {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	if ownership == "active" {
+		client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.synced", RequestID: requestID, Payload: struct {
+			GroupRoom
+			OwnershipStatus string `json:"ownership_status"`
+		}{room, ownership}})
 		return nil
 	}
-	client.SendJSON(serverEvent{Version: 2, Type: "group.call.synced", RequestID: requestID, Payload: room})
-	h.logCallLifecycle(ctx, "group call synchronized", Call{ID: room.ID, SupportRef: room.SupportRef, ConversationID: room.ConversationID, Status: room.Status}, "command", "group.call.sync", "request_id", requestID, "support_ref", room.SupportRef, "connection_id", clientConnectionID(client), "outcome", "accepted", "source", "command", "actor_user_id", identity.UserID, "actor_device_id", identity.DeviceID)
+	if ownership != "participant_absent" && ownership != "owned_elsewhere" && ownership != "room_unavailable" {
+		return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+	}
+	client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.synced", RequestID: requestID, Payload: struct {
+		RoomID          uuid.UUID `json:"room_id"`
+		Generation      int64     `json:"generation"`
+		Status          string    `json:"status"`
+		OwnershipStatus string    `json:"ownership_status"`
+	}{roomID, generation, GroupRoomEnded, ownership}})
 	return nil
 }
 
@@ -913,7 +1027,7 @@ func (h *Hub) handleReconcile(ctx context.Context, client Client, requestID stri
 	if reconciliation.Messages == nil {
 		reconciliation.Messages = []messaging.Message{}
 	}
-	client.SendJSON(serverEvent{Version: 2, Type: "conversation.reconciled", RequestID: requestID, Payload: reconciliation})
+	client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "conversation.reconciled", RequestID: requestID, Payload: reconciliation})
 	return nil
 }
 
@@ -940,11 +1054,7 @@ func (h *Hub) DeliverReadCursor(readerID uuid.UUID, recipientIDs []uuid.UUID, co
 		}
 		seen[userID] = struct{}{}
 		for _, recipient := range h.recipients(userID) {
-			version := ProtocolVersion
-			if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() >= 2 {
-				version = 2
-			}
-			recipient.SendJSON(serverEvent{Version: version, Type: "conversation.read", Payload: struct {
+			recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "conversation.read", Payload: struct {
 				ConversationID      uuid.UUID `json:"conversation_id"`
 				UserID              uuid.UUID `json:"user_id"`
 				Sequence            int64     `json:"sequence"`
@@ -954,7 +1064,7 @@ func (h *Hub) DeliverReadCursor(readerID uuid.UUID, recipientIDs []uuid.UUID, co
 	}
 }
 
-func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eventType string, conversationID, roomID uuid.UUID, generation int64, targetUserID uuid.UUID, targetDeviceID string, signal json.RawMessage, supportRef uuid.UUID) error {
+func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eventType string, conversationID, roomID uuid.UUID, generation int64, targetUserID uuid.UUID, targetDeviceID string, signal json.RawMessage, supportRef, attemptID uuid.UUID) error {
 	unlock, err := h.lockGroupConversation(ctx, conversationID)
 	if err != nil {
 		return &RequestError{RequestID: requestID, Err: err}
@@ -1005,6 +1115,10 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 			return &RequestError{RequestID: requestID, Err: errors.New("conversation is required")}
 		}
 		if h.groupCallAuth == nil {
+			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
+		}
+		attempts, ok := h.coord.(GroupStartAttemptCoordinator)
+		if !ok {
 			return &RequestError{RequestID: requestID, Err: ErrCallUnavailable}
 		}
 		admission, admissionOK := h.coord.(CallAdmissionCoordinator)
@@ -1060,7 +1174,7 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 			}
 		}
 		if err = ctx.Err(); err == nil {
-			room, err = rooms.StartGroupRoom(ctx, attemptedRoom, token)
+			room, err = attempts.StartPreparedGroupRoom(ctx, attemptedRoom, token, attemptID)
 		}
 		if err != nil {
 			cleanupAttempt("start failure")
@@ -1090,7 +1204,7 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 						recipients = append(recipients, memberID)
 					}
 				}
-				callPushJob = &callpush.Job{CallID: room.ID, ConversationID: room.ConversationID, StarterID: identity.UserID, Group: true, Recipients: recipients, ExpiresAt: room.ExpiresAt}
+				callPushJob = &callpush.Job{CallID: room.ID, ConversationID: room.ConversationID, StarterID: identity.UserID, Group: true, Recipients: recipients, ExpiresAt: room.RingExpiresAt}
 			}
 		}
 	case "group.call.join":
@@ -1231,11 +1345,22 @@ func (h *Hub) handleGroupRoom(ctx context.Context, client Client, requestID, eve
 		err = commandLease.Commit(ctx)
 		commandLeaseDone = err == nil
 	}
+	ackFailed := false
+	if err == nil && eventType == "group.call.start" {
+		ackFailed = !client.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.start_accepted", RequestID: requestID, Payload: struct {
+			ConversationID uuid.UUID `json:"conversation_id"`
+			RoomID         uuid.UUID `json:"room_id"`
+			Generation     int64     `json:"generation"`
+		}{room.ConversationID, room.ID, room.Generation}})
+	}
 	if err == nil && localDelivery != nil {
 		h.deliverGroupRoomLockedContext(ctx, *localDelivery)
 	}
 	if err == nil && callPushJob != nil && h.callPush != nil {
 		h.callPush.Enqueue(*callPushJob)
+	}
+	if err == nil && ackFailed {
+		err = ErrCallUnavailable
 	}
 	operationSupportRef := supportRef
 	if operationSupportRef == uuid.Nil {
@@ -1309,14 +1434,14 @@ func (h *Hub) publishGroupRoomAfterMutation(ctx context.Context, change GroupRoo
 
 // notifyGroupRoom is for room changes without a membership lease. Commands
 // authorized by a lease defer local socket enqueue until that lease commits.
-func (h *Hub) notifyGroupRoom(ctx context.Context, change GroupRoomChange) {
+func (h *Hub) notifyGroupRoom(ctx context.Context, change GroupRoomChange) error {
 	unlock, err := h.lockGroupConversation(ctx, change.Room.ConversationID)
 	if err != nil {
 		h.logCallWarning(ctx, "group call event delivery failed", err,
 			"event", change.Type, "source", change.Source,
 			"room_id", change.Room.ID, "conversation_id", change.Room.ConversationID,
 			"stage", "lock")
-		return
+		return err
 	}
 	defer unlock()
 	change.ParticipantConnectionIDs = groupParticipantConnectionIDs(change.Room)
@@ -1325,7 +1450,7 @@ func (h *Hub) notifyGroupRoom(ctx context.Context, change GroupRoomChange) {
 			"event", "group.call.ended", "source", change.Source, "outcome", "attempted")
 	}
 	h.deliverGroupRoomLockedContext(ctx, change)
-	_ = h.publishGroupRoom(ctx, change)
+	return h.publishGroupRoom(ctx, change)
 }
 
 // DeliverGroupRoom sends a neutral lifecycle snapshot or a single targeted signal.
@@ -1348,7 +1473,7 @@ func (h *Hub) deliverGroupRoomLockedContext(ctx context.Context, change GroupRoo
 	change.Room = withGroupParticipantConnections(change.Room, change.ParticipantConnectionIDs)
 	if change.Type == "signal" {
 		for _, recipient := range h.recipients(change.ToUserID) {
-			if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() < 2 {
+			if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() < ProtocolVersion {
 				continue
 			}
 			if recipient.Identity().DeviceID == change.ToDeviceID && groupParticipantOwns(change.Room, GroupParticipant{UserID: change.ToUserID, DeviceID: change.ToDeviceID, ConnectionID: clientConnectionID(recipient)}) {
@@ -1367,7 +1492,7 @@ func (h *Hub) deliverGroupRoomLockedContext(ctx context.Context, change GroupRoo
 				}
 				room, authorized := authorizedGroupRoom(change, lease, recipient.Identity().UserID, false)
 				if authorized {
-					recipient.SendJSON(serverEvent{Version: 2, Type: "group.call.signal", Payload: struct {
+					recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.signal", Payload: struct {
 						RoomID       uuid.UUID       `json:"room_id"`
 						Generation   int64           `json:"generation"`
 						FromUserID   uuid.UUID       `json:"from_user_id"`
@@ -1421,7 +1546,7 @@ func (h *Hub) deliverGroupRoomLockedContext(ctx context.Context, change GroupRoo
 		if ctx.Err() != nil {
 			return
 		}
-		if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() < 2 {
+		if identified, ok := recipient.(protocolIdentified); ok && identified.ProtocolVersion() < ProtocolVersion {
 			continue
 		}
 		lease, leaseCtx, cancel := h.beginGroupDeliveryLease(ctx, change, recipient)
@@ -1437,7 +1562,7 @@ func (h *Hub) deliverGroupRoomLockedContext(ctx context.Context, change GroupRoo
 			// A deletion projection has no membership row to authorize against.
 			// All other terminal payloads require a fresh lease held through enqueue.
 			if change.MembershipProjectionDeleted || lease == nil {
-				recipient.SendJSON(serverEvent{Version: 2, Type: "group.call.ended", Payload: struct {
+				recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.ended", Payload: struct {
 					RoomID        uuid.UUID `json:"room_id"`
 					Generation    int64     `json:"generation"`
 					Status        string    `json:"status"`
@@ -1455,7 +1580,7 @@ func (h *Hub) deliverGroupRoomLockedContext(ctx context.Context, change GroupRoo
 			if authorized {
 				h.sendFullGroupRoom(ctx, change, room, recipient)
 			} else {
-				recipient.SendJSON(serverEvent{Version: 2, Type: "group.call.ended", Payload: struct {
+				recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call.ended", Payload: struct {
 					RoomID        uuid.UUID `json:"room_id"`
 					Generation    int64     `json:"generation"`
 					Status        string    `json:"status"`
@@ -1553,18 +1678,24 @@ func authorizedGroupRoom(change GroupRoomChange, lease GroupCallLease, recipient
 
 func (h *Hub) sendFullGroupRoom(ctx context.Context, change GroupRoomChange, room GroupRoom, recipient Client) {
 	var iceServers []ICEServer
-	if room.Status == GroupRoomActive && h.turn != nil {
+	var iceExpiresAt *time.Time
+	identity := recipient.Identity()
+	if (room.Status == GroupRoomActive || room.Status == GroupRoomRinging) && h.turn != nil && groupParticipantOwns(room, GroupParticipant{UserID: identity.UserID, DeviceID: identity.DeviceID, ConnectionID: clientConnectionID(recipient)}) {
 		server, err := h.turn.Issue(Call{ID: room.ID, ConversationID: room.ConversationID, Status: room.Status, ExpiresAt: room.ExpiresAt}, recipient.Identity().UserID)
 		if err != nil {
 			h.logCallWarning(ctx, "group TURN credential issuance failed", err, "event", change.Type, "room_id", room.ID, "participant_user_id", recipient.Identity().UserID)
 			return
 		}
 		iceServers = []ICEServer{server}
+		if !server.ExpiresAt.IsZero() {
+			iceExpiresAt = &server.ExpiresAt
+		}
 	}
-	recipient.SendJSON(serverEvent{Version: 2, Type: "group.call." + change.Type, Payload: struct {
+	recipient.SendJSON(serverEvent{Version: ProtocolVersion, Type: "group.call." + change.Type, Payload: struct {
 		GroupRoom
-		ICEServers []ICEServer `json:"ice_servers,omitempty"`
-	}{GroupRoom: room, ICEServers: iceServers}})
+		ICEServers   []ICEServer `json:"ice_servers,omitempty"`
+		ICEExpiresAt *time.Time  `json:"ice_expires_at,omitempty"`
+	}{GroupRoom: room, ICEServers: iceServers, ICEExpiresAt: iceExpiresAt}})
 }
 
 func (h *Hub) lockGroupConversation(ctx context.Context, conversationID uuid.UUID) (func(), error) {
@@ -1594,6 +1725,18 @@ func (h *Hub) lockGroupConversation(ctx context.Context, conversationID uuid.UUI
 func (h *Hub) groupRoomChangeCurrent(change GroupRoomChange) bool {
 	if h.groupCallAuth == nil || change.Room.MembershipRevision <= 0 {
 		return false
+	}
+	if change.Type == "started" {
+		rooms, ok := h.coord.(GroupRoomCoordinator)
+		if !ok {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), groupCallOperationTimeout)
+		current, err := rooms.GetGroupRoom(ctx, change.Room.ID)
+		cancel()
+		if err != nil || current.ID != change.Room.ID || current.ConversationID != change.Room.ConversationID || current.Generation != change.Room.Generation || (current.Status != GroupRoomRinging && current.Status != GroupRoomActive) || !current.ExpiresAt.After(time.Now()) || (!current.RingExpiresAt.IsZero() && !current.RingExpiresAt.After(time.Now())) {
+			return false
+		}
 	}
 	if change.Type == "ended" && change.MembershipProjectionRevision > change.Room.MembershipRevision {
 		if change.MembershipProjectionDeleted {
@@ -1981,6 +2124,14 @@ func (h *Hub) markDelivered(ctx context.Context, client Client, messageIDs []uui
 }
 
 func validCallSignal(signal json.RawMessage) bool {
+	return validateCallSignal(signal, false)
+}
+
+func validGroupCallSignal(signal json.RawMessage) bool {
+	return validateCallSignal(signal, true)
+}
+
+func validateCallSignal(signal json.RawMessage, group bool) bool {
 	decoder := json.NewDecoder(bytes.NewReader(signal))
 	var fields map[string]json.RawMessage
 	if err := decoder.Decode(&fields); err != nil || fields == nil {
@@ -2004,7 +2155,19 @@ func validCallSignal(signal json.RawMessage) bool {
 	}
 	switch signalType {
 	case "offer", "answer":
-		if len(fields) != 2 {
+		expectedFields := 2
+		if group {
+			expectedFields++
+			var id string
+			if err := json.Unmarshal(fields["negotiation_id"], &id); err != nil {
+				return false
+			}
+			parsed, err := uuid.Parse(id)
+			if err != nil || parsed == uuid.Nil || parsed.String() != id {
+				return false
+			}
+		}
+		if len(fields) != expectedFields {
 			return false
 		}
 		sdp, ok := fields["sdp"]
@@ -2015,7 +2178,7 @@ func validCallSignal(signal json.RawMessage) bool {
 		return json.Unmarshal(sdp, &value) == nil && value != ""
 	case "candidate":
 		candidate, ok := fields["candidate"]
-		return len(fields) == 2 && ok && validObject(candidate)
+		return len(fields) == 2 && ok && validObject(candidate) && (!group || validGroupICECandidate(candidate))
 	case "screen-share-started", "screen-share-stopped":
 		return len(fields) == 1
 	default:

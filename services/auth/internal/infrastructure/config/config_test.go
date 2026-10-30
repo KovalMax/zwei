@@ -2,22 +2,6 @@ package config
 
 import "testing"
 
-func TestUniqueRefreshCookieIssuanceIsOptIn(t *testing.T) {
-	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
-	t.Setenv("PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V1", "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
-	t.Setenv("PUSH_SUBSCRIPTION_FINGERPRINT_KEY", "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
-	for _, tc := range []struct {
-		value            string
-		enabled, invalid bool
-	}{{"", false, false}, {"true", true, false}, {"false", false, false}, {"invalid", false, true}} {
-		t.Setenv("AUTH_UNIQUE_REFRESH_COOKIES", tc.value)
-		cfg, err := Load()
-		if (err != nil) != tc.invalid || (!tc.invalid && cfg.UniqueRefreshCookies != tc.enabled) {
-			t.Fatalf("flag %q: enabled=%v err=%v", tc.value, cfg.UniqueRefreshCookies, err)
-		}
-	}
-}
-
 func TestLoadDefaultsTrustedProxyToLocalTraefikAddress(t *testing.T) {
 	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
 	t.Setenv("PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V1", "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")

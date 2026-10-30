@@ -5,6 +5,8 @@
     "test": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1"
+    "@playwright/test": "1.62.1",
+    "@types/pg": "8.15.6",
+    "pg": "8.16.3"
   }
 }

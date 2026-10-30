@@ -8,6 +8,7 @@ E2E_OTHER_SPECS=(
   tests/giphy-live.spec.ts
   tests/group-list-pagination.spec.ts
   tests/kyc-flow.spec.ts
+  tests/legacy-message-fixture.spec.ts
   tests/pwa-offline.spec.ts
   tests/visual-baseline.spec.ts
 )

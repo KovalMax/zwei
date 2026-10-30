@@ -50,6 +50,26 @@ describe('HomeComponent', () => {
         expect(component).toBeTruthy();
     });
 
+    it('keeps rendered mention nodes connected across unrelated change detection', async () => {
+        fixture.detectChanges();
+        component.selectedConversation = groupConversation('mention-stability');
+        component.messages = [{id: 'message-1', conversationId: 'mention-stability', senderId: 'alice', clientMessageId: 'client-1', sequence: 1, body: '@Alice hello', createdAt: '2026-01-01T00:00:00Z', mentions: [{userId: 'alice', start: 0, end: 6}]}];
+        fixture.changeDetectorRef.markForCheck();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const mention = fixture.nativeElement.querySelector('.message-mention') as HTMLElement;
+        expect(mention.textContent).toBe('@Alice');
+        const composer = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+        component.socketReady = true;
+        composer.value = 'draft';
+        composer.dispatchEvent(new Event('input', {bubbles: true}));
+        fixture.changeDetectorRef.markForCheck();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(mention.isConnected).toBe(true);
+        expect(fixture.nativeElement.querySelector('.message-mention')).toBe(mention);
+    });
+
     it('routes a validated message intent only through the authorized Home conversation snapshot', () => {
         const intents = new Subject<PushClickIntent>();
         const {home, snapshot, history, send} = pushIntentHome(intents);
@@ -844,6 +864,37 @@ describe('HomeComponent', () => {
         expect(home.draft).toBe('draft stays'); expect(home.messages).toEqual([]);
         expect(home.sendStatus).toContain('connection was lost');
         home.ngOnDestroy();
+    });
+
+    it('re-enables the rendered search after reopening when the cooldown timer fires early', () => {
+        fixture.detectChanges();
+        vi.spyOn(TestBed.inject(GiphySearchService), 'search').mockReturnValue(of(giphyPage([])));
+        component.selectedConversation = conversation('gif-timer'); component.socketReady = true; component.giphyEnabled = true;
+        fixture.changeDetectorRef.markForCheck(); fixture.detectChanges();
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+        const originalSetTimeout = window.setTimeout.bind(window);
+        const callbacks: Array<() => void> = [];
+        const timer = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+            if (delay === 750 || delay === 1) { callbacks.push(handler as () => void); return 999; }
+            return originalSetTimeout(handler, delay, ...args);
+        }) as typeof window.setTimeout);
+        const trigger = fixture.nativeElement.querySelector('button[aria-label="Open GIPHY picker"]') as HTMLButtonElement;
+        trigger.dispatchEvent(new MouseEvent('click', {bubbles: true})); fixture.detectChanges();
+        const input = fixture.nativeElement.querySelector('#giphy-search-query') as HTMLInputElement;
+        input.value = 'cats'; input.dispatchEvent(new Event('input', {bubbles: true})); fixture.detectChanges();
+        let button = fixture.nativeElement.querySelector('.giphy-search-row button') as HTMLButtonElement;
+        button.click(); fixture.detectChanges();
+        trigger.dispatchEvent(new MouseEvent('click', {bubbles: true})); fixture.detectChanges();
+        trigger.dispatchEvent(new MouseEvent('click', {bubbles: true})); fixture.detectChanges();
+        const reopened = fixture.nativeElement.querySelector('#giphy-search-query') as HTMLInputElement;
+        reopened.value = 'dogs'; reopened.dispatchEvent(new Event('input', {bubbles: true})); fixture.detectChanges();
+        button = fixture.nativeElement.querySelector('.giphy-search-row button') as HTMLButtonElement;
+        expect(button.disabled).toBe(true);
+        now.mockReturnValue(1749); callbacks.shift()?.(); fixture.detectChanges();
+        expect(button.disabled).toBe(true);
+        now.mockReturnValue(1750); callbacks.shift()?.(); fixture.detectChanges();
+        expect(button.disabled).toBe(false);
+        timer.mockRestore(); now.mockRestore();
     });
 
     it('applies a modest local GIPHY search cooldown to the request method', () => {
@@ -3091,8 +3142,8 @@ describe('HomeComponent', () => {
         if (!firstSend || !secondSend || !firstReplay || !secondReplay) throw new Error('Expected both initial sends and retries.');
         expect(firstReplay.request_id).not.toBe(firstSend.request_id);
         expect(secondReplay.request_id).not.toBe(secondSend.request_id);
-        expect(firstReplay.payload).toEqual(expect.objectContaining({ client_message_id: firstSend.payload.client_message_id, body: '@Alice First', mentions: [{user_id: 'user-2', start: 0, end: 6}] }));
-        expect(secondReplay.payload).toEqual(expect.objectContaining({ client_message_id: secondSend.payload.client_message_id, body: 'Second' }));
+        expect(firstReplay.payload).toEqual(expect.objectContaining({ client_message_id: firstSend.payload.client_message_id, body: '@Alice First', content_type: 'text', mentions: [{user_id: 'user-2', start: 0, end: 6}] }));
+        expect(secondReplay.payload).toEqual(expect.objectContaining({ client_message_id: secondSend.payload.client_message_id, body: 'Second', content_type: 'text' }));
 
         historyComponent.handleSocketEvent({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.accepted', request_id: secondReplay.request_id, payload: socketMessage('second-durable', secondReplay.payload.client_message_id, 'Second') });
         historyComponent.handleSocketEvent({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.accepted', request_id: firstReplay.request_id, payload: socketMessage('first-durable', firstReplay.payload.client_message_id, '@Alice First') });

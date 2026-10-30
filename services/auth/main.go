@@ -69,9 +69,6 @@ func main() {
 	}
 	validator := sharedauth.NewSessionValidator(db, cfg.JWTSecret)
 	handler := httptransport.NewHandler(authService, adminService, validator, adminIPs, origins, cfg.VAPIDPublicKey, cfg.GiphyAPIKey)
-	if cfg.UniqueRefreshCookies {
-		handler.EnableUniqueRefreshCookies()
-	}
 	mux := runtime.NewHealthHandler("auth")
 	handler.Register(mux)
 	registerBrowserV2(mux, cfg, handler, authService, repository, issuer, validator)

@@ -50,10 +50,13 @@ func (i *CredentialIssuer) Issue(call application.Call, userID uuid.UUID) (appli
 		expires = call.ExpiresAt
 	}
 	expiresAt := expires.Unix()
+	if expiresAt <= now.Unix() {
+		return application.ICEServer{}, errors.New("call credential lifetime is too short")
+	}
 	username := fmt.Sprintf("%d:%s:%s", expiresAt, userID, call.ID)
 	mac := hmac.New(sha1.New, i.secret)
 	_, _ = mac.Write([]byte(username))
-	return application.ICEServer{URLs: i.urls, Username: username, Credential: base64.StdEncoding.EncodeToString(mac.Sum(nil))}, nil
+	return application.ICEServer{URLs: i.urls, Username: username, Credential: base64.StdEncoding.EncodeToString(mac.Sum(nil)), ExpiresAt: time.Unix(expiresAt, 0).UTC()}, nil
 }
 
 var _ application.TURNCredentialIssuer = (*CredentialIssuer)(nil)

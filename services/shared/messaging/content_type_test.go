@@ -8,9 +8,9 @@ func TestValidateContent(t *testing.T) {
 		mentions                int
 		valid                   bool
 	}{
-		{"legacy text", "", "hello", 0, true},
+		{"omitted type", "", "hello", 0, false},
 		{"text", "text", "hello", 0, true},
-		{"sticker", "sticker", "hello", 0, true},
+		{"sticker", "sticker", "hello", 0, false},
 		{"unknown type", "image", "hello", 0, false},
 		{"unknown sticker", "sticker", "not-allowed", 0, false},
 		{"long sticker id", "sticker", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0, false},

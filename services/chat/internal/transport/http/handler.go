@@ -48,7 +48,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/chat/conversations/{id}/archive", h.restoreConversation)
 	mux.HandleFunc("GET /api/chat/users/search", h.searchUsers)
 	mux.HandleFunc("GET /api/chat/conversations/{id}", h.getConversation)
-	mux.HandleFunc("POST /api/chat/conversations/{id}/messages", h.sendMessage)
+	mux.HandleFunc("POST /api/chat/conversations/{id}/messages", func(w http.ResponseWriter, _ *http.Request) {
+		errorJSON(w, http.StatusUpgradeRequired, "client update required")
+	})
+	mux.HandleFunc("POST /api/chat/v2/conversations/{id}/messages", h.sendMessage)
 	mux.HandleFunc("GET /api/chat/conversations/{id}/messages", h.historyMessages)
 	mux.HandleFunc("POST /api/chat/groups", h.createGroup)
 	mux.HandleFunc("GET /api/chat/groups", h.listGroups)
@@ -478,6 +481,10 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		ContentType     string `json:"content_type"`
 	}
 	if !decodeJSON(w, r, &request) {
+		errorJSON(w, http.StatusBadRequest, "invalid message")
+		return
+	}
+	if request.ContentType != "text" {
 		errorJSON(w, http.StatusBadRequest, "invalid message")
 		return
 	}

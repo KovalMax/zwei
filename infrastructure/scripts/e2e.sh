@@ -35,8 +35,8 @@ dotenv_value() {
 if [[ -n "$SPEC" || -n "$TEST_TITLE" ]]; then
   if [[ "$TEST_SCRIPT" == parallel-group ]]; then
     case "$SPEC" in
-      chat|other) ;;
-      *) printf '%s\n' 'Parallel group must be chat or other' >&2; exit 2 ;;
+      chat|other|turn) ;;
+      *) printf '%s\n' 'Parallel group must be chat, other, or turn' >&2; exit 2 ;;
     esac
   else
   case "$SPEC" in
@@ -82,6 +82,10 @@ if [[ "$TEST_SCRIPT" == parallel-group ]]; then
   validate_local_e2e_targets "$SCRIPT_DIR/../.env"
   source "$SCRIPT_DIR/e2e-groups.sh"
   COMPOSE+=( -f docker-compose.test.yml -f docker-compose.e2e-parallel.yml )
+  if [[ "$SPEC" == turn ]]; then
+    [[ "${E2E_TURN_MODE:-}" == 1 && -n "${E2E_TURN_IMAGE:-}" ]] || { printf '%s\n' 'TURN acceptance requires the dedicated parent harness' >&2; exit 2; }
+    COMPOSE+=( -f docker-compose.e2e-turn.yml )
+  fi
   TEST_COMPOSE=("${COMPOSE[@]}")
   MIGRATION_OVERLAY="docker-compose.e2e-parallel.yml"
 fi
@@ -196,6 +200,10 @@ fi
 "${TEST_COMPOSE[@]}" exec -T redis redis-cli -n 1 FLUSHDB >/dev/null
 "${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 --force-recreate auth chat realtime >/dev/null
 wait_for_browser_routes
+if [[ "$SPEC" == turn ]] && [[ -z "$("${TEST_COMPOSE[@]}" ps -q --status running coturn)" ]]; then
+  printf '%s\n' 'Isolated coturn is not running' >&2
+  exit 1
+fi
 
 printf '%s\n' 'Password123!' | "${TEST_COMPOSE[@]}" run -T --rm --no-deps auth /usr/bin/service admin create --email e2e-admin@example.test --display-name "E2E Admin"
 baseline_mount="$ROOT_DIR/e2e/visual-baselines:/e2e/visual-baselines:ro"
@@ -206,7 +214,7 @@ run_args=(--rm -v "$ROOT_DIR/e2e/test-results:/e2e/test-results" -v "$baseline_m
 if [[ "$TEST_SCRIPT" == parallel-group ]]; then
   run_args=(--rm -e "PLAYWRIGHT_RUN_ID=$PLAYWRIGHT_RUN_ID" -v "$ROOT_DIR/e2e/test-results:/e2e/test-results" -v "$baseline_mount" e2e npm run test --)
 fi
-if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts || "$TEST_SCRIPT" == parallel-group ]]; then
+if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts || ( "$TEST_SCRIPT" == parallel-group && "$SPEC" != turn ) ]]; then
   run_args=(-v "$ROOT_DIR/frontend-app/dist/messenger/browser:/production-app:ro" "${run_args[@]}")
   run_args=(-v "$ROOT_DIR/frontend-app/dist/pwa-update/browser:/production-app-update:ro" "${run_args[@]}")
 fi
@@ -221,7 +229,9 @@ if [[ "$TEST_SCRIPT" == parallel-group ]]; then
   if [[ -n "$TEST_TITLE" ]]; then
     run_args+=(--grep "$escaped_test_title")
   fi
-  if [[ "$SPEC" == chat ]]; then
+  if [[ "$SPEC" == turn ]]; then
+    run_args+=(--config=turn-playwright.config.ts)
+  elif [[ "$SPEC" == chat ]]; then
     run_args+=("${E2E_CHAT_SPECS[@]}")
   else
     run_args+=("${E2E_OTHER_SPECS[@]}")

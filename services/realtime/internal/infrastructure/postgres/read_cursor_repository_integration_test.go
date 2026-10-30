@@ -65,7 +65,7 @@ func TestUnreadCountRemainsExactDuringConcurrentSendAndRead(t *testing.T) {
 		go func() {
 			defer group.Done()
 			<-start
-			_, _, sendErr = sender.Send(ctx, messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("integration-%d", sequence), Body: "concurrent message"})
+			_, _, sendErr = sender.Send(ctx, messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("integration-%d", sequence), Body: "concurrent message", ContentType: "text"})
 		}()
 		go func() {
 			defer group.Done()

@@ -53,11 +53,11 @@ describe('wire mapper', () => {
         expect(toGroupPage({items: [group], next_cursor: 'c'.repeat(513)})).toBeNull();
     });
 
-    it('maps a legacy group array as a complete page without a cursor', () => {
+    it('rejects unpaginated group arrays', () => {
         const group = { id: 'group-1', name: 'Launch', avatar_seed: 'seed', owner_id: 'owner', membership_revision: 2, created_at: '2026-01-01T00:00:00Z', last_message_at: '2026-01-02T00:00:00Z', members: [{ user_id: 'owner', display_name: 'Owner', role: 'owner' as const, visible_from_sequence: 1, joined_at: '2026-01-01T00:00:00Z' }] };
 
-        expect(toGroupPage([group])).toEqual({items: [expect.objectContaining({id: 'group-1', kind: 'group'})], nextCursor: null});
-        expect(toGroupPage([])).toEqual({items: [], nextCursor: null});
+        expect(toGroupPage([group])).toBeNull();
+        expect(toGroupPage([])).toBeNull();
         expect(toGroupPage([group, {id: 'malformed'}])).toBeNull();
     });
 

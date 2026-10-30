@@ -29,8 +29,10 @@ type GroupRoom struct {
 	StateRevision      int64              `json:"state_revision"`
 	Status             string             `json:"status"`
 	ExpiresAt          time.Time          `json:"expires_at"`
+	RingExpiresAt      time.Time          `json:"ring_expires_at"`
 	Participants       []GroupParticipant `json:"participants"`
 	Presenter          *GroupParticipant  `json:"presenter,omitempty"`
+	ExpiryClaimToken   string             `json:"-"`
 }
 
 // GroupParticipant binds membership to the opaque socket that joined the room.
@@ -43,19 +45,30 @@ type GroupParticipant struct {
 
 // GroupRoomCoordinator owns only ephemeral cross-replica room state.
 type GroupRoomCoordinator interface {
-	StartGroupRoom(context.Context, GroupRoom, string) (GroupRoom, error)
 	JoinGroupRoom(context.Context, uuid.UUID, GroupParticipant, int64, string) (GroupRoom, error)
 	LeaveGroupRoom(context.Context, uuid.UUID, GroupParticipant) (GroupRoom, error)
 	EndGroupRoom(context.Context, uuid.UUID, GroupParticipant) (GroupRoom, error)
 	AbortGroupRoomStart(context.Context, uuid.UUID, int64, GroupParticipant) error
 	GetGroupRoom(context.Context, uuid.UUID) (GroupRoom, error)
 	GetGroupRoomForConversation(context.Context, uuid.UUID) (GroupRoom, error)
-	SyncGroupRoom(context.Context, uuid.UUID, int64, GroupParticipant) (GroupRoom, bool, error)
 	SetGroupPresenter(context.Context, uuid.UUID, GroupParticipant, bool) (GroupRoom, error)
 	RemoveGroupConnection(context.Context, uuid.UUID, string, string) ([]GroupRoom, error)
 	EndGroupRoomForMembershipChange(context.Context, uuid.UUID, uuid.UUID, int64, int64, int64) (GroupRoom, error)
 	ExpireGroupRooms(context.Context, int) ([]GroupRoom, error)
 	PublishGroupRoom(context.Context, GroupRoomChange) error
+}
+
+// GroupMembershipRetirementReader recovers bounded terminal routing evidence
+// for an exact conversation membership projection.
+type GroupMembershipRetirementReader interface {
+	GetGroupMembershipRetirement(context.Context, uuid.UUID, int64) (GroupRoom, error)
+}
+
+// GroupStartAttemptCoordinator fences a start to the socket that prepared it.
+type GroupStartAttemptCoordinator interface {
+	PrepareGroupRoomStart(context.Context, uuid.UUID, GroupParticipant) (uuid.UUID, time.Time, error)
+	StartPreparedGroupRoom(context.Context, GroupRoom, string, uuid.UUID) (GroupRoom, error)
+	CancelGroupRoomStart(context.Context, uuid.UUID, GroupParticipant, uuid.UUID) (GroupRoom, string, error)
 }
 
 // GroupRoomOwnershipReader returns a single atomic, authorized-room snapshot.

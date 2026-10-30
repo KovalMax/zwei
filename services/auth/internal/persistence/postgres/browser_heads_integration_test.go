@@ -218,68 +218,6 @@ func TestBrowserLogoutWaitsForInFlightContinue(t *testing.T) {
 	}
 }
 
-func TestLegacyRotationRejectsBrowserHeads(t *testing.T) {
-	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("set ZWEI_TEST_DATABASE_URL for PostgreSQL integration")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	db, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	repo := NewRepository(db, nil)
-	id, device := createPushTestUser(t, ctx, repo, db)
-	defer db.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, id)
-	browser, generation := uuid.New(), uuid.New()
-	defer db.Exec(context.Background(), `DELETE FROM browser_auth_heads WHERE browser_id=$1`, browser)
-	hash := func() []byte { a, b := uuid.New(), uuid.New(); return append(a[:], b[:]...) }
-	current, legacy := hash(), hash()
-	expiry := time.Now().Add(time.Hour)
-	issue := func(user.Session) error { return nil }
-	if err := repo.CreateBrowserSession(ctx, browser, generation, id, device, current, 1, expiry, issue); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.CreateSession(ctx, id, device, legacy, 1, expiry); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.RotateRefreshToken(ctx, current, hash(), expiry, issue); !errors.Is(err, application.ErrRefreshToken) {
-		t.Fatalf("legacy single: %v", err)
-	}
-	if err := repo.RotateRefreshCandidates(ctx, [][]byte{legacy, current}, hash(), expiry, func(user.Session, []byte) error { return nil }); !errors.Is(err, application.ErrRefreshToken) {
-		t.Fatalf("legacy candidates: %v", err)
-	}
-	start, results := make(chan struct{}), make(chan error, 3)
-	go func() { <-start; results <- repo.RotateRefreshToken(ctx, current, hash(), expiry, issue) }()
-	go func() {
-		<-start
-		results <- repo.RotateRefreshCandidates(ctx, [][]byte{current}, hash(), expiry, func(user.Session, []byte) error { return nil })
-	}()
-	go func() {
-		<-start
-		results <- repo.RotateBrowserSession(ctx, browser, generation, current, hash(), expiry, issue)
-	}()
-	close(start)
-	successes := 0
-	for i := 0; i < 3; i++ {
-		err := <-results
-		if err == nil {
-			successes++
-		} else if !errors.Is(err, application.ErrRefreshToken) {
-			t.Error(err)
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("successful concurrent rotations: %d", successes)
-	}
-	var valid bool
-	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM browser_auth_heads h JOIN sessions s ON s.refresh_token_hash=h.current_refresh_hash WHERE h.browser_id=$1 AND s.revoked_at IS NULL)`, browser).Scan(&valid); err != nil || !valid {
-		t.Fatalf("head no longer points to live session: %v", err)
-	}
-}
-
 func TestBrowserHeadCompetingReplacements(t *testing.T) {
 	url := os.Getenv("ZWEI_TEST_DATABASE_URL")
 	if url == "" {
