@@ -28,10 +28,6 @@ interface GroupSortKeyWire {
 }
 
 export function toGroupPage(value: unknown): GroupPage | null {
-    if (Array.isArray(value)) {
-        const items = toGroupItems(value);
-        return items ? {items, nextCursor: null} : null;
-    }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const envelope = value as Partial<GroupPageWire>;
     if (!Array.isArray(envelope.items) || envelope.items.length > MAX_GROUP_PAGE_ITEMS || !(envelope.next_cursor === null || isValidGroupPageCursor(envelope.next_cursor))) return null;

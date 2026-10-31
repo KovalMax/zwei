@@ -36,13 +36,16 @@ func TestCredentialIssuerNeverOutlivesCall(t *testing.T) {
 	}
 	now := time.Unix(1_770_000_000, 0)
 	issuer.now = func() time.Time { return now }
-	callExpiry := now.Add(10 * time.Minute)
+	callExpiry := now.Add(10*time.Minute + 500*time.Millisecond)
 	credential, err := issuer.Issue(application.Call{ID: uuid.New(), ExpiresAt: callExpiry}, uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(credential.Username, "1770000600:") {
 		t.Fatalf("credential expiry is not capped to room expiry: %q", credential.Username)
+	}
+	if !credential.ExpiresAt.Equal(callExpiry.Truncate(time.Second)) {
+		t.Fatalf("credential expiry = %v, want %v", credential.ExpiresAt, callExpiry.Truncate(time.Second))
 	}
 	if _, err := issuer.Issue(application.Call{ID: uuid.New(), ExpiresAt: now}, uuid.New()); err == nil {
 		t.Fatal("expected expired call credentials to be rejected")

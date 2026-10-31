@@ -31,8 +31,8 @@ func (s *BrowserRegistration) Register(ctx context.Context, input Credentials, c
 		return false, BrowserSessionResult{}, ErrInvalidInput
 	}
 	if strings.TrimSpace(input.InvitationCode) == "" {
-		result, err := s.auth.Register(ctx, input)
-		return result.Pending, BrowserSessionResult{}, err
+		err := s.auth.registerPending(ctx, input)
+		return err == nil, BrowserSessionResult{}, err
 	}
 	if current != nil && !validBrowserCredential(*current) {
 		return false, BrowserSessionResult{}, ErrInvalidInput

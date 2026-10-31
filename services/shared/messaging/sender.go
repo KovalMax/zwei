@@ -39,9 +39,6 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	if !ValidateContent(request.ContentType, request.Body, request.Mentions) {
 		return Message{}, false, ErrInvalidMessage
 	}
-	if request.ContentType == "" {
-		request.ContentType = "text"
-	}
 	if request.SenderID == uuid.Nil || request.ConversationID == uuid.Nil || request.ClientMessageID == "" || len(request.ClientMessageID) > 128 || request.Body == "" || len(request.Body) > 4096 {
 		return Message{}, false, ErrInvalidMessage
 	}

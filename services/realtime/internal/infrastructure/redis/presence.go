@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,7 +70,6 @@ type MessageChange struct {
 type ReadChange struct {
 	ConversationID      uuid.UUID   `json:"conversation_id"`
 	ReaderID            uuid.UUID   `json:"reader_id"`
-	RecipientID         uuid.UUID   `json:"recipient_id,omitempty"` // legacy direct-conversation field
 	RecipientIDs        []uuid.UUID `json:"recipient_ids"`
 	Sequence            int64       `json:"sequence"`
 	VisibleFromSequence int64       `json:"visible_from_sequence"`
@@ -243,9 +243,6 @@ func (c *PresenceCoordinator) PublishMessage(ctx context.Context, message messag
 
 func (c *PresenceCoordinator) PublishRead(ctx context.Context, readerID uuid.UUID, recipientIDs []uuid.UUID, conversationID uuid.UUID, sequence, visibleFromSequence int64) error {
 	change := ReadChange{ConversationID: conversationID, ReaderID: readerID, RecipientIDs: recipientIDs, Sequence: sequence, VisibleFromSequence: visibleFromSequence}
-	if len(recipientIDs) == 1 {
-		change.RecipientID = recipientIDs[0]
-	}
 	payload, err := json.Marshal(change)
 	if err != nil {
 		return err
@@ -271,6 +268,7 @@ func (c *PresenceCoordinator) StartHeartbeat(ctx context.Context) {
 				pipe.Set(ctx, presenceConnectionKey(userID, member), "1", presenceTTL)
 				_, _ = pipe.Exec(ctx)
 			}
+			c.renewOwnedGroupRoomsLocked(ctx, time.Now())
 			for connection, userID := range c.budgetConnections {
 				pipe := c.client.Pipeline()
 				pipe.ZRemRangeByScore(ctx, connectionBudgetKey(userID), "-inf", strconv.FormatInt(now, 10))
@@ -279,6 +277,14 @@ func (c *PresenceCoordinator) StartHeartbeat(ctx context.Context) {
 			}
 			c.mu.Unlock()
 		}
+	}
+}
+
+// Caller holds mu so disconnect cannot race a snapshot and renew after removal.
+func (c *PresenceCoordinator) renewOwnedGroupRoomsLocked(ctx context.Context, now time.Time) {
+	for member, userID := range c.connections {
+		connectionID := strings.TrimPrefix(member, c.instanceID+":")
+		_ = c.renewOwnedGroupRoom(ctx, userID, connectionID, now)
 	}
 }
 

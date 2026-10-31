@@ -252,6 +252,10 @@ body :is(a, button, select, [tabindex]):focus-visible {
 .call-quality-option-active { background: #345779; }
 .call-quality-listbox.call-group-quality-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; }
 .call-quality-listbox.call-group-quality-picker .call-quality-option { min-height: 40px; padding: 0 8px; white-space: nowrap; }
+@media (max-width: 760px) {
+    .call-quality-listbox.call-group-quality-picker { min-width: 300px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .call-quality-listbox.call-group-quality-picker .call-quality-option { min-height: 48px; padding: 0 4px; overflow-wrap: anywhere; white-space: normal; }
+}
 .call-quality-listbox.call-select-panel-light { background: #fff; color: #172033; }
 .call-quality-listbox.call-select-panel-light .call-quality-option { background: #fff; color: #172033; }
 .call-quality-listbox.call-select-panel-light .call-quality-option.call-quality-option-active { background: #dceafa; }

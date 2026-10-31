@@ -590,7 +590,7 @@ func TestRepositoryGroupMembershipWritesConciseEncryptedSystemEntries(t *testing
 		t.Fatalf("create group: %v", err)
 	}
 	assertSystemEntry(t, ctx, db, secret, group.ID, "")
-	if _, _, err := messaging.NewSender(db, secret).Send(ctx, messaging.SendRequest{SenderID: ownerID, ConversationID: group.ID, ClientMessageID: "before-member-join", Body: "Visible only before joining"}); err != nil {
+	if _, _, err := messaging.NewSender(db, secret).Send(ctx, messaging.SendRequest{SenderID: ownerID, ConversationID: group.ID, ClientMessageID: "before-member-join", Body: "Visible only before joining", ContentType: "text"}); err != nil {
 		t.Fatalf("send before member joins: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestRepositoryGroupMembershipWritesConciseEncryptedSystemEntries(t *testing
 	}
 	assertSystemEntry(t, ctx, db, secret, group.ID, "Owner made Added member an admin.")
 	for index, body := range []string{"History page one", "History page two", "History page three"} {
-		request := messaging.SendRequest{SenderID: ownerID, ConversationID: group.ID, ClientMessageID: fmt.Sprintf("history-page-%d", index), Body: body}
+		request := messaging.SendRequest{SenderID: ownerID, ConversationID: group.ID, ClientMessageID: fmt.Sprintf("history-page-%d", index), Body: body, ContentType: "text"}
 		if index == 0 {
 			request.Body = "@History page one"
 			request.Mentions = []messaging.Mention{{UserID: addedMemberID, Start: 0, End: 8}}

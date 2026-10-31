@@ -104,6 +104,140 @@ test('real Angular worker detects and activates a second production version', as
   }
 });
 
+// Acceptance matrix: pending root restore, both themes at 2560/1440/1024/390;
+// refresh success and 401 complete to home and login respectively. The root
+// has no selected/empty conversation state until navigation has completed.
+for (const outcome of ['success', 'unauthorized'] as const) {
+  test(`production root loading is centered during delayed ${outcome} restore`, async ({page, context}, testInfo) => {
+    test.setTimeout(60_000);
+    const {server, origin} = await startProductionServer();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => release = resolve);
+    let refreshes = 0;
+    const binding = {subject: crypto.randomUUID(), browser_id: crypto.randomUUID(), generation: crypto.randomUUID()};
+    const pageErrors: string[] = [];
+    const homeRequests = new Set<string>();
+    page.on('pageerror', error => pageErrors.push(error.message));
+    try {
+      await page.goto(`${origin}/pending`);
+      await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+      await page.reload();
+      await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+      await page.evaluate(value => localStorage.setItem('zwei.intended-session', JSON.stringify(value)), binding);
+      if (outcome === 'unauthorized') await page.evaluate(() => sessionStorage.setItem('zwei.pwa.offline', 'true'));
+      // Do not contact production services from the fixture.
+      // Context routes also intercept the service worker's own fetches.
+      await context.route('https://*.chat.false.tel/**', route => route.abort());
+      const cors = {'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'authorization, content-type'};
+      await context.route(/https:\/\/(?:auth|api)\.chat\.false\.tel\/api\/(?:auth\/(?:me|media-policy|ws-ticket)|chat\/(?:conversations|groups))(?:\?.*)?$/, async route => {
+        if (route.request().method() === 'OPTIONS') { await route.fulfill({status: 204, headers: cors}); return; }
+        const path = new URL(route.request().url()).pathname;
+        homeRequests.add(path);
+        const body = path === '/api/auth/me' ? {id: binding.subject, email: 'fixture@example.test', display_name: 'Fixture User', retention_period: 'forever', auto_load_approved_media: false, alert_mode: 'off'} :
+          path === '/api/auth/media-policy' ? {giphy_enabled: false} :
+          path === '/api/auth/ws-ticket' ? {ticket: 'fixture-ticket'} :
+          path === '/api/chat/groups' ? {items: [], next_cursor: null} : [];
+        await route.fulfill({status: 200, headers: cors, json: body});
+      });
+      await context.routeWebSocket('wss://ws.chat.false.tel/ws/v3**', socket => {
+        socket.send(JSON.stringify({version: 3, type: 'presence.snapshot', payload: {user_ids: []}}));
+      });
+      await context.route('https://auth.chat.false.tel/api/auth/v2/refresh', async route => {
+        if (route.request().method() === 'OPTIONS') {
+          await route.fulfill({status: 204, headers: cors});
+          return;
+        }
+        refreshes++;
+        expect(route.request().postDataJSON()).toEqual({browser_id: binding.browser_id, generation: binding.generation});
+        await pending;
+        const token = `x.${Buffer.from(JSON.stringify({sub: binding.subject})).toString('base64url')}.x`;
+        const status = outcome === 'unauthorized' ? 401 : 200;
+        await route.fulfill({status, headers: cors, json: status === 200 ? {access_token: token, token_type: 'Bearer', expires_in: 3600, browser_id: binding.browser_id, generation: binding.generation} : {error: 'unavailable'}});
+      });
+      await page.goto(`${origin}/`, {waitUntil: 'domcontentloaded'});
+      await expect.poll(() => refreshes).toBe(1);
+      expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+      const spinner = page.locator('app-root-redirect .lds-ring');
+      await expect(spinner).toBeVisible();
+      for (const theme of ['dark-theme', 'light-theme']) {
+        await page.evaluate(selected => {
+          for (const element of [document.documentElement, document.body]) {
+            element.classList.toggle('dark-theme', selected === 'dark-theme');
+            element.classList.toggle('light-theme', selected === 'light-theme');
+          }
+        }, theme);
+        for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+          await page.setViewportSize(viewport);
+          const layout = await spinner.evaluate(node => {
+            const rect = node.getBoundingClientRect();
+            const content = document.querySelector('.app-content')!.getBoundingClientRect();
+            const header = document.querySelector('app-header')!.getBoundingClientRect();
+            const banner = document.querySelector('.offline-banner')?.getBoundingClientRect();
+            const ringColor = getComputedStyle(node.firstElementChild!).borderTopColor;
+            const canvasColor = getComputedStyle(document.querySelector('.app-shell')!).backgroundColor;
+            const luminance = (color: string) => {
+              const values = color.match(/\d+(?:\.\d+)?/g)!.slice(0, 3).map(Number).map(value => {
+                const c = value / 255;
+                return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
+              });
+              return values[0] * .2126 + values[1] * .7152 + values[2] * .0722;
+            };
+            const a = luminance(ringColor), b = luminance(canvasColor);
+            return {dx: Math.abs((rect.left + rect.right - content.left - content.right) / 2), dy: Math.abs((rect.top + rect.bottom - content.top - content.bottom) / 2), contained: rect.left >= content.left && rect.right <= content.right && rect.top >= content.top && rect.bottom <= content.bottom, belowHeader: rect.top >= header.bottom, belowBanner: !banner || rect.top >= banner.bottom, bannerVisible: !!banner, noOverflow: document.documentElement.scrollWidth <= innerWidth, contrast: (Math.max(a, b) + .05) / (Math.min(a, b) + .05)};
+          });
+          expect(layout.dx, `${theme} ${viewport.width} horizontal center`).toBeLessThan(2);
+          expect(layout.dy, `${theme} ${viewport.width} vertical center`).toBeLessThan(2);
+          expect(layout.contained && layout.belowHeader && layout.belowBanner && layout.noOverflow).toBe(true);
+          expect(layout.bannerVisible).toBe(outcome === 'unauthorized');
+          expect(layout.contrast).toBeGreaterThanOrEqual(3);
+          await page.screenshot({path: testInfo.outputPath(`root-loading-${outcome}-${theme}-${viewport.width}.png`)});
+        }
+      }
+      const status = page.locator('app-root-redirect').getByRole('status');
+      await expect(status).toBeVisible();
+      await expect(status).toHaveText('Restoring session');
+      await expect(status).toHaveAttribute('aria-live', 'polite');
+      await expect(status).toHaveAttribute('aria-atomic', 'true');
+      await expect(status.locator('.visually-hidden')).toHaveCSS('position', 'absolute');
+      await page.emulateMedia({reducedMotion: 'reduce'});
+      expect(await spinner.locator('div').first().evaluate(node => getComputedStyle(node).animationName)).toBe('none');
+      release();
+      await expect(page).toHaveURL(new RegExp(outcome === 'success' ? '/home$' : '/login$'));
+      await expect(spinner).toHaveCount(0);
+      if (outcome === 'success') {
+        await expect(page.getByRole('heading', {name: 'Chats'})).toBeVisible();
+        await expect(page.getByText('No conversations yet.')).toBeVisible();
+        await expect(page.getByText('Could not load chats.')).toHaveCount(0);
+        await expect.poll(() => ['/api/auth/me', '/api/auth/media-policy', '/api/auth/ws-ticket', '/api/chat/conversations', '/api/chat/groups'].every(path => homeRequests.has(path))).toBe(true);
+      } else await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
+      if (outcome === 'success') expect(refreshes).toBe(1);
+      expect(pageErrors).toEqual([]);
+    } finally {
+      release();
+      await page.close();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+}
+
+test('production root sends an anonymous browser to sign in without refreshing', async ({page, context}) => {
+  const {server, origin} = await startProductionServer();
+  let refreshes = 0;
+  try {
+    await context.route('https://*.chat.false.tel/**', route => {
+      if (new URL(route.request().url()).pathname === '/api/auth/v2/refresh') refreshes++;
+      return route.abort();
+    });
+    await page.goto(`${origin}/`);
+    await expect(page).toHaveURL(`${origin}/login`);
+    await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
+    expect(refreshes).toBe(0);
+  } finally {
+    await page.close();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
 test('production service worker renders the login app shell offline without caching private data', async ({page, context}, testInfo) => {
   const {server, origin} = await startProductionServer();
   try {

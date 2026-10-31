@@ -1,5 +1,9 @@
-import {expect, Page, test} from '@playwright/test';
+import {expect, Page, test, WebSocketRoute} from '@playwright/test';
 import {restoreSession, fixtureToken} from './session-helpers';
+
+// Failure traces contain authentication traffic and WebSocket ticket URLs.
+// Keep screenshots and errors, but never retain a trace for this spec.
+test.use({trace: 'off'});
 
 const authBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
 const chatBase = process.env.CHAT_BASE_URL ?? 'https://chat.localhost';
@@ -13,7 +17,7 @@ const paginationViewports = [
 ] as const;
 
 type Token = {access_token: string; token_type: string};
-type GroupWire = {id: string; name: string};
+type GroupWire = {id: string; name: string; membership_revision: number};
 type GroupPageWire = {items: GroupWire[]; next_cursor: string | null};
 
 function uniqueEmail(name: string): string {
@@ -109,6 +113,81 @@ async function createGroups(page: Page, token: Token, targetID: string, ownerLab
   }
   return groups;
 }
+
+function isFixtureCreationProjection(message: string | Buffer, revisions: ReadonlyMap<string, number>): boolean {
+  if (typeof message !== 'string') return false;
+  try {
+    const event: unknown = JSON.parse(message);
+    if (typeof event !== 'object' || event === null || !('version' in event) || event.version !== 3 || !('type' in event) || event.type !== 'group.membership.changed' || !('payload' in event)) return false;
+    const payload = event.payload;
+    return typeof payload === 'object' && payload !== null && 'conversation_id' in payload && typeof payload.conversation_id === 'string'
+      && 'membership_revision' in payload && revisions.has(payload.conversation_id) && revisions.get(payload.conversation_id) === payload.membership_revision
+      && 'deleted' in payload && payload.deleted === false;
+  } catch {
+    return false;
+  }
+}
+
+function forwardSocketExceptFixtureCreations(socket: WebSocketRoute, server: Pick<WebSocketRoute, 'onMessage' | 'send'>, revisions: ReadonlyMap<string, number>): void {
+  server.onMessage(message => {
+    if (!isFixtureCreationProjection(message, revisions)) socket.send(message);
+  });
+  socket.onMessage(message => server.send(message));
+}
+
+test('pagination fixture filters only the known creation projections', () => {
+  const revisions = new Map([['fixture-group', 1]]);
+  const projection = (overrides: object = {}, payload: object = {}) => JSON.stringify({
+    version: 3, type: 'group.membership.changed', ...overrides,
+    payload: {conversation_id: 'fixture-group', membership_revision: 1, deleted: false, ...payload},
+  });
+  expect(isFixtureCreationProjection(projection(), revisions)).toBe(true);
+  expect(isFixtureCreationProjection(projection(), revisions)).toBe(true); // Retries must also be filtered.
+  for (const message of [
+    projection({}, {conversation_id: 'other-group'}), projection({}, {membership_revision: 2}),
+    projection({}, {deleted: true}), projection({version: 2}), projection({type: 'conversation.created'}),
+    '{invalid', Buffer.from(projection()),
+  ]) expect(isFixtureCreationProjection(message, revisions)).toBe(false);
+});
+
+test('pagination socket fixture filters retries and forwards other frames in both directions', async ({page}) => {
+  const revisions = new Map([['fixture-group', 1]]);
+  const event = (id: string, revision: number) => JSON.stringify({version: 3, type: 'group.membership.changed', payload: {conversation_id: id, membership_revision: revision, deleted: false}});
+  const matching = event('fixture-group', 1);
+  const newer = event('fixture-group', 2);
+  const unrelated = event('other-group', 1);
+  const sentinel = JSON.stringify({version: 3, type: 'presence.snapshot', payload: {user_ids: []}});
+  const outbound: Array<string | Buffer> = [];
+  await page.routeWebSocket('wss://fixture.invalid/ws', socket => {
+    let receiveFromServer: ((message: string | Buffer) => void) | undefined;
+    const server: Pick<WebSocketRoute, 'onMessage' | 'send'> = {
+      onMessage: handler => { receiveFromServer = handler; },
+      send: message => {
+        outbound.push(message);
+        if (!receiveFromServer) throw new Error('Socket fixture upstream is not connected');
+        for (const frame of [matching, matching, unrelated, newer, sentinel]) receiveFromServer(frame);
+      },
+    };
+    forwardSocketExceptFixtureCreations(socket, server, revisions);
+  });
+  // WebSocket routes apply to pages navigated after route installation.
+  await page.goto('data:text/html,<title>Socket fixture</title>');
+  const received = await page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+    const frames: string[] = [];
+    const socket = new WebSocket('wss://fixture.invalid/ws');
+    socket.onopen = () => socket.send('fixture-outbound');
+    socket.onerror = () => reject(new Error('Fixture WebSocket failed'));
+    socket.onmessage = event => {
+      frames.push(event.data);
+      if (event.data === JSON.stringify({version: 3, type: 'presence.snapshot', payload: {user_ids: []}})) {
+        socket.close();
+        resolve(frames);
+      }
+    };
+  }));
+  expect(outbound).toEqual(['fixture-outbound']);
+  expect(received).toEqual([unrelated, newer, sentinel]);
+});
 
 async function expectGroupPageErrorAppearance(page: Page, width: number): Promise<void> {
   const list = page.locator('.people-list');
@@ -269,10 +348,8 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
     const [ownerOneToken, ownerTwoToken] = await Promise.all([loginToken(ownerOne, ownerOneEmail), loginToken(ownerTwo, ownerTwoEmail)]);
     const [ownerOneTargetID, ownerTwoTargetID] = await Promise.all([userID(ownerOne, ownerOneToken, targetEmail), userID(ownerTwo, ownerTwoToken, targetEmail)]);
     expect(ownerTwoTargetID).toBe(ownerOneTargetID);
-    // Keep the target offline while the owners create groups. Otherwise the
-    // 26 conversation.created events can race first-page refreshes: a refresh
-    // that omits a previously observed group correctly quarantines it as a
-    // generic verification row, independently of the 25-row page contract.
+    // Keep creation out of the first-page UI; outbox notifications can still
+    // be published after reconnect, so the new socket filters those below.
     const targetBinding = await target.evaluate(() => localStorage.getItem('zwei.intended-session'));
     await target.close();
     const [firstOwnerGroups, secondOwnerGroups] = await Promise.all([
@@ -281,8 +358,17 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
     ]);
     const expectedGroups = [...firstOwnerGroups, ...secondOwnerGroups];
     const expectedNames = expectedGroups.map(group => group.name).sort();
+    expect(expectedGroups).toHaveLength(26);
+    expect(new Set(expectedGroups.map(group => group.id)).size).toBe(26);
+    expect(expectedGroups.every(group => Number.isSafeInteger(group.membership_revision) && group.membership_revision > 0)).toBe(true);
+    const creationRevisions = new Map(expectedGroups.map(group => [group.id, group.membership_revision]));
 
     target = await targetContext.newPage();
+    // Forward every other socket frame unchanged, in both directions. Keep
+    // filtering fixture creation retries for the lifetime of this test socket.
+    await target.routeWebSocket('**/ws/v3?ticket=*', socket => {
+      forwardSocketExceptFixtureCreations(socket, socket.connectToServer(), creationRevisions);
+    });
     const firstPageResponsePromise = target.waitForResponse(response => {
       const url = new URL(response.url());
       return response.request().method() === 'GET' && url.pathname === '/api/chat/groups' && url.searchParams.get('limit') === '25' && !url.searchParams.has('cursor');
@@ -293,6 +379,7 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
     const firstPage = await firstPageResponse.json() as GroupPageWire;
     expect(firstPage.items).toHaveLength(25);
     expect(firstPage.next_cursor).toBeTruthy();
+    await expect.poll(() => target.locator('.chat-presence').textContent(), {message: 'Unrelated realtime traffic must reach the target socket', timeout: 10_000}).toBe('Live connection');
     const renderedFirstPage = await target.locator('.person-option').evaluateAll(rows => rows.map(row => ({id: row.getAttribute('data-conversation-id'), name: row.querySelector('strong')?.textContent?.trim() ?? ''})));
     expect(renderedFirstPage).toHaveLength(25);
     const firstPageIDs = renderedFirstPage.map(row => row.id);

@@ -1,4 +1,5 @@
 .DEFAULT_GOAL := help
+APP_NAME ?= messenger
 export SPEC TEST
 
 ifeq (exec,$(firstword $(MAKECMDGOALS)))
@@ -54,7 +55,7 @@ frontend-build: ## - Run the Angular production build in the already-running fro
 
 .PHONY: test
 test: ## - Run Go tests in containers
-	make -C infrastructure exec auth sh -lc 'go test ./...'
+	docker compose -p $(APP_NAME) -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml exec -T auth go test ./...
 
 .PHONY: e2e
 e2e: ## - Run Playwright browser E2E tests in Docker
@@ -63,6 +64,10 @@ e2e: ## - Run Playwright browser E2E tests in Docker
 .PHONY: e2e-parallel
 e2e-parallel: ## - Run two isolated Playwright groups concurrently in Docker
 	make -C infrastructure e2e-parallel
+
+.PHONY: e2e-turn
+e2e-turn: ## - Run isolated actual TURN relay credential renewal acceptance
+	make -C infrastructure e2e-turn
 
 .PHONY: e2e-one
 e2e-one: ## - Run one Playwright test in a spec through isolated setup (SPEC=tests/...spec.ts TEST='test title')
@@ -78,9 +83,9 @@ trust-local-ca: ## - Trust the Docker-generated local CA on macOS
 
 .PHONY: format
 format: ## - Format all Go source files in containers
-	make -C infrastructure exec auth sh -lc 'go list -f "{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}" ./... | xargs gofmt -w'
+	docker compose -p $(APP_NAME) -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml exec -T auth sh -c 'go list -f "{{range .GoFiles}}{{$$.Dir}}/{{.}} {{end}}" ./... | xargs gofmt -w'
 
 
 .PHONY: lint
 lint: ## - Run Go vet in containers
-	make -C infrastructure exec auth sh -lc 'go vet ./...'
+	docker compose -p $(APP_NAME) -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.override.yml exec -T auth go vet ./...

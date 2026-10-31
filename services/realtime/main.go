@@ -59,7 +59,7 @@ func main() {
 	}
 	encryptionSecret := getenv("MESSAGE_ENCRYPTION_KEY", "local-development-key-change-me")
 	turnURLs := strings.Split(getenv("TURN_URLS", "turn:turn.chat.localhost:3478?transport=udp,turn:turn.chat.localhost:3478?transport=tcp"), ",")
-	turnIssuer, err := turninfra.NewCredentialIssuer(getenv("TURN_SHARED_SECRET", "local-development-turn-shared-secret-change-me"), turnURLs, 2*time.Hour)
+	turnIssuer, err := turninfra.NewCredentialIssuer(getenv("TURN_SHARED_SECRET", "local-development-turn-shared-secret-change-me"), turnURLs, turnCredentialLifetime)
 	if err != nil {
 		panic(err)
 	}
@@ -112,9 +112,6 @@ func main() {
 	go func() {
 		superviseRedisSubscription(ctx, func(subscriptionContext context.Context) error {
 			return coordination.ConsumeReads(subscriptionContext, func(change redisinfra.ReadChange) {
-				if len(change.RecipientIDs) == 0 && change.RecipientID != uuid.Nil {
-					change.RecipientIDs = []uuid.UUID{change.RecipientID}
-				}
 				hub.DeliverReadCursor(change.ReaderID, change.RecipientIDs, change.ConversationID, change.Sequence, change.VisibleFromSequence)
 			})
 		})
@@ -145,7 +142,13 @@ func main() {
 				// stops with the process context. Redis TTL retains only a short
 				// terminal snapshot; it cannot itself notify the room participants.
 				if rooms, err := coordination.ExpireGroupRooms(ctx, 100); err == nil {
-					hub.NotifyExpiredGroupRooms(ctx, rooms)
+					for _, room := range rooms {
+						if hub.NotifyExpiredGroupRoom(ctx, room) == nil {
+							if err := coordination.AckExpiredGroupRoom(ctx, room); err != nil {
+								logger.Warn("group call expiry acknowledgement failed")
+							}
+						}
+					}
 				}
 			}
 		}
@@ -168,7 +171,7 @@ func main() {
 		go func() { defer close(callPushDone); queue.Run(ctx) }()
 	}
 	mux := runtime.NewHealthHandler("realtime")
-	mux.Handle("GET /ws/v2", websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins))
+	registerWebSocketRoutes(mux, websockettransport.NewHandler(ctx, hub, sharedauth.NewSessionValidator(db, []byte(secret)), coordination, origins))
 	server := &http.Server{
 		Addr:    ":" + getenv("REALTIME_PORT", "8083"),
 		Handler: mux,
@@ -185,6 +188,13 @@ func main() {
 	if serverErr != nil {
 		panic(serverErr)
 	}
+}
+
+func registerWebSocketRoutes(mux *http.ServeMux, handler http.Handler) {
+	mux.Handle("GET /ws/v3", handler)
+	mux.HandleFunc("/ws/v2", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unsupported websocket protocol version", http.StatusUpgradeRequired)
+	})
 }
 
 func newCallPushQueue(db *pgxpool.Pool, presence *redisinfra.PresenceCoordinator, calls application.CallCoordinator, authorizer application.GroupCallAuthorizer) (*callpush.Queue, error) {
@@ -348,6 +358,8 @@ func processConversationEvents(ctx context.Context, outbox conversationEventOutb
 			err = hub.NotifyConversationCreated(eventCtx, event.ConversationID, event.UserIDs)
 		}
 		if err == nil {
+			// This marks the outbox projection, not delivery of an ephemeral
+			// group-call terminal event or its receipt by every client.
 			err = outbox.MarkProcessed(eventCtx, event)
 		}
 		cancelEvent()

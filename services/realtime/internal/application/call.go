@@ -74,9 +74,10 @@ type CallChange struct {
 // ICEServer is the browser-safe TURN configuration for one call participant.
 // It deliberately contains no shared TURN secret.
 type ICEServer struct {
-	URLs       []string `json:"urls"`
-	Username   string   `json:"username"`
-	Credential string   `json:"credential"`
+	URLs       []string  `json:"urls"`
+	Username   string    `json:"username"`
+	Credential string    `json:"credential"`
+	ExpiresAt  time.Time `json:"-"`
 }
 
 type TURNCredentialIssuer interface {

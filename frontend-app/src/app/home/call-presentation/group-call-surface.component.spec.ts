@@ -104,6 +104,47 @@ describe('GroupCallSurfaceComponent', () => {
         ]);
     });
 
+    it('announces peer recovery while retaining the active call and leave control', () => {
+        const warning = 'A participant connection failed. Leave and rejoin the group call to reconnect.';
+        component.state = {...activeState(), statusLabel: warning, errorLabel: warning};
+        component.profile = {...profile, status: warning, error: true};
+        component.ongoing = true;
+        fixture.detectChanges();
+        const surface = fixture.nativeElement as HTMLElement;
+        expect(surface.querySelector('[role="alert"]')?.textContent).toContain(warning);
+        expect(surface.querySelector('.group-call-leave')).not.toBeNull();
+        expect(surface.querySelector('.group-call-roster')).not.toBeNull();
+    });
+
+    it('shows invitation ringing only while known group members have not joined', () => {
+        component.state = {...activeState(), invitationRinging: true};
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('.group-invitation-status')).not.toBeNull();
+        fixture.componentRef.setInput('memberIDs', ['user-1', 'user-2', 'user-3']);
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('.group-invitation-status')).not.toBeNull();
+        fixture.componentRef.setInput('memberIDs', ['user-1', 'user-2']);
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('.group-invitation-status')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.group-call-roster')).not.toBeNull();
+    });
+
+    it('offers accessible Stay and End choices even when minimized', () => {
+        component.state = {...activeState(), soloPrompt: true};
+        component.minimized = true;
+        const intents: unknown[] = [];
+        component.intent.subscribe(intent => intents.push(intent));
+        fixture.detectChanges();
+        const prompt = (fixture.nativeElement as HTMLElement).querySelector('.group-solo-prompt');
+        expect(prompt?.getAttribute('aria-labelledby')).toBe('group-solo-prompt-title');
+        expect(prompt?.querySelector('[role="status"]')?.textContent).toContain('No one has joined');
+        const buttons = prompt?.querySelectorAll('button');
+        expect(buttons?.length).toBe(2);
+        buttons?.[0].click();
+        buttons?.[1].click();
+        expect(intents).toEqual([{type: 'stay'}, {type: 'end'}]);
+    });
+
     it('shows a compact header copy control for a server reference and omits it for older servers', () => {
         fixture.componentRef.setInput('state', {...activeState(), supportRef: 'group-ref-1'});
         fixture.componentRef.setInput('ongoing', true);

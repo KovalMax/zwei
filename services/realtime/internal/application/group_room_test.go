@@ -17,6 +17,100 @@ import (
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 )
 
+func TestGroupCallSignalNegotiationIDShape(t *testing.T) {
+	for _, tc := range []struct {
+		signal string
+		valid  bool
+	}{
+		{`{"type":"offer","sdp":"opaque","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}`, true},
+		{`{"type":"answer","sdp":"opaque","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}`, true},
+		{`{"type":"offer","sdp":"opaque"}`, false},
+		{`{"type":"answer","sdp":"opaque","negotiation_id":"bad"}`, false},
+		{`{"type":"answer","sdp":"opaque","negotiation_id":"00000000-0000-0000-0000-000000000000"}`, false},
+		{`{"type":"offer","sdp":"opaque","negotiation_id":42}`, false},
+		{`{"type":"candidate","candidate":{"candidate":"","usernameFragment":"ice","sdpMid":"audio"}}`, true},
+		{`{"type":"screen-share-started"}`, true},
+		{`{"type":"candidate","candidate":{},"negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}`, false},
+	} {
+		if got := validGroupCallSignal(json.RawMessage(tc.signal)); got != tc.valid {
+			t.Errorf("signal %s: got %v, want %v", tc.signal, got, tc.valid)
+		}
+	}
+}
+
+func TestGroupCandidateIdentity(t *testing.T) {
+	const prefix = `{"type":"candidate","candidate":`
+	for _, tc := range []struct {
+		name, candidate string
+		valid           bool
+	}{
+		{"empty marker", `{"candidate":"","usernameFragment":"abc","sdpMid":"0"}`, true},
+		{"line ufrag", `{"candidate":"candidate:1 1 udp 1 example.invalid 9 typ host ufrag abc","sdpMLineIndex":0}`, true},
+		{"line tab separator", `{"candidate":"candidate:1\t1 udp 1 x 9 typ host ufrag abc","sdpMLineIndex":0}`, true},
+		{"line non-ascii separator", `{"candidate":"candidate:1\u00a01 udp 1 x 9 typ host ufrag abc","sdpMLineIndex":0}`, false},
+		{"line non-ascii token", `{"candidate":"candidate:a\u00a0b 1 udp 1 x 9 typ host ufrag abc","sdpMLineIndex":0}`, true},
+		{"non-ascii username whitespace", `{"candidate":"","usernameFragment":"a\u0085b","sdpMid":"0"}`, false},
+		{"both selectors", `{"candidate":"","usernameFragment":"abc","sdpMid":"0","sdpMLineIndex":65535}`, true},
+		{"null optional fields", `{"candidate":"","usernameFragment":"abc","sdpMid":null,"sdpMLineIndex":0}`, true},
+		{"integral number", `{"candidate":"","usernameFragment":"abc","sdpMLineIndex":1.0}`, true},
+		{"missing identity", `{}`, false},
+		{"missing ufrag", `{"candidate":"","sdpMid":"0"}`, false},
+		{"missing selector", `{"candidate":"","usernameFragment":"abc"}`, false},
+		{"negative index", `{"candidate":"","usernameFragment":"abc","sdpMLineIndex":-1}`, false},
+		{"index overflow", `{"candidate":"","usernameFragment":"abc","sdpMLineIndex":65536}`, false},
+		{"fractional index", `{"candidate":"","usernameFragment":"abc","sdpMLineIndex":1.5}`, false},
+		{"invalid line", `{"candidate":"opaque","usernameFragment":"abc","sdpMid":"0"}`, false},
+		{"conflicting ufrag", `{"candidate":"candidate:1 1 udp 1 x 9 typ host ufrag old","usernameFragment":"new","sdpMid":"0"}`, false},
+		{"duplicate ufrag", `{"candidate":"candidate:1 1 udp 1 x 9 typ host ufrag old ufrag old","sdpMid":"0"}`, false},
+		{"unknown field", `{"candidate":"","usernameFragment":"abc","sdpMid":"0","extra":true}`, false},
+		{"incorrect field case", `{"Candidate":"","usernameFragment":"abc","sdpMid":"0"}`, false},
+		{"oversized mid", `{"candidate":"","usernameFragment":"abc","sdpMid":"` + strings.Repeat("a", 257) + `"}`, false},
+		{"oversized ufrag", `{"candidate":"","usernameFragment":"` + strings.Repeat("a", 257) + `","sdpMid":"0"}`, false},
+		{"oversized line", `{"candidate":"candidate:1 1 udp 1 x 9 typ host ` + strings.Repeat("a", 4096) + `","usernameFragment":"abc","sdpMid":"0"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validGroupCallSignal(json.RawMessage(prefix + tc.candidate + `}`)); got != tc.valid {
+				t.Fatalf("valid = %v, want %v", got, tc.valid)
+			}
+		})
+	}
+}
+
+func TestGroupCallSignalRoutesOnlyToOwningSocket(t *testing.T) {
+	ownerID, peerID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	room := GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 3, Generation: 1, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner", ConnectionID: "owner-socket"}, {UserID: peerID, DeviceID: "peer", ConnectionID: "peer-socket"}}}
+	presence := &groupTestPresence{revision: 3, memberIDs: []uuid.UUID{ownerID, peerID}}
+	var logs bytes.Buffer
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, &groupTestRooms{room: room}, nil, nil, nil, nil, nil, slog.New(slog.NewJSONHandler(&logs, nil)))
+	owner := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "owner"}, connectionID: "owner-socket"}
+	sibling := &recordingClient{identity: owner.identity, connectionID: "sibling"}
+	peer := &recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: "peer"}, connectionID: "peer-socket"}
+	for _, client := range []*recordingClient{owner, sibling, peer} {
+		hub.Add(context.Background(), client)
+		client.events = nil
+	}
+	for _, signal := range []string{
+		`{"type":"answer","sdp":"private","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}`,
+		`{"type":"candidate","candidate":{"candidate":"","sdpMid":"audio","sdpMLineIndex":0,"usernameFragment":"secret-fragment"}}`,
+	} {
+		owner.events, sibling.events = nil, nil
+		request := `{"version":3,"type":"group.call.signal","request_id":"signal","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + ownerID.String() + `","target_device_id":"owner","signal":` + signal + `}}`
+		if err := hub.HandleVersion(context.Background(), peer, 3, []byte(request)); err != nil {
+			t.Fatal(err)
+		}
+		if len(owner.events) != 1 || len(sibling.events) != 0 {
+			t.Fatalf("events: owner=%d sibling=%d", len(owner.events), len(sibling.events))
+		}
+		payload, err := json.Marshal(owner.events[0].(serverEvent).Payload)
+		if err != nil || !bytes.Contains(payload, []byte(signal)) {
+			t.Fatalf("signal not preserved, err=%v", err)
+		}
+	}
+	if strings.Contains(logs.String(), "secret-fragment") || strings.Contains(logs.String(), "private") {
+		t.Fatal("signal content leaked into logs")
+	}
+}
+
 func TestHubRejectsExtraFieldsOnGroupScreenShareMarkers(t *testing.T) {
 	for _, signal := range []string{
 		`{"type":"screen-share-started","sdp":"private"}`,
@@ -25,12 +119,23 @@ func TestHubRejectsExtraFieldsOnGroupScreenShareMarkers(t *testing.T) {
 		t.Run(signal, func(t *testing.T) {
 			client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New(), DeviceID: "device"}}
 			hub := NewHubWithGroupCallAuthorizer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-			request := `{"version":2,"type":"group.call.signal","request_id":"group-signal-shape","payload":{"conversation_id":"` + uuid.NewString() + `","room_id":"` + uuid.NewString() + `","generation":1,"target_user_id":"` + uuid.NewString() + `","target_device_id":"target","signal":` + signal + `}}`
-			err := hub.HandleVersion(context.Background(), client, 2, []byte(request))
+			request := `{"version":3,"type":"group.call.signal","request_id":"group-signal-shape","payload":{"conversation_id":"` + uuid.NewString() + `","room_id":"` + uuid.NewString() + `","generation":1,"target_user_id":"` + uuid.NewString() + `","target_device_id":"target","signal":` + signal + `}}`
+			err := hub.HandleVersion(context.Background(), client, 3, []byte(request))
 			if err == nil || !strings.Contains(err.Error(), "invalid group call signal") {
 				t.Fatalf("HandleVersion() error = %v, want invalid group call signal", err)
 			}
 		})
+	}
+}
+
+func TestHubRejectsInvalidGroupNegotiationIDBeforeRouting(t *testing.T) {
+	client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New(), DeviceID: "device"}}
+	hub := NewHubWithGroupCallAuthorizer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	for _, signal := range []string{`{"type":"offer","sdp":"private"}`, `{"type":"answer","sdp":"private","negotiation_id":"invalid"}`, `{"type":"candidate","candidate":{"candidate":"","sdpMid":"audio"}}`} {
+		request := `{"version":3,"type":"group.call.signal","request_id":"invalid","payload":{"conversation_id":"` + uuid.NewString() + `","room_id":"` + uuid.NewString() + `","generation":1,"target_user_id":"` + uuid.NewString() + `","target_device_id":"target","signal":` + signal + `}}`
+		if err := hub.HandleVersion(context.Background(), client, 3, []byte(request)); err == nil || err.Error() != "invalid group call signal" {
+			t.Fatalf("expected invalid group call signal, got %v", err)
+		}
 	}
 }
 
@@ -47,7 +152,7 @@ func TestHubStartsGroupRoomOnlyForCurrentV2Member(t *testing.T) {
 	hub.Add(context.Background(), member)
 	member.events = nil
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.start","request_id":"start-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.start","request_id":"start-1","payload":{"attempt_id":"00000000-0000-4000-8000-000000000001","conversation_id":"`+conversationID.String()+`"}}`))
 	if err != nil {
 		t.Fatalf("start group room: %v", err)
 	}
@@ -60,6 +165,9 @@ func TestHubStartsGroupRoomOnlyForCurrentV2Member(t *testing.T) {
 	if len(pushQueue.jobs) != 1 || pushQueue.jobs[0].CallID != rooms.room.ID || !pushQueue.jobs[0].Group || len(pushQueue.jobs[0].Recipients) != 1 || pushQueue.jobs[0].Recipients[0] != memberID || pushQueue.jobs[0].StarterID != userID {
 		t.Fatalf("group call push job = %+v; want authorized member only, excluding starter", pushQueue.jobs)
 	}
+	if !pushQueue.jobs[0].ExpiresAt.Equal(rooms.room.RingExpiresAt) || !rooms.room.RingExpiresAt.Before(rooms.room.ExpiresAt) {
+		t.Fatalf("push must expire at invitation deadline, not room deadline: job=%+v room=%+v", pushQueue.jobs[0], rooms.room)
+	}
 }
 
 func TestGroupCallStartLinearizesWithMembershipRevocation(t *testing.T) {
@@ -68,9 +176,9 @@ func TestGroupCallStartLinearizesWithMembershipRevocation(t *testing.T) {
 	rooms := &orderedGroupStartRooms{groupTestRooms: groupTestRooms{}, entered: make(chan struct{}), continueStart: make(chan struct{}), order: order}
 	hub := NewHubWithGroupCallAuthorizer(nil, order, order, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "device"}, connectionID: "socket"}
-	request := []byte(`{"version":2,"type":"group.call.start","request_id":"start-1","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
+	request := []byte(`{"version":3,"type":"group.call.start","request_id":"start-1","payload":{"attempt_id":"00000000-0000-4000-8000-000000000001","conversation_id":"` + conversationID.String() + `"}}`)
 	started := make(chan error, 1)
-	go func() { started <- hub.HandleVersion(context.Background(), client, 2, request) }()
+	go func() { started <- hub.HandleVersion(context.Background(), client, 3, request) }()
 	<-rooms.entered // Redis Start is inside the held PostgreSQL-style lease.
 
 	revocationStarted := make(chan struct{})
@@ -129,8 +237,8 @@ func TestGroupCallDiscoveryReturnsOnlyCurrentJoinableRoom(t *testing.T) {
 			authorizer := &discoveryAuthorizer{groupTestPresence: &groupTestPresence{}, revision: test.revision, memberIDs: []uuid.UUID{ownerID, memberID}}
 			hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
 			client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "owner"}, connectionID: "owner-socket"}
-			request := []byte(`{"version":2,"type":"group.call.discover","request_id":"discover-1","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
-			if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+			request := []byte(`{"version":3,"type":"group.call.discover","request_id":"discover-1","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
+			if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 				t.Fatalf("discover: %v", err)
 			}
 			if len(client.events) != 1 {
@@ -172,7 +280,7 @@ func TestGroupCallDiscoveryRejectsNonmemberWithoutRoomDisclosure(t *testing.T) {
 	rooms := &discoveryGroupRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: uuid.New(), ConversationID: conversationID, Status: GroupRoomActive}}}
 	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"private","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.discover","request_id":"private","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 	var requestErr *RequestError
 	if !errors.As(err, &requestErr) || !errors.Is(err, ErrCallNotAllowed) {
 		t.Fatalf("discover error=%v, want not allowed", err)
@@ -188,7 +296,7 @@ func TestGroupCallDiscoveryUsesSharedRealtimeRateLimit(t *testing.T) {
 	rooms := &discoveryGroupRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: uuid.New(), ConversationID: conversationID, MembershipRevision: 1, Generation: 1, Status: GroupRoomActive}}, rateLimited: true}
 	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"limited","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.discover","request_id":"limited","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 	var requestErr *RequestError
 	if !errors.As(err, &requestErr) || !strings.Contains(err.Error(), "rate limit") {
 		t.Fatalf("discover error=%v, want rate limit rejection", err)
@@ -206,7 +314,7 @@ func TestGroupCallFailsClosedWhenCoordinatorLacksSharedRateLimit(t *testing.T) {
 	hub := NewHubWithGroupCallAuthorizer(nil, authorizer, authorizer, coordinator, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}}
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"missing-limiter","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.discover","request_id":"missing-limiter","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 	var requestErr *RequestError
 	if !errors.As(err, &requestErr) || requestErr.RequestID != "missing-limiter" || requestErr.Error() != "call rate limit exceeded" {
 		t.Fatalf("discover error = %#v, want correlated call rate limit rejection", err)
@@ -225,7 +333,7 @@ func TestGroupCallDiscoveryHonorsCancellationAndReleasesLease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- hub.HandleVersion(ctx, client, 2, []byte(`{"version":2,"type":"group.call.discover","request_id":"cancel","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+		done <- hub.HandleVersion(ctx, client, 3, []byte(`{"version":3,"type":"group.call.discover","request_id":"cancel","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 	}()
 	<-rooms.entered
 	cancel()
@@ -252,6 +360,108 @@ type ownershipTestRooms struct {
 	absenceErr  error
 	checkedUser uuid.UUID
 	participant GroupParticipant
+	roomReads   int
+}
+
+type credentialsTestIssuer struct {
+	expiry time.Time
+	err    error
+	calls  int
+}
+
+func (i *credentialsTestIssuer) Issue(_ Call, _ uuid.UUID) (ICEServer, error) {
+	i.calls++
+	return ICEServer{URLs: []string{"turn:example"}, Username: "secret-user", Credential: "secret-value", ExpiresAt: i.expiry}, i.err
+}
+
+func TestGroupCredentialsOwnedSocketOnly(t *testing.T) {
+	user, conversation, roomID := uuid.New(), uuid.New(), uuid.New()
+	expiry := time.Now().UTC().Add(time.Minute).Truncate(time.Second)
+	presence := &groupTestPresence{revision: 9, memberIDs: []uuid.UUID{user}}
+	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversation, Generation: 3, MembershipRevision: 9, Status: GroupRoomRinging, ExpiresAt: expiry.Add(time.Minute), Participants: []GroupParticipant{{UserID: user, DeviceID: "device", ConnectionID: "socket"}}}}, status: "active"}
+	issuer := &credentialsTestIssuer{expiry: expiry}
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, issuer, nil)
+	owner := &recordingClient{identity: sharedauth.Identity{UserID: user, DeviceID: "device"}, connectionID: "socket"}
+	sibling := &recordingClient{identity: owner.identity, connectionID: "sibling"}
+	request := []byte(`{"version":3,"type":"group.call.credentials","request_id":"refresh-1","payload":{"conversation_id":"` + conversation.String() + `","room_id":"` + roomID.String() + `","generation":3}}`)
+	if err := hub.Handle(context.Background(), sibling, request); err == nil || len(sibling.events) != 0 || issuer.calls != 0 {
+		t.Fatal("sibling received credentials")
+	}
+	if err := hub.Handle(context.Background(), owner, request); err != nil {
+		t.Fatal(err)
+	}
+	if len(owner.events) != 1 || len(rooms.published) != 0 {
+		t.Fatal("credentials must be sent only as a direct response")
+	}
+	encoded, err := json.Marshal(owner.events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+		Payload   struct {
+			ICEExpiresAt time.Time   `json:"ice_expires_at"`
+			ICEServers   []ICEServer `json:"ice_servers"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Type != "group.call.credentials" || response.RequestID != "refresh-1" || !response.Payload.ICEExpiresAt.Equal(expiry) || len(response.Payload.ICEServers) != 1 {
+		t.Fatalf("invalid response: %s", encoded)
+	}
+	issuer.err = errors.New("private issuer failure")
+	if err := hub.Handle(context.Background(), owner, request); err == nil || strings.Contains(err.Error(), "private") || len(owner.events) != 1 {
+		t.Fatal("issuer failure must fail closed")
+	}
+	rooms.status = "room_unavailable"
+	issuer.err = nil
+	if err := hub.Handle(context.Background(), owner, request); err == nil || len(owner.events) != 1 {
+		t.Fatal("unavailable room issued credentials")
+	}
+	rooms.status = "active"
+	rooms.room.Generation++
+	if err := hub.Handle(context.Background(), owner, request); err == nil || len(owner.events) != 1 {
+		t.Fatal("stale generation issued credentials")
+	}
+	rooms.room.Generation--
+	owner.sendFailure = true
+	if err := hub.Handle(context.Background(), owner, request); err == nil {
+		t.Fatal("rejected socket enqueue must fail")
+	}
+	owner.sendFailure = false
+	deniedHub := NewHubWithGroupCallAuthorizer(nil, presence, &discoveryAuthorizer{groupTestPresence: presence, err: ErrCallNotAllowed}, rooms, nil, nil, nil, nil, issuer, nil)
+	calls := issuer.calls
+	if err := deniedHub.Handle(context.Background(), owner, request); err == nil || issuer.calls != calls {
+		t.Fatal("revoked member issued credentials")
+	}
+	limitedHub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rateLimitedCoordinator{}, nil, nil, nil, nil, issuer, nil)
+	if err := limitedHub.Handle(context.Background(), owner, request); err == nil || issuer.calls != calls {
+		t.Fatal("rate-limited request issued credentials")
+	}
+}
+
+func TestGroupLifecycleCredentialExpiryOnlyForOwnedSocket(t *testing.T) {
+	user, conversation, roomID := uuid.New(), uuid.New(), uuid.New()
+	expiry := time.Now().UTC().Add(time.Minute).Truncate(time.Second)
+	issuer := &credentialsTestIssuer{expiry: expiry}
+	hub := NewHubWithGroupCallAuthorizer(nil, nil, nil, nil, nil, nil, nil, nil, issuer, nil)
+	owner := &recordingClient{identity: sharedauth.Identity{UserID: user, DeviceID: "device"}, connectionID: "socket"}
+	sibling := &recordingClient{identity: owner.identity, connectionID: "sibling"}
+	room := GroupRoom{ID: roomID, ConversationID: conversation, Generation: 1, Status: GroupRoomRinging, ExpiresAt: expiry.Add(time.Minute), Participants: []GroupParticipant{{UserID: user, DeviceID: "device", ConnectionID: "socket"}}}
+	hub.sendFullGroupRoom(context.Background(), GroupRoomChange{Type: "started"}, room, owner)
+	hub.sendFullGroupRoom(context.Background(), GroupRoomChange{Type: "started"}, room, sibling)
+	ownerJSON, _ := json.Marshal(owner.events[0])
+	siblingJSON, _ := json.Marshal(sibling.events[0])
+	if !bytes.Contains(ownerJSON, []byte(`"ice_expires_at":"`+expiry.Format(time.RFC3339)+`"`)) || !bytes.Contains(ownerJSON, []byte(`"ice_servers"`)) || bytes.Contains(siblingJSON, []byte(`"ice_servers"`)) || issuer.calls != 1 {
+		t.Fatal("credential expiry or socket ownership not preserved in lifecycle event")
+	}
+}
+
+func (r *ownershipTestRooms) GetGroupRoom(ctx context.Context, roomID uuid.UUID) (GroupRoom, error) {
+	r.roomReads++
+	return r.groupTestRooms.GetGroupRoom(ctx, roomID)
 }
 
 func (r *ownershipTestRooms) GroupReservationAbsent(_ context.Context, userID uuid.UUID) (bool, error) {
@@ -271,8 +481,8 @@ func TestGroupCallSyncOwnershipRingingSnapshot(t *testing.T) {
 	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 9, Status: GroupRoomRinging, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}}, status: "active"}
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-	request := []byte(`{"version":2,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
-	if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+	request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(client.events[0])
@@ -284,7 +494,7 @@ func TestGroupCallSyncOwnershipRingingSnapshot(t *testing.T) {
 	}
 	rooms.status = "owned_elsewhere"
 	sibling := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "sibling"}
-	if err := hub.HandleVersion(context.Background(), sibling, 2, request); err != nil {
+	if err := hub.HandleVersion(context.Background(), sibling, 3, request); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err = json.Marshal(sibling.events[0])
@@ -296,7 +506,21 @@ func TestGroupCallSyncOwnershipRingingSnapshot(t *testing.T) {
 	}
 }
 
-func TestGroupCallSyncOwnershipIsOptInAndMinimal(t *testing.T) {
+func TestGroupCallSyncRequiresOwnershipStatus(t *testing.T) {
+	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+	presence := &groupTestPresence{revision: 9, memberIDs: []uuid.UUID{userID}}
+	rooms := &ownershipTestRooms{}
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	for _, field := range []string{"", `,"ownership_status":false`, `,"ownership_status":null`} {
+		client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+		request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3` + field + `}}`)
+		if err := hub.HandleVersion(context.Background(), client, 3, request); err == nil || len(client.events) != 0 {
+			t.Fatalf("field %q: expected rejection without event, got %v %#v", field, err, client.events)
+		}
+	}
+}
+
+func TestGroupCallSyncOwnershipIsMinimal(t *testing.T) {
 	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
 	presence := &groupTestPresence{revision: 9, memberIDs: []uuid.UUID{userID}}
 	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 9, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}}}
@@ -305,8 +529,8 @@ func TestGroupCallSyncOwnershipIsOptInAndMinimal(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			rooms.status = status
 			client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-			request := []byte(`{"version":2,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
-			if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+			request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+			if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 				t.Fatal(err)
 			}
 			encoded, err := json.Marshal(client.events[0])
@@ -331,21 +555,22 @@ func TestGroupCallSyncOwnershipIsOptInAndMinimal(t *testing.T) {
 	denied := &discoveryAuthorizer{groupTestPresence: presence, err: ErrCallNotAllowed}
 	deniedHub := NewHubWithGroupCallAuthorizer(nil, presence, denied, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-	request := []byte(`{"version":2,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
 	reads := rooms.reads
-	if err := deniedHub.HandleVersion(context.Background(), client, 2, request); err != nil {
+	roomReads := rooms.roomReads
+	if err := deniedHub.HandleVersion(context.Background(), client, 3, request); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(client.events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rooms.reads != reads || !bytes.Contains(encoded, []byte(`"ownership_status":"room_unavailable"`)) || bytes.Contains(encoded, []byte("participants")) {
+	if rooms.reads != reads || rooms.roomReads != roomReads || !bytes.Contains(encoded, []byte(`"ownership_status":"room_unavailable"`)) || bytes.Contains(encoded, []byte("participants")) {
 		t.Fatalf("authorization denial classified or disclosed room: %s", encoded)
 	}
 	rooms.absent = true
 	client.events = nil
-	if err := deniedHub.HandleVersion(context.Background(), client, 2, request); err != nil {
+	if err := deniedHub.HandleVersion(context.Background(), client, 3, request); err != nil {
 		t.Fatal(err)
 	}
 	encoded, _ = json.Marshal(client.events[0])
@@ -354,106 +579,194 @@ func TestGroupCallSyncOwnershipIsOptInAndMinimal(t *testing.T) {
 	}
 	rooms.absenceErr = errors.New("redis failed")
 	client.events = nil
-	if err := deniedHub.HandleVersion(context.Background(), client, 2, request); err == nil || len(client.events) != 0 {
+	if err := deniedHub.HandleVersion(context.Background(), client, 3, request); err == nil || len(client.events) != 0 {
 		t.Fatalf("absence failure must fail closed: %v %#v", err, client.events)
 	}
 }
 
-func TestGroupCallSyncReturnsOwnedActiveSnapshotOrMinimalTerminalAck(t *testing.T) {
-	ownerID, otherID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	room := GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 9, Generation: 3, StateRevision: 7, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner-device", ConnectionID: "owner-socket"}, {UserID: otherID, DeviceID: "other-device", ConnectionID: "other-socket"}}}
-	presence := &groupTestPresence{revision: 9, memberIDs: []uuid.UUID{ownerID, otherID}}
-	rooms := &groupTestRooms{room: room}
+func TestGroupCallSyncCleansStaleMembershipWithoutDisclosingRoom(t *testing.T) {
+	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+	presence := &groupTestPresence{revision: 10, memberIDs: []uuid.UUID{userID}}
+	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 9, StateRevision: 7, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID}}}}, status: "room_unavailable"}
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
-	owner := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "owner-device"}, connectionID: "owner-socket"}
-	request := func(roomID uuid.UUID, conversationID uuid.UUID, generation int64) []byte {
-		return []byte(`{"version":2,"type":"group.call.sync","request_id":"sync-1","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":` + fmt.Sprint(generation) + `}}`)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	wrongGeneration := bytes.Replace(request, []byte(`"generation":3`), []byte(`"generation":4`), 1)
+	if err := hub.HandleVersion(context.Background(), client, 3, wrongGeneration); err != nil || rooms.room.Status != GroupRoomActive {
+		t.Fatalf("wrong generation must not end room: %v %#v", err, rooms.room)
 	}
-
-	if err := hub.HandleVersion(context.Background(), owner, 2, request(roomID, conversationID, 3)); err != nil {
-		t.Fatalf("active sync: %v", err)
-	}
-	active := owner.events[len(owner.events)-1].(serverEvent)
-	if active.Type != "group.call.synced" || active.RequestID != "sync-1" {
-		t.Fatalf("active event = %#v", active)
-	}
-	encoded, err := json.Marshal(active)
-	if err != nil {
+	client.events = nil
+	if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 		t.Fatal(err)
 	}
-	var activeEnvelope struct {
-		Payload struct {
-			StateRevision int64              `json:"state_revision"`
-			Participants  []GroupParticipant `json:"participants"`
-			ICEServers    any                `json:"ice_servers"`
-		} `json:"payload"`
+	encoded, _ := json.Marshal(client.events[0])
+	if rooms.room.Status != GroupRoomEnded || bytes.Contains(encoded, []byte("participants")) || bytes.Contains(encoded, []byte("conversation_id")) || !bytes.Contains(encoded, []byte(`"ownership_status":"room_unavailable"`)) {
+		t.Fatalf("stale sync: room=%#v response=%s", rooms.room, encoded)
 	}
-	if err := json.Unmarshal(encoded, &activeEnvelope); err != nil {
-		t.Fatalf("decode active snapshot: %v", err)
-	}
-	if activeEnvelope.Payload.StateRevision != 7 || len(activeEnvelope.Payload.Participants) != 2 || activeEnvelope.Payload.ICEServers != nil {
-		t.Fatalf("active snapshot = %#v", activeEnvelope.Payload)
-	}
+}
 
-	for _, test := range []struct {
-		name         string
-		room         uuid.UUID
-		conversation uuid.UUID
-		generation   int64
-	}{
-		{name: "wrong room", room: uuid.New(), conversation: conversationID, generation: 3},
-		{name: "wrong conversation", room: roomID, conversation: uuid.New(), generation: 3},
-		{name: "wrong generation", room: roomID, conversation: conversationID, generation: 4},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			client := &recordingClient{identity: owner.Identity(), connectionID: owner.ConnectionID()}
-			if err := hub.HandleVersion(context.Background(), client, 2, request(test.room, test.conversation, test.generation)); err != nil {
-				t.Fatalf("sync: %v", err)
-			}
-			ack := client.events[0].(serverEvent)
-			payload := ack.Payload.(struct {
-				RoomID     uuid.UUID `json:"room_id"`
-				Generation int64     `json:"generation"`
-				Status     string    `json:"status"`
-				SupportRef uuid.UUID `json:"support_ref,omitzero"`
+func TestStaleSyncWinsProjectionRaceAndFansOutTerminal(t *testing.T) {
+	ownerID, removedID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	room := GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 2, StateRevision: 7, Status: GroupRoomActive, Participants: []GroupParticipant{
+		{UserID: ownerID, DeviceID: "owner", ConnectionID: "owner-socket"},
+		{UserID: removedID, DeviceID: "removed", ConnectionID: "removed-socket"},
+	}}
+	presence := &groupTestPresence{revision: 3, memberIDs: []uuid.UUID{ownerID}}
+	rooms := &ownershipTestRooms{groupTestRooms: groupTestRooms{room: room}, status: "room_unavailable"}
+	publisher := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	owner := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "owner"}, connectionID: "owner-socket"}
+	publisher.Add(context.Background(), owner)
+	owner.events = nil
+	request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	if err := publisher.Handle(context.Background(), owner, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.NotifyGroupProjection(context.Background(), conversationID, 3, false, []uuid.UUID{ownerID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms.published) != 1 {
+		t.Fatalf("terminal publication = %#v", rooms.published)
+	}
+	change := rooms.published[0]
+	if change.Type != "ended" || change.Room.StateRevision != 8 || change.MembershipProjectionRevision != 3 || len(change.Room.Participants) != 2 {
+		t.Fatalf("terminal change = %#v", change)
+	}
+	var localTerminal bool
+	for _, event := range owner.events {
+		if event.(serverEvent).Type == "group.call.ended" {
+			localTerminal = true
+		}
+	}
+	if !localTerminal {
+		t.Fatal("local owner did not receive terminal event")
+	}
+	encoded, _ := json.Marshal(change)
+	var remoteChange GroupRoomChange
+	if err := json.Unmarshal(encoded, &remoteChange); err != nil {
+		t.Fatal(err)
+	}
+	verifier := currentProjectionAuthorizer{revision: 3, activeUserIDs: map[uuid.UUID]bool{ownerID: true}}
+	remote := NewHubWithGroupCallAuthorizer(nil, &groupTestPresence{}, verifier, &groupTestRooms{}, nil, nil, nil, nil, nil, nil)
+	removed := &recordingClient{identity: sharedauth.Identity{UserID: removedID, DeviceID: "removed"}, connectionID: "removed-socket"}
+	sibling := &recordingClient{identity: sharedauth.Identity{UserID: removedID, DeviceID: "removed"}, connectionID: "sibling"}
+	remote.Add(context.Background(), removed)
+	remote.Add(context.Background(), sibling)
+	removed.events, sibling.events = nil, nil
+	remote.DeliverGroupRoom(context.Background(), remoteChange)
+	if len(removed.events) != 1 || len(sibling.events) != 0 {
+		t.Fatalf("remote events removed=%#v sibling=%#v", removed.events, sibling.events)
+	}
+	payload, _ := json.Marshal(removed.events[0].(serverEvent).Payload)
+	if bytes.Contains(payload, []byte("participants")) || bytes.Contains(payload, []byte("conversation_id")) || !bytes.Contains(payload, []byte(`"state_revision":8`)) {
+		t.Fatalf("removed payload: %s", payload)
+	}
+}
+
+type racedStaleSyncRooms struct{ ownershipTestRooms }
+
+func (r *racedStaleSyncRooms) EndGroupRoomForMembershipChange(_ context.Context, _ uuid.UUID, _ uuid.UUID, _, _, _ int64) (GroupRoom, error) {
+	// Model another replica changing the room between observation and CAS.
+	r.room.Generation++
+	r.room.StateRevision++
+	return GroupRoom{}, ErrCallNotAllowed
+}
+
+func TestStaleSyncDoesNotPublishWhenConditionalRetirementLosesRace(t *testing.T) {
+	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+	presence := &groupTestPresence{revision: 3, memberIDs: []uuid.UUID{userID}}
+	rooms := &racedStaleSyncRooms{ownershipTestRooms: ownershipTestRooms{groupTestRooms: groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 3, MembershipRevision: 2, StateRevision: 7, Status: GroupRoomActive}}, status: "room_unavailable"}}
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	request := []byte(`{"version":3,"type":"group.call.sync","request_id":"sync","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":3,"ownership_status":true}}`)
+	if err := hub.Handle(context.Background(), client, request); err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms.published) != 0 || rooms.room.Status != GroupRoomActive || rooms.room.Generation != 4 {
+		t.Fatalf("lost CAS published or ended newer room: %#v %#v", rooms.published, rooms.room)
+	}
+}
+
+func TestStaleDiscoveryPublishesTerminalToPreRetirementOwners(t *testing.T) {
+	userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+	room := GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 2, MembershipRevision: 1, StateRevision: 4, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}
+	presence := &groupTestPresence{revision: 2, memberIDs: []uuid.UUID{userID}}
+	rooms := &groupTestRooms{room: room}
+	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+	hub.Add(context.Background(), client)
+	client.events = nil
+	request := []byte(`{"version":3,"type":"group.call.discover","request_id":"discover","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
+	if err := hub.Handle(context.Background(), client, request); err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms.published) != 1 || rooms.published[0].Room.StateRevision != 5 || rooms.published[0].MembershipProjectionRevision != 2 || rooms.published[0].ParticipantConnectionIDs[groupParticipantKey(userID, "device")] != "socket" {
+		t.Fatalf("published=%#v", rooms.published)
+	}
+	var ended bool
+	for _, event := range client.events {
+		if event.(serverEvent).Type == "group.call.ended" {
+			ended = true
+		}
+	}
+	if !ended {
+		t.Fatalf("missing local terminal: %#v", client.events)
+	}
+}
+
+type cancelRetirementRooms struct {
+	ownershipTestRooms
+	cancel          context.CancelFunc
+	cancelOnPublish bool
+}
+
+func (r *cancelRetirementRooms) EndGroupRoomForMembershipChange(ctx context.Context, conversationID, roomID uuid.UUID, generation, stateRevision, membershipRevision int64) (GroupRoom, error) {
+	room, err := r.ownershipTestRooms.EndGroupRoomForMembershipChange(ctx, conversationID, roomID, generation, stateRevision, membershipRevision)
+	if err == nil && !r.cancelOnPublish {
+		r.cancel()
+	}
+	return room, err
+}
+
+func (r *cancelRetirementRooms) PublishGroupRoom(ctx context.Context, change GroupRoomChange) error {
+	if r.cancelOnPublish {
+		r.cancel()
+	}
+	return ctx.Err()
+}
+
+func TestStaleRetirementDeliversLocallyAfterRequestCancellation(t *testing.T) {
+	for _, command := range []string{"discover", "sync"} {
+		for _, cancelOnPublish := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/publish=%t", command, cancelOnPublish), func(t *testing.T) {
+				userID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New()
+				room := GroupRoom{ID: roomID, ConversationID: conversationID, Generation: 2, MembershipRevision: 1, StateRevision: 4, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}
+				presence := &groupTestPresence{revision: 2, memberIDs: []uuid.UUID{userID}}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				rooms := &cancelRetirementRooms{ownershipTestRooms: ownershipTestRooms{groupTestRooms: groupTestRooms{room: room}, status: "room_unavailable"}, cancel: cancel, cancelOnPublish: cancelOnPublish}
+				hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
+				client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
+				hub.Add(context.Background(), client)
+				client.events = nil
+				if command == "discover" {
+					_ = hub.handleGroupRoomDiscovery(ctx, client, "request", conversationID)
+				} else {
+					_ = hub.handleGroupRoomSync(ctx, client, "request", conversationID, roomID, 2)
+				}
+				if rooms.room.Status != GroupRoomEnded || ctx.Err() == nil {
+					t.Fatalf("retirement or cancellation missing: room=%#v err=%v", rooms.room, ctx.Err())
+				}
+				var ended bool
+				for _, event := range client.events {
+					if event.(serverEvent).Type == "group.call.ended" {
+						ended = true
+					}
+				}
+				if !ended {
+					t.Fatalf("missing local terminal: %#v", client.events)
+				}
 			})
-			if ack.Type != "group.call.synced" || len(client.events) != 1 || payload.RoomID != test.room || payload.Generation != test.generation || payload.Status != GroupRoomEnded {
-				t.Fatalf("terminal event = %#v", ack)
-			}
-			payloadJSON, _ := json.Marshal(ack.Payload)
-			if bytes.Contains(payloadJSON, []byte("participants")) || bytes.Contains(payloadJSON, []byte("presenter")) || bytes.Contains(payloadJSON, []byte("conversation_id")) {
-				t.Fatalf("terminal ack disclosed room state: %s", payloadJSON)
-			}
-		})
-	}
-
-	removed := &recordingClient{identity: sharedauth.Identity{UserID: otherID, DeviceID: "other-device"}, connectionID: "old-socket"}
-	if err := hub.HandleVersion(context.Background(), removed, 2, request(roomID, conversationID, 3)); err != nil {
-		t.Fatalf("removed socket sync: %v", err)
-	}
-	if len(removed.events) != 1 || removed.events[0].(serverEvent).Payload.(struct {
-		RoomID     uuid.UUID `json:"room_id"`
-		Generation int64     `json:"generation"`
-		Status     string    `json:"status"`
-		SupportRef uuid.UUID `json:"support_ref,omitzero"`
-	}).Status != GroupRoomEnded {
-		t.Fatalf("removed socket got non-minimal response: %#v", removed.events)
-	}
-
-	stalePresence := &groupTestPresence{revision: 10, memberIDs: []uuid.UUID{ownerID, otherID}}
-	staleRooms := &groupTestRooms{room: room}
-	staleHub := NewHubWithGroupCallAuthorizer(nil, stalePresence, stalePresence, staleRooms, nil, nil, nil, nil, nil, nil)
-	staleClient := &recordingClient{identity: owner.Identity(), connectionID: owner.ConnectionID()}
-	if err := staleHub.HandleVersion(context.Background(), staleClient, 2, request(roomID, conversationID, 3)); err != nil {
-		t.Fatalf("stale membership sync: %v", err)
-	}
-	if staleRooms.room.Status != GroupRoomEnded || staleRooms.room.Generation != 3 {
-		t.Fatalf("stale membership did not conditionally end exact generation: %#v", staleRooms.room)
-	}
-	ack := staleClient.events[len(staleClient.events)-1].(serverEvent)
-	ackPayload, _ := json.Marshal(ack.Payload)
-	if ack.Type != "group.call.synced" || bytes.Contains(ackPayload, []byte("participants")) || bytes.Contains(ackPayload, []byte("presenter")) {
-		t.Fatalf("stale sync response is not a minimal terminal ack: %#v", ack)
+		}
 	}
 }
 
@@ -469,9 +782,9 @@ func TestGroupCallSignalHoldsMembershipLeaseThroughFanout(t *testing.T) {
 	hub.Add(context.Background(), owner)
 	hub.Add(context.Background(), member)
 	owner.events, member.events = nil, nil
-	request := []byte(`{"version":2,"type":"group.call.signal","request_id":"signal-locked","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + memberID.String() + `","target_device_id":"member-device","signal":{"type":"offer","sdp":"opaque"}}}`)
+	request := []byte(`{"version":3,"type":"group.call.signal","request_id":"signal-locked","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + memberID.String() + `","target_device_id":"member-device","signal":{"type":"offer","sdp":"opaque","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`)
 	commandDone := make(chan error, 1)
-	go func() { commandDone <- hub.HandleVersion(context.Background(), owner, 2, request) }()
+	go func() { commandDone <- hub.HandleVersion(context.Background(), owner, 3, request) }()
 	<-rooms.publishing // Redis fanout is still inside the membership lease.
 
 	revocationCommitted := make(chan struct{})
@@ -554,8 +867,8 @@ func TestSuccessfulGroupCallLifecycleCommandRemainsLogged(t *testing.T) {
 	var logs bytes.Buffer
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, slog.New(slog.NewJSONHandler(&logs, nil)))
 	owner := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "owner-device"}, connectionID: "owner-socket"}
-	request := []byte(`{"version":2,"type":"group.call.join","request_id":"join-lifecycle","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
-	if err := hub.HandleVersion(context.Background(), owner, 2, request); err != nil {
+	request := []byte(`{"version":3,"type":"group.call.join","request_id":"join-lifecycle","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
+	if err := hub.HandleVersion(context.Background(), owner, 3, request); err != nil {
 		t.Fatalf("group.call.join: %v", err)
 	}
 	if !strings.Contains(logs.String(), "group call command accepted") || !strings.Contains(logs.String(), "group.call.join") {
@@ -672,7 +985,7 @@ func TestGroupCallStartAfterProjectionCleanupIsRejected(t *testing.T) {
 	rooms := &groupTestRooms{}
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "device"}, connectionID: "socket"}
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.start","request_id":"start-2","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.start","request_id":"start-2","payload":{"attempt_id":"00000000-0000-4000-8000-000000000001","conversation_id":"`+conversationID.String()+`"}}`))
 	if !errors.Is(err, ErrCallNotAllowed) {
 		t.Fatalf("start after committed revocation = %v, want not allowed", err)
 	}
@@ -687,8 +1000,8 @@ func TestGroupCallCommandRejectsMemberRemovedBeforeLease(t *testing.T) {
 	rooms := &groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 5, Generation: 1, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}}}}
 	hub := NewHubWithGroupCallAuthorizer(nil, removed, removed, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-	request := []byte(`{"version":2,"type":"group.call.end","request_id":"revoked-end","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
-	if err := hub.HandleVersion(context.Background(), client, 2, request); !errors.Is(err, ErrCallNotAllowed) {
+	request := []byte(`{"version":3,"type":"group.call.end","request_id":"revoked-end","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
+	if err := hub.HandleVersion(context.Background(), client, 3, request); !errors.Is(err, ErrCallNotAllowed) {
 		t.Fatalf("removed member command error = %v, want not allowed", err)
 	}
 	if rooms.mutationCalls != 0 {
@@ -710,8 +1023,8 @@ func TestGroupCallJoinPubSubFailureCommitsLeaseAndDeliversLocalSnapshot(t *testi
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
 	hub.Add(context.Background(), client)
 	client.events = nil
-	request := []byte(`{"version":2,"type":"group.call.join","request_id":"publisher-failure","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
-	if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+	request := []byte(`{"version":3,"type":"group.call.join","request_id":"publisher-failure","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
+	if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 		t.Fatalf("join error = %v, want accepted despite Pub/Sub failure", err)
 	}
 	if !lease.committed || lease.rolledBack {
@@ -767,8 +1080,8 @@ func TestGroupCallPresenterAndEndUseLocalFallbackAfterPubSubFailure(t *testing.T
 			client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
 			hub.Add(context.Background(), client)
 			client.events = nil
-			request := []byte(`{"version":2,"type":"` + test.command + `","request_id":"fallback","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
-			if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+			request := []byte(`{"version":3,"type":"` + test.command + `","request_id":"fallback","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
+			if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 				t.Fatalf("command error = %v, want accepted", err)
 			}
 			if !lease.committed || lease.rolledBack {
@@ -799,8 +1112,8 @@ func TestGroupCallSignalPubSubFailureRemainsRejectedWithoutLocalDelivery(t *test
 	client := &recordingClient{identity: sharedauth.Identity{UserID: targetID, DeviceID: "target-device"}, connectionID: "target-socket"}
 	hub.Add(context.Background(), client)
 	client.events = nil
-	request := []byte(`{"version":2,"type":"group.call.signal","request_id":"signal-failure","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + targetID.String() + `","target_device_id":"target-device","signal":{"type":"offer","sdp":"opaque"}}}`)
-	if err := hub.HandleVersion(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}, 2, request); !errors.Is(err, rooms.publishErr) {
+	request := []byte(`{"version":3,"type":"group.call.signal","request_id":"signal-failure","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + targetID.String() + `","target_device_id":"target-device","signal":{"type":"offer","sdp":"opaque","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`)
+	if err := hub.HandleVersion(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}, 3, request); !errors.Is(err, rooms.publishErr) {
 		t.Fatalf("signal error = %v, want Pub/Sub failure", err)
 	}
 	if len(client.events) != 0 {
@@ -840,8 +1153,8 @@ func TestGroupCallJoinMutationFailureOrCancellationDoesNotDeliverLocally(t *test
 			client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
 			hub.Add(context.Background(), client)
 			client.events = nil
-			request := []byte(`{"version":2,"type":"group.call.join","request_id":"mutation-failure","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
-			if err := hub.HandleVersion(ctx, client, 2, request); !errors.Is(err, test.wantError) {
+			request := []byte(`{"version":3,"type":"group.call.join","request_id":"mutation-failure","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
+			if err := hub.HandleVersion(ctx, client, 3, request); !errors.Is(err, test.wantError) {
 				t.Fatalf("join error = %v, want %v", err, test.wantError)
 			}
 			if len(client.events) != 0 {
@@ -914,8 +1227,8 @@ func TestGroupCallEnqueuesLocallyOnlyAfterFanoutAndLeaseRelease(t *testing.T) {
 	hub.Add(context.Background(), client)
 	client.events = nil
 	owner := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-	request := []byte(`{"version":2,"type":"group.call.presenter.start","request_id":"lease-order","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
-	if err := hub.HandleVersion(context.Background(), owner, 2, request); err != nil {
+	request := []byte(`{"version":3,"type":"group.call.presenter.start","request_id":"lease-order","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1}}`)
+	if err := hub.HandleVersion(context.Background(), owner, 3, request); err != nil {
 		t.Fatalf("group call command: %v", err)
 	}
 	if !rooms.publishedWhileLeased {
@@ -939,9 +1252,9 @@ func TestGroupCommandLocalSignalPrecedesCommittedRevocationProjection(t *testing
 	hub.Add(context.Background(), owner)
 	hub.Add(context.Background(), member)
 	owner.events, member.events = nil, nil
-	request := []byte(`{"version":2,"type":"group.call.signal","request_id":"ordered-signal","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + memberID.String() + `","target_device_id":"member-device","signal":{"type":"offer","sdp":"opaque-test-sdp"}}}`)
+	request := []byte(`{"version":3,"type":"group.call.signal","request_id":"ordered-signal","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + memberID.String() + `","target_device_id":"member-device","signal":{"type":"offer","sdp":"opaque-test-sdp","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`)
 	commandDone := make(chan error, 1)
-	go func() { commandDone <- hub.HandleVersion(context.Background(), owner, 2, request) }()
+	go func() { commandDone <- hub.HandleVersion(context.Background(), owner, 3, request) }()
 	<-lease.committed
 	<-member.entered // the lease is committed, but the command still owns the stripe while enqueueing.
 	projectionDone := make(chan struct{})
@@ -962,7 +1275,7 @@ func TestGroupCommandLocalSignalPrecedesCommittedRevocationProjection(t *testing
 		t.Fatalf("first event = %#v, want signal", member.events[0])
 	}
 	payload, err := json.Marshal(signal.Payload)
-	wantPayload := `{"room_id":"` + roomID.String() + `","generation":1,"from_user_id":"` + ownerID.String() + `","from_device_id":"owner-device","signal":{"type":"offer","sdp":"opaque-test-sdp"}}`
+	wantPayload := `{"room_id":"` + roomID.String() + `","generation":1,"from_user_id":"` + ownerID.String() + `","from_device_id":"owner-device","signal":{"type":"offer","sdp":"opaque-test-sdp","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}`
 	if err != nil || !bytes.Equal(payload, []byte(wantPayload)) {
 		t.Fatalf("signal payload = %s, want %s (err=%v)", payload, wantPayload, err)
 	}
@@ -1072,13 +1385,23 @@ func (r *failingGroupRoomPublisher) PublishGroupRoom(context.Context, GroupRoomC
 	return r.publishErr
 }
 
+func TestExpiredGroupRoomReportsPublicationFailure(t *testing.T) {
+	want := errors.New("publish failed")
+	rooms := &failingGroupRoomPublisher{publishErr: want}
+	hub := NewHubWithGroupCallAuthorizer(nil, nil, nil, rooms, nil, nil, nil, nil, nil, nil)
+	err := hub.NotifyExpiredGroupRoom(context.Background(), GroupRoom{ID: uuid.New(), ConversationID: uuid.New(), Generation: 1, StateRevision: 2})
+	if !errors.Is(err, want) {
+		t.Fatalf("expiry publication error = %v, want %v", err, want)
+	}
+}
+
 func TestGroupCallStartCommitErrorCleansOnlyAttemptedRoom(t *testing.T) {
 	ownerID, conversationID, newerRoomID := uuid.New(), uuid.New(), uuid.New()
 	presence := &commitErrorGroupStartAuthorizer{groupTestPresence: groupTestPresence{revision: 9, memberIDs: []uuid.UUID{ownerID}}}
 	rooms := &groupTestRooms{newerRoom: GroupRoom{ID: newerRoomID, Generation: 2, Status: GroupRoomActive}}
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "device"}, connectionID: "socket"}
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.start","request_id":"commit-failure","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.start","request_id":"commit-failure","payload":{"attempt_id":"00000000-0000-4000-8000-000000000001","conversation_id":"`+conversationID.String()+`"}}`))
 	if err == nil {
 		t.Fatal("expected commit failure")
 	}
@@ -1099,7 +1422,7 @@ func TestGroupCallStartCancellationReleasesAdmissionAndLease(t *testing.T) {
 	rooms := &cancelGroupStartRooms{}
 	hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, rooms, nil, nil, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "device"}, connectionID: "socket"}
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.start","request_id":"cancel","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.start","request_id":"cancel","payload":{"attempt_id":"00000000-0000-4000-8000-000000000001","conversation_id":"`+conversationID.String()+`"}}`))
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("start error = %v, want cancellation", err)
 	}
@@ -1154,6 +1477,10 @@ type cancelGroupStartRooms struct {
 func (r *cancelGroupStartRooms) StartGroupRoom(_ context.Context, room GroupRoom, _ string) (GroupRoom, error) {
 	r.room = room
 	return GroupRoom{}, context.Canceled
+}
+
+func (r *cancelGroupStartRooms) StartPreparedGroupRoom(ctx context.Context, room GroupRoom, token string, _ uuid.UUID) (GroupRoom, error) {
+	return r.StartGroupRoom(ctx, room, token)
 }
 
 func (r *cancelGroupStartRooms) AcquireCallAdmission(context.Context, []uuid.UUID) (string, error) {
@@ -1248,6 +1575,10 @@ func (r *orderedGroupStartRooms) StartGroupRoom(ctx context.Context, room GroupR
 	return r.groupTestRooms.StartGroupRoom(ctx, room, token)
 }
 
+func (r *orderedGroupStartRooms) StartPreparedGroupRoom(ctx context.Context, room GroupRoom, token string, _ uuid.UUID) (GroupRoom, error) {
+	return r.StartGroupRoom(ctx, room, token)
+}
+
 func (r *orderedGroupStartRooms) AcquireCallAdmission(ctx context.Context, ids []uuid.UUID) (string, error) {
 	r.order.record("admission.acquire")
 	return r.groupTestRooms.AcquireCallAdmission(ctx, ids)
@@ -1275,12 +1606,22 @@ func TestHubQueuesGroupStartForInitiatorBeforeMembers(t *testing.T) {
 	hub.Add(context.Background(), owner)
 	hub.Add(context.Background(), member)
 	deliveryOrder = nil
+	owner.events = nil
+	member.events = nil
 
-	if err := hub.HandleVersion(context.Background(), owner, 2, []byte(`{"version":2,"type":"group.call.start","request_id":"start-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`)); err != nil {
+	if err := hub.HandleVersion(context.Background(), owner, 3, []byte(`{"version":3,"type":"group.call.start","request_id":"start-1","payload":{"attempt_id":"00000000-0000-4000-8000-000000000001","conversation_id":"`+conversationID.String()+`"}}`)); err != nil {
 		t.Fatalf("start group room: %v", err)
 	}
-	if got, want := deliveryOrder, []string{"owner:group.call.started", "member:group.call.started"}; !equalStrings(got, want) {
+	if got, want := deliveryOrder, []string{"owner:group.call.start_accepted", "owner:group.call.started", "member:group.call.started"}; !equalStrings(got, want) {
 		t.Fatalf("delivery order = %v, want %v", got, want)
+	}
+	ack := owner.events[0].(serverEvent)
+	if ack.RequestID != "start-1" {
+		t.Fatalf("start acknowledgement request ID = %q", ack.RequestID)
+	}
+	peerPayload, err := json.Marshal(member.events[0])
+	if err != nil || bytes.Contains(peerPayload, []byte("00000000-0000-4000-8000-000000000001")) || bytes.Contains(peerPayload, []byte("attempt_id")) {
+		t.Fatalf("capability leaked to peer: %s err=%v", peerPayload, err)
 	}
 }
 
@@ -1290,7 +1631,7 @@ func TestHubRejectsGroupSignalFromSiblingSocket(t *testing.T) {
 	hub := NewHub(nil, &groupTestPresence{revision: 2}, rooms, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "sibling"}
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.signal","request_id":"signal-1","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1,"target_user_id":"`+targetID.String()+`","target_device_id":"target","signal":{"type":"offer","sdp":"safe"}}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.signal","request_id":"signal-1","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1,"target_user_id":"`+targetID.String()+`","target_device_id":"target","signal":{"type":"offer","sdp":"safe","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`))
 	if err == nil || err.Error() != ErrCallNotAllowed.Error() {
 		t.Fatalf("signal error = %v", err)
 	}
@@ -1303,8 +1644,8 @@ func TestHubRejectsGroupRoomActionsForDifferentConversation(t *testing.T) {
 			rooms := &groupTestRooms{room: GroupRoom{ID: roomID, ConversationID: actualConversationID, MembershipRevision: 2, Generation: 1, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: userID, DeviceID: "device", ConnectionID: "socket"}, {UserID: targetID, DeviceID: "target-device", ConnectionID: "target"}}}}
 			hub := NewHub(nil, &groupTestPresence{revision: 2}, rooms, nil, nil, nil, nil)
 			client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-			payload := `{"version":2,"type":"` + action + `","request_id":"mismatch","payload":{"conversation_id":"` + suppliedConversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + targetID.String() + `","target_device_id":"target-device","signal":{"type":"offer","sdp":"safe"}}}`
-			if err := hub.HandleVersion(context.Background(), client, 2, []byte(payload)); err == nil {
+			payload := `{"version":3,"type":"` + action + `","request_id":"mismatch","payload":{"conversation_id":"` + suppliedConversationID.String() + `","room_id":"` + roomID.String() + `","generation":1,"target_user_id":"` + targetID.String() + `","target_device_id":"target-device","signal":{"type":"offer","sdp":"safe","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`
+			if err := hub.HandleVersion(context.Background(), client, 3, []byte(payload)); err == nil {
 				t.Fatal("action using another conversation was authorized")
 			}
 			if rooms.mutationCalls != 0 {
@@ -1346,9 +1687,9 @@ func TestHubBindsEveryV2GroupRoomCommandToPositiveGeneration(t *testing.T) {
 				presence := &groupTestPresence{revision: 2, memberIDs: []uuid.UUID{userID, targetID}}
 				hub := NewHub(nil, presence, rooms, nil, nil, nil, nil)
 				client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
-				payload := `{"version":2,"type":"` + command + `","request_id":"generation-test","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `"` + testCase.generation + `,"target_user_id":"` + targetID.String() + `","target_device_id":"target-device","signal":{"type":"offer","sdp":"safe"}}}`
+				payload := `{"version":3,"type":"` + command + `","request_id":"generation-test","payload":{"conversation_id":"` + conversationID.String() + `","room_id":"` + roomID.String() + `"` + testCase.generation + `,"target_user_id":"` + targetID.String() + `","target_device_id":"target-device","signal":{"type":"offer","sdp":"safe","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`
 
-				err := hub.HandleVersion(context.Background(), client, 2, []byte(payload))
+				err := hub.HandleVersion(context.Background(), client, 3, []byte(payload))
 				if testCase.wantErr && err == nil {
 					t.Fatal("command without the exact positive room generation was accepted")
 				}
@@ -1377,7 +1718,7 @@ func TestHubDeliversGroupEndToRemainingParticipant(t *testing.T) {
 	member.events = nil
 	sibling.events = nil
 
-	err := hub.HandleVersion(context.Background(), owner, 2, []byte(`{"version":2,"type":"group.call.end","request_id":"end-1","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1}}`))
+	err := hub.HandleVersion(context.Background(), owner, 3, []byte(`{"version":3,"type":"group.call.end","request_id":"end-1","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1}}`))
 	if err != nil {
 		t.Fatalf("end group room: %v", err)
 	}
@@ -1439,7 +1780,7 @@ func TestHubDeliversGroupEndAfterPubSubRoundTrip(t *testing.T) {
 
 func TestHubGroupRoomFanoutRequiresV2Protocol(t *testing.T) {
 	ownerID, peerID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	room := GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 2, Generation: 1, Status: GroupRoomActive, Participants: []GroupParticipant{
+	room := GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 2, Generation: 1, Status: GroupRoomActive, ExpiresAt: time.Now().Add(time.Minute), Participants: []GroupParticipant{
 		{UserID: ownerID, DeviceID: "owner", ConnectionID: "owner-socket"},
 		{UserID: peerID, DeviceID: "peer", ConnectionID: "peer-v1-socket"},
 		{UserID: peerID, DeviceID: "peer", ConnectionID: "peer-v2-socket"},
@@ -1447,9 +1788,9 @@ func TestHubGroupRoomFanoutRequiresV2Protocol(t *testing.T) {
 	for _, eventType := range []string{"started", "participant.joined", "participant.left", "ended", "presenter.start", "presenter.stop", "signal"} {
 		t.Run(eventType, func(t *testing.T) {
 			presence := &groupTestPresence{revision: 2, memberIDs: []uuid.UUID{ownerID, peerID}}
-			hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, &groupTestRooms{}, nil, nil, nil, nil, nil, nil)
+			hub := NewHubWithGroupCallAuthorizer(nil, presence, presence, &groupTestRooms{room: room}, nil, nil, nil, nil, nil, nil)
 			v1 := &versionedRecordingClient{recordingClient: recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: "peer"}, connectionID: "peer-v1-socket"}, version: 1}
-			v2 := &versionedRecordingClient{recordingClient: recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: "peer"}, connectionID: "peer-v2-socket"}, version: 2}
+			v2 := &versionedRecordingClient{recordingClient: recordingClient{identity: sharedauth.Identity{UserID: peerID, DeviceID: "peer"}, connectionID: "peer-v2-socket"}, version: 3}
 			hub.Add(context.Background(), v1)
 			hub.Add(context.Background(), v2)
 			v1.events = nil
@@ -1534,6 +1875,161 @@ func TestHubMembershipChangeTerminatesRemovedParticipantRoomSocket(t *testing.T)
 	}
 	if len(minimal) != 4 || string(minimal["status"]) != `"ended"` || string(minimal["state_revision"]) != "8" {
 		t.Fatalf("removed terminal payload = %s; want minimal revision 8", payload)
+	}
+}
+
+type retryMembershipRetirementRooms struct {
+	groupTestRooms
+	retired      GroupRoom
+	revision     int64
+	loseResponse bool
+	raceNotFound bool
+	raceOnRead   bool
+	failPublish  bool
+	attempts     []GroupRoomChange
+}
+
+func (r *retryMembershipRetirementRooms) GetGroupRoomForConversation(ctx context.Context, conversation uuid.UUID) (GroupRoom, error) {
+	if r.raceOnRead {
+		r.raceOnRead = false
+		r.retired = r.room
+		r.retired.Status = GroupRoomEnded
+		r.retired.StateRevision++
+		r.revision = r.room.MembershipRevision + 1
+		return GroupRoom{}, ErrCallNotFound
+	}
+	return r.groupTestRooms.GetGroupRoomForConversation(ctx, conversation)
+}
+
+func (r *retryMembershipRetirementRooms) EndGroupRoomForMembershipChange(ctx context.Context, conversation, id uuid.UUID, generation, stateRevision, membershipRevision int64) (GroupRoom, error) {
+	old := r.room
+	terminal, err := r.groupTestRooms.EndGroupRoomForMembershipChange(ctx, conversation, id, generation, stateRevision, membershipRevision)
+	if err != nil {
+		return GroupRoom{}, err
+	}
+	old.Status, old.StateRevision = GroupRoomEnded, terminal.StateRevision
+	r.retired, r.revision = old, membershipRevision
+	if r.raceNotFound {
+		r.raceNotFound = false
+		return GroupRoom{}, ErrCallNotFound
+	}
+	if r.loseResponse {
+		r.loseResponse = false
+		return GroupRoom{}, errors.New("lost retirement response")
+	}
+	return terminal, nil
+}
+
+func TestMembershipProjectionRecoversConcurrentRetirementAfterNotFound(t *testing.T) {
+	for _, onRead := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cas", true: "room read"}[onRead], func(t *testing.T) {
+			ownerID, conversation, roomID := uuid.New(), uuid.New(), uuid.New()
+			room := GroupRoom{ID: roomID, ConversationID: conversation, MembershipRevision: 1, Generation: 1, StateRevision: 3, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner", ConnectionID: "socket"}}}
+			rooms := &retryMembershipRetirementRooms{groupTestRooms: groupTestRooms{room: room}, raceNotFound: !onRead, raceOnRead: onRead}
+			hub := NewHub(nil, &groupTestPresence{}, rooms, nil, nil, nil, nil)
+			if err := hub.NotifyGroupProjection(context.Background(), conversation, 2, false, []uuid.UUID{ownerID}); err != nil {
+				t.Fatal(err)
+			}
+			if len(rooms.attempts) != 1 || rooms.attempts[0].Room.ID != roomID || rooms.attempts[0].Room.StateRevision != 4 {
+				t.Fatalf("concurrent retirement was not published: %+v", rooms.attempts)
+			}
+		})
+	}
+}
+
+func (r *retryMembershipRetirementRooms) GetGroupMembershipRetirement(_ context.Context, conversation uuid.UUID, revision int64) (GroupRoom, error) {
+	if r.retired.ID == uuid.Nil || r.retired.ConversationID != conversation || r.revision != revision {
+		return GroupRoom{}, ErrCallNotFound
+	}
+	return r.retired, nil
+}
+
+func (r *retryMembershipRetirementRooms) PublishGroupRoom(_ context.Context, change GroupRoomChange) error {
+	r.attempts = append(r.attempts, change)
+	if r.failPublish {
+		r.failPublish = false
+		return errors.New("publication failed")
+	}
+	return nil
+}
+
+func TestMembershipProjectionRetriesLostRetirementAndPublication(t *testing.T) {
+	ownerID, removedID, conversation, oldID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	old := GroupRoom{ID: oldID, ConversationID: conversation, MembershipRevision: 1, Generation: 1, StateRevision: 3, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner", ConnectionID: "owner-socket"}, {UserID: removedID, DeviceID: "removed", ConnectionID: "removed-socket"}}}
+	rooms := &retryMembershipRetirementRooms{groupTestRooms: groupTestRooms{room: old}, loseResponse: true, failPublish: true}
+	verifier := currentProjectionAuthorizer{revision: 2, activeUserIDs: map[uuid.UUID]bool{ownerID: true}}
+	hub := NewHubWithGroupCallAuthorizer(nil, &groupTestPresence{}, verifier, rooms, nil, nil, nil, nil, nil, nil)
+	removed := &recordingClient{identity: sharedauth.Identity{UserID: removedID, DeviceID: "removed"}, connectionID: "removed-socket"}
+	sibling := &recordingClient{identity: removed.identity, connectionID: "other-socket"}
+	hub.Add(context.Background(), removed)
+	hub.Add(context.Background(), sibling)
+	removed.events, sibling.events = nil, nil
+	if err := hub.NotifyGroupProjection(context.Background(), conversation, 2, false, []uuid.UUID{ownerID}); err == nil {
+		t.Fatal("lost retirement response was acknowledged")
+	}
+	newRoom := GroupRoom{ID: uuid.New(), ConversationID: conversation, MembershipRevision: 2, Generation: 2, StateRevision: 1, Status: GroupRoomRinging}
+	rooms.room = newRoom
+	if err := hub.NotifyGroupProjection(context.Background(), conversation, 2, false, []uuid.UUID{ownerID}); err == nil {
+		t.Fatal("failed publication was acknowledged")
+	}
+	if err := hub.NotifyGroupProjection(context.Background(), conversation, 2, false, []uuid.UUID{ownerID}); err != nil {
+		t.Fatalf("publication retry: %v", err)
+	}
+	if len(rooms.attempts) != 2 {
+		t.Fatalf("publication attempts=%+v", rooms.attempts)
+	}
+	for _, change := range rooms.attempts {
+		if change.Type != "ended" || change.Room.ID != oldID || change.Room.StateRevision != 4 || change.MembershipProjectionRevision != 2 || change.ParticipantConnectionIDs[groupParticipantKey(removedID, "removed")] != "removed-socket" {
+			t.Fatalf("wrong terminal retry: %+v", change)
+		}
+	}
+	if rooms.room.ID != newRoom.ID || rooms.room.Status != GroupRoomRinging {
+		t.Fatalf("new room changed: %+v", rooms.room)
+	}
+	if len(removed.events) == 0 || len(sibling.events) != 0 {
+		t.Fatalf("retired socket delivery=%+v sibling=%+v", removed.events, sibling.events)
+	}
+}
+
+type cutoffProjectionRooms struct {
+	retryMembershipRetirementRooms
+	projectionCount int
+}
+
+func (r *cutoffProjectionRooms) PublishGroupProjection(_ context.Context, _ uuid.UUID, _ int64, _ bool, _ []uuid.UUID) error {
+	r.projectionCount++
+	return nil
+}
+
+func TestMembershipProjectionAfterTerminalEvidenceExpires(t *testing.T) {
+	ownerID, removedID, conversation, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	room := GroupRoom{ID: roomID, ConversationID: conversation, MembershipRevision: 1, Generation: 1, StateRevision: 3, Status: GroupRoomActive, Participants: []GroupParticipant{{UserID: ownerID, DeviceID: "owner", ConnectionID: "owner-socket"}, {UserID: removedID, DeviceID: "removed", ConnectionID: "removed-socket"}}}
+	rooms := &cutoffProjectionRooms{retryMembershipRetirementRooms: retryMembershipRetirementRooms{groupTestRooms: groupTestRooms{room: room}, failPublish: true}}
+	verifier := currentProjectionAuthorizer{revision: 2, activeUserIDs: map[uuid.UUID]bool{ownerID: true}}
+	hub := NewHubWithGroupCallAuthorizer(nil, &groupTestPresence{}, verifier, rooms, nil, nil, nil, nil, nil, nil)
+	if err := hub.NotifyGroupProjection(context.Background(), conversation, 2, false, []uuid.UUID{ownerID, removedID}); err == nil {
+		t.Fatal("terminal publish failure must retry while evidence exists")
+	}
+	if len(rooms.attempts) != 1 || rooms.projectionCount != 0 {
+		t.Fatalf("before cutoff terminal=%d projection=%d", len(rooms.attempts), rooms.projectionCount)
+	}
+	// Simulate the bounded Redis tombstone expiring before the outbox retries.
+	rooms.retired = GroupRoom{}
+	owner := &recordingClient{identity: sharedauth.Identity{UserID: ownerID, DeviceID: "owner"}, connectionID: "owner-socket"}
+	removed := &recordingClient{identity: sharedauth.Identity{UserID: removedID, DeviceID: "removed"}, connectionID: "removed-socket"}
+	hub.Add(context.Background(), owner)
+	hub.Add(context.Background(), removed)
+	owner.events, removed.events = nil, nil
+	if err := hub.NotifyGroupProjection(context.Background(), conversation, 2, false, []uuid.UUID{ownerID, removedID}); err != nil {
+		t.Fatalf("projection after terminal cutoff: %v", err)
+	}
+	if len(rooms.attempts) != 1 || rooms.projectionCount != 1 {
+		t.Fatalf("after cutoff terminal=%d projection=%d", len(rooms.attempts), rooms.projectionCount)
+	}
+	for name, client := range map[string]*recordingClient{"owner": owner, "removed": removed} {
+		if len(client.events) != 1 || client.events[0].(serverEvent).Type != "group.membership.changed" {
+			t.Fatalf("%s received events=%+v, want only membership projection", name, client.events)
+		}
 	}
 }
 
@@ -2061,7 +2557,7 @@ func TestHubGroupSignalUsesSignalRateBudget(t *testing.T) {
 	userID, targetID, conversationID, roomID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	rooms := &groupSignalRateRooms{}
 	hub := NewHub(nil, &groupTestPresence{revision: 2}, rooms, nil, nil, nil, nil)
-	err := hub.HandleVersion(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}, 2, []byte(`{"version":2,"type":"group.call.signal","request_id":"signal-1","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1,"target_user_id":"`+targetID.String()+`","target_device_id":"target","signal":{"type":"offer","sdp":"safe"}}}`))
+	err := hub.HandleVersion(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}, 3, []byte(`{"version":3,"type":"group.call.signal","request_id":"signal-1","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1,"target_user_id":"`+targetID.String()+`","target_device_id":"target","signal":{"type":"offer","sdp":"safe","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}}}`))
 	if err == nil || err.Error() != "call rate limit exceeded" {
 		t.Fatalf("signal error = %v", err)
 	}
@@ -2081,7 +2577,7 @@ func TestGroupCallOperationDeadlineCoversRateAuthorizationRoomMutationAndFanout(
 	hub := NewHub(nil, presence, limiterWithRooms{boundedGroupCallLimiter: limiter, GroupRoomCoordinator: rooms, PresenceCoordinator: rooms}, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"group.call.join","request_id":"bounded","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"group.call.join","request_id":"bounded","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1}}`))
 	if err != nil {
 		t.Fatalf("join group room: %v", err)
 	}
@@ -2103,7 +2599,7 @@ func TestGroupCallCancellationDuringMembershipDoesNotReadOrMutateRoom(t *testing
 	hub := NewHub(nil, presence, limiterWithRooms{boundedGroupCallLimiter: limiter, GroupRoomCoordinator: rooms, PresenceCoordinator: rooms}, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}, connectionID: "socket"}
 
-	err := hub.HandleVersion(ctx, client, 2, []byte(`{"version":2,"type":"group.call.join","request_id":"cancel-membership","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1}}`))
+	err := hub.HandleVersion(ctx, client, 3, []byte(`{"version":3,"type":"group.call.join","request_id":"cancel-membership","payload":{"conversation_id":"`+conversationID.String()+`","room_id":"`+roomID.String()+`","generation":1}}`))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("join error = %v, want canceled context", err)
 	}
@@ -2328,8 +2824,22 @@ func (*groupTestRooms) AllowCall(context.Context, uuid.UUID) (bool, error)   { r
 func (*groupTestRooms) AllowSignal(context.Context, uuid.UUID) (bool, error) { return true, nil }
 func (r *groupTestRooms) StartGroupRoom(_ context.Context, room GroupRoom, _ string) (GroupRoom, error) {
 	room.Status = GroupRoomRinging
+	room.RingExpiresAt = time.Now().Add(30 * time.Second)
+	room.ExpiresAt = room.RingExpiresAt.Add(2 * time.Hour)
 	r.room = room
 	return room, nil
+}
+
+func (r *groupTestRooms) PrepareGroupRoomStart(context.Context, uuid.UUID, GroupParticipant) (uuid.UUID, time.Time, error) {
+	return uuid.New(), time.Now().Add(time.Minute), nil
+}
+
+func (r *groupTestRooms) StartPreparedGroupRoom(ctx context.Context, room GroupRoom, token string, _ uuid.UUID) (GroupRoom, error) {
+	return r.StartGroupRoom(ctx, room, token)
+}
+
+func (r *groupTestRooms) CancelGroupRoomStart(context.Context, uuid.UUID, GroupParticipant, uuid.UUID) (GroupRoom, string, error) {
+	return GroupRoom{}, "confirmed", nil
 }
 func (r *groupTestRooms) JoinGroupRoom(context.Context, uuid.UUID, GroupParticipant, int64, string) (GroupRoom, error) {
 	r.mutationCalls++
@@ -2362,12 +2872,6 @@ func (r *groupTestRooms) GetGroupRoom(context.Context, uuid.UUID) (GroupRoom, er
 }
 func (r *groupTestRooms) GetGroupRoomForConversation(context.Context, uuid.UUID) (GroupRoom, error) {
 	return r.room, nil
-}
-func (r *groupTestRooms) SyncGroupRoom(_ context.Context, roomID uuid.UUID, generation int64, participant GroupParticipant) (GroupRoom, bool, error) {
-	if r.room.ID != roomID || r.room.Generation != generation || r.room.Status != GroupRoomActive || !groupParticipantOwns(r.room, participant) {
-		return GroupRoom{ID: roomID, Generation: generation, Status: GroupRoomEnded}, false, nil
-	}
-	return r.room, true, nil
 }
 func (r *groupTestRooms) SetGroupPresenter(context.Context, uuid.UUID, GroupParticipant, bool) (GroupRoom, error) {
 	r.mutationCalls++

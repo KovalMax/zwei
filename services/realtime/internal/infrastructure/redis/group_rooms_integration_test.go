@@ -21,7 +21,11 @@ func startAdmittedGroupRoom(ctx context.Context, coordinator *PresenceCoordinato
 		return application.GroupRoom{}, err
 	}
 	defer coordinator.ReleaseCallAdmission(ctx, []uuid.UUID{userID}, token)
-	return coordinator.StartGroupRoom(ctx, room, token)
+	attempt, _, err := coordinator.PrepareGroupRoomStart(ctx, room.ConversationID, room.Participants[0])
+	if err != nil {
+		return application.GroupRoom{}, err
+	}
+	return coordinator.StartPreparedGroupRoom(ctx, room, token, attempt)
 }
 
 func joinAdmittedGroupRoom(ctx context.Context, coordinator *PresenceCoordinator, roomID uuid.UUID, participant application.GroupParticipant, revision int64) (application.GroupRoom, error) {
@@ -43,6 +47,130 @@ func joinAdmittedGroupRoom(ctx context.Context, coordinator *PresenceCoordinator
 	}
 	defer coordinator.ReleaseCallAdmission(ctx, []uuid.UUID{participant.UserID}, token)
 	return coordinator.JoinGroupRoom(ctx, roomID, participant, revision, token)
+}
+
+func TestGroupRoomRingDeadlineDoesNotExpireRoom(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: uuid.NewString(), ConnectionID: uuid.NewString()}
+	joiner := application.GroupParticipant{UserID: uuid.New(), DeviceID: uuid.NewString(), ConnectionID: uuid.NewString()}
+	id, conversation := uuid.New(), uuid.New()
+	defer c.client.Del(context.Background(), groupRoomKey(id), groupRoomConversationKey(conversation), groupRoomUserKey(owner.UserID), groupRoomUserKey(joiner.UserID))
+	defer c.client.ZRem(context.Background(), groupRoomExpiryKey, id.String())
+	room, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: id, ConversationID: conversation, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta := room.ExpiresAt.Sub(room.RingExpiresAt); delta != groupRoomActiveTTL-groupRoomRingingTTL {
+		t.Fatalf("deadline separation = %s", delta)
+	}
+	// Advance only the logical invitation deadline; the room and hard expiry remain unchanged.
+	if err := c.client.HSet(ctx, groupRoomKey(id), "ring_expires_at", time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	joined, err := joinAdmittedGroupRoom(ctx, other, id, joiner, 1)
+	if err != nil {
+		t.Fatalf("late join: %v", err)
+	}
+	if !joined.ExpiresAt.Equal(room.ExpiresAt) || joined.Status != application.GroupRoomActive {
+		t.Fatalf("late joined room = %+v", joined)
+	}
+}
+
+func TestJoinMissingGroupRoomReturnsNotFound(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	participant := application.GroupParticipant{UserID: uuid.New(), DeviceID: uuid.NewString(), ConnectionID: uuid.NewString()}
+	_, err = joinAdmittedGroupRoom(ctx, c, uuid.New(), participant, 1)
+	if !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("join missing room error = %v, want ErrCallNotFound", err)
+	}
+}
+
+func TestGroupRoomRenewalRequiresLiveOwnerAndCannotReviveExpiredRoom(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: uuid.NewString(), ConnectionID: uuid.NewString()}
+	id, conversation := uuid.New(), uuid.New()
+	defer c.client.Del(context.Background(), groupRoomKey(id), groupRoomConversationKey(conversation), groupRoomUserKey(owner.UserID))
+	defer c.client.ZRem(context.Background(), groupRoomExpiryKey, id.String())
+	room, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: id, ConversationID: conversation, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := room.ExpiresAt.Add(-30 * time.Minute)
+	if err := c.renewOwnedGroupRoom(ctx, owner.UserID, "wrong-socket", now); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := c.GetGroupRoom(ctx, id)
+	if err != nil || !unchanged.ExpiresAt.Equal(room.ExpiresAt) {
+		t.Fatalf("wrong owner renewed: %+v %v", unchanged, err)
+	}
+	if _, err := c.Connect(ctx, owner.UserID, owner.ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.renewOwnedGroupRoomsLocked(ctx, now)
+	c.mu.Unlock()
+	renewed, err := c.GetGroupRoom(ctx, id)
+	if err != nil || !renewed.ExpiresAt.Equal(now.Add(groupRoomActiveTTL)) {
+		t.Fatalf("owned renewal: %+v %v", renewed, err)
+	}
+	if score, err := c.client.ZScore(ctx, groupRoomExpiryKey, id.String()).Result(); err != nil || int64(score) != renewed.ExpiresAt.UnixMilli() {
+		t.Fatalf("renewed expiry index: score=%v err=%v", score, err)
+	}
+	if ttl, err := c.client.PTTL(ctx, groupRoomKey(id)).Result(); err != nil || ttl != -1 {
+		t.Fatalf("indexed live room must survive until sweep: ttl=%s err=%v", ttl, err)
+	}
+	if _, err := c.Disconnect(ctx, owner.UserID, owner.ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.renewOwnedGroupRoomsLocked(ctx, renewed.ExpiresAt.Add(-30*time.Minute))
+	c.mu.Unlock()
+	unchanged, err = c.GetGroupRoom(ctx, id)
+	if err != nil || !unchanged.ExpiresAt.Equal(renewed.ExpiresAt) {
+		t.Fatalf("disconnected socket renewed: %+v %v", unchanged, err)
+	}
+	if err := c.renewOwnedGroupRoom(ctx, owner.UserID, owner.ConnectionID, renewed.ExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err = c.GetGroupRoom(ctx, id)
+	if err != nil || !unchanged.ExpiresAt.Equal(renewed.ExpiresAt) {
+		t.Fatalf("expired room revived: %+v %v", unchanged, err)
+	}
 }
 
 func TestGroupRoomReservationIntegration(t *testing.T) {
@@ -323,6 +451,35 @@ func TestDiscoverableGroupRoomIndexIntegration(t *testing.T) {
 	}
 }
 
+func TestMembershipRetirementReturnsAtomicTerminalRevisionIntegration(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	roomID, conversationID, userID := uuid.New(), uuid.New(), uuid.New()
+	owner := application.GroupParticipant{UserID: userID, DeviceID: "owner", ConnectionID: "socket"}
+	defer c.client.Del(ctx, groupRoomKey(roomID), groupRoomConversationKey(conversationID), groupRoomUserKey(userID))
+	room, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: roomID, ConversationID: conversationID, MembershipRevision: 2, Generation: 3, Participants: []application.GroupParticipant{owner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := c.EndGroupRoomForMembershipChange(ctx, conversationID, roomID, room.Generation, room.StateRevision, 3)
+	if err != nil || terminal.StateRevision != room.StateRevision+1 || terminal.Status != application.GroupRoomEnded {
+		t.Fatalf("terminal=%#v err=%v", terminal, err)
+	}
+	stored, err := c.GetGroupRoom(ctx, roomID)
+	if err != nil || stored.StateRevision != terminal.StateRevision || stored.Status != application.GroupRoomEnded {
+		t.Fatalf("stored=%#v err=%v", stored, err)
+	}
+}
+
 func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
 	if rawURL == "" {
@@ -358,9 +515,6 @@ func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 				t.Fatalf("ringing ownership = %q room=%#v err=%v", status, got, err)
 			}
 		})
-	}
-	if legacy, active, err := coordinator.SyncGroupRoom(ctx, roomID, 5, owner); err != nil || active || legacy.Status != application.GroupRoomEnded || len(legacy.Participants) != 0 {
-		t.Fatalf("legacy ringing sync changed: %#v active=%v err=%v", legacy, active, err)
 	}
 	if err := coordinator.client.HSet(ctx, groupRoomKey(roomID), "expires_at", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)).Err(); err != nil {
 		t.Fatal(err)
@@ -422,27 +576,6 @@ func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 	if err := coordinator.client.Set(ctx, groupRoomUserKey(owner.UserID), roomID.String(), groupRoomActiveTTL).Err(); err != nil {
 		t.Fatal(err)
 	}
-	active, ok, err := coordinator.SyncGroupRoom(ctx, roomID, 5, owner)
-	if err != nil || !ok || active.StateRevision != 2 || len(active.Participants) != 2 {
-		t.Fatalf("active sync = %#v, active=%v, err=%v", active, ok, err)
-	}
-	for _, request := range []struct {
-		roomID      uuid.UUID
-		generation  int64
-		participant application.GroupParticipant
-	}{
-		{roomID: roomID, generation: 6, participant: owner},
-		{roomID: uuid.New(), generation: 5, participant: owner},
-		{roomID: roomID, generation: 5, participant: application.GroupParticipant{UserID: uuid.New(), DeviceID: "removed-device", ConnectionID: "removed-socket"}},
-	} {
-		ack, active, err := coordinator.SyncGroupRoom(ctx, request.roomID, request.generation, request.participant)
-		if err != nil || active || ack.Status != application.GroupRoomEnded || ack.ID != request.roomID || ack.Generation != request.generation || len(ack.Participants) != 0 || ack.Presenter != nil {
-			t.Fatalf("non-owner/mismatched sync ack=%#v active=%v err=%v", ack, active, err)
-		}
-	}
-	if _, ok, err := coordinator.SyncGroupRoom(ctx, roomID, 5, application.GroupParticipant{UserID: owner.UserID, DeviceID: owner.DeviceID, ConnectionID: "sibling-socket"}); err != nil || ok {
-		t.Fatalf("sibling socket sync active=%v err=%v, want inactive", ok, err)
-	}
 	room, err = coordinator.SetGroupPresenter(ctx, roomID, member, true)
 	if err != nil || room.StateRevision != 3 {
 		t.Fatalf("presenter mutation room=%#v err=%v", room, err)
@@ -466,9 +599,6 @@ func TestGroupRoomSyncRevisionAndEndedTombstoneIntegration(t *testing.T) {
 		if err != nil || status != "participant_absent" || got.ID != uuid.Nil || len(got.Participants) != 0 {
 			t.Fatalf("stale/released ownership: %q %#v %v", status, got, err)
 		}
-	}
-	if _, ok, err := coordinator.SyncGroupRoom(ctx, roomID, 5, owner); err != nil || ok {
-		t.Fatalf("ended room sync active=%v err=%v", ok, err)
 	}
 	tombstone, err := coordinator.client.HGetAll(ctx, groupRoomKey(roomID)).Result()
 	if err != nil || tombstone["ended_participants"] == "" || tombstone["ended_connections"] == "" {
@@ -730,18 +860,16 @@ func TestReadCursorFanoutCarriesAllAuthorizedGroupPeers(t *testing.T) {
 			if change.ReaderID != readerID || change.ConversationID != conversationID || change.Sequence != 12 || change.VisibleFromSequence != 4 || len(change.RecipientIDs) != 2 || change.RecipientIDs[0] != peerIDs[0] || change.RecipientIDs[1] != peerIDs[1] {
 				t.Fatalf("read pubsub change = %+v", change)
 			}
-			// The legacy direct-recipient field remains populated for older Redis
-			// publishers/consumers while the array supports group fan-out.
 			if err := coordinator.PublishRead(ctx, readerID, peerIDs[:1], conversationID, 13, 4); err != nil {
-				t.Fatalf("publish direct-compatible read event: %v", err)
+				t.Fatalf("publish direct read event: %v", err)
 			}
 			select {
 			case directChange := <-changes:
-				if directChange.RecipientID != peerIDs[0] || len(directChange.RecipientIDs) != 1 || directChange.RecipientIDs[0] != peerIDs[0] {
-					t.Fatalf("direct-compatible read pubsub change = %+v", directChange)
+				if len(directChange.RecipientIDs) != 1 || directChange.RecipientIDs[0] != peerIDs[0] {
+					t.Fatalf("direct read pubsub change = %+v", directChange)
 				}
 			case <-time.After(time.Second):
-				t.Fatal("timed out waiting for direct-compatible read event")
+				t.Fatal("timed out waiting for direct read event")
 			}
 			return
 		case <-time.After(50 * time.Millisecond):
@@ -793,8 +921,326 @@ func TestExpireGroupRoomsPreservesTerminalTargetsAndReleasesReservations(t *test
 	if err != nil || expiredRoom == nil || expiredRoom.Status != application.GroupRoomEnded || len(expiredRoom.Participants) != 1 || expiredRoom.Participants[0].ConnectionID != participant.ConnectionID {
 		t.Fatalf("expired rooms = %#v, %v", expired, err)
 	}
+	if err := coordinator.AckExpiredGroupRoom(ctx, *expiredRoom); err != nil {
+		t.Fatalf("ack expiry: %v", err)
+	}
 	if _, err := startAdmittedGroupRoom(ctx, coordinator, application.GroupRoom{ID: uuid.New(), ConversationID: conversationID, MembershipRevision: 1, Generation: 2, Participants: []application.GroupParticipant{participant}}); err != nil {
 		t.Fatalf("start after expiry cleanup: %v", err)
+	}
+}
+
+func TestExpiredGroupRoomClaimRetriesAndFencesStaleAck(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	id, conversation := uuid.New(), uuid.New()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: uuid.NewString(), ConnectionID: uuid.NewString()}
+	defer a.client.Del(context.Background(), groupRoomKey(id), groupRoomConversationKey(conversation), groupRoomUserKey(owner.UserID))
+	defer a.client.ZRem(context.Background(), groupRoomExpiryKey, id.String())
+	if _, err := startAdmittedGroupRoom(ctx, a, application.GroupRoom{ID: id, ConversationID: conversation, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}}); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Second).UnixMilli()
+	if err := a.client.HSet(ctx, groupRoomKey(id), "expires_at_unix_ms", past).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(past), Member: id.String()}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := a.ExpireGroupRooms(ctx, 100)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim=%+v err=%v", first, err)
+	}
+	concurrent, err := b.ExpireGroupRooms(ctx, 100)
+	if err != nil || len(concurrent) != 0 {
+		t.Fatalf("overlapping claim=%+v err=%v", concurrent, err)
+	}
+	ttl, err := a.client.PTTL(ctx, groupRoomKey(id)).Result()
+	if err != nil || ttl <= 0 || ttl > groupRoomEndedTTL {
+		t.Fatalf("unacked tombstone TTL=%v err=%v", ttl, err)
+	}
+	deadline, err := a.client.Do(ctx, "PEXPIRETIME", groupRoomKey(id)).Int64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an expired worker lease without sleeping; the next replica retries.
+	if err := a.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(past), Member: id.String()}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := b.ExpireGroupRooms(ctx, 100)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("retry claim=%+v err=%v", second, err)
+	}
+	if second[0].StateRevision != first[0].StateRevision || second[0].Participants[0].ConnectionID != owner.ConnectionID {
+		t.Fatalf("retry changed terminal snapshot: %+v", second[0])
+	}
+	if got, err := a.client.Do(ctx, "PEXPIRETIME", groupRoomKey(id)).Int64(); err != nil || got != deadline {
+		t.Fatalf("retry extended retention: before=%d after=%d err=%v", deadline, got, err)
+	}
+	if err := a.AckExpiredGroupRoom(ctx, first[0]); !errors.Is(err, application.ErrCallUnavailable) {
+		t.Fatalf("stale ack=%v", err)
+	}
+	if err := b.AckExpiredGroupRoom(ctx, second[0]); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.client.Do(ctx, "PEXPIRETIME", groupRoomKey(id)).Int64(); err != nil || got != deadline {
+		t.Fatalf("ack extended retention: before=%d after=%d err=%v", deadline, got, err)
+	}
+	if n := a.client.ZScore(ctx, groupRoomExpiryKey, id.String()).Err(); n != redis.Nil {
+		t.Fatalf("ack left pending index: %v", n)
+	}
+}
+
+func TestExpiredGroupRoomRetentionAndLegacyClaims(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	for _, mode := range []string{"new pending", "legacy pending", "legacy ack"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			c, err := NewPresenceCoordinator(rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			id, conversation := uuid.New(), uuid.New()
+			owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: "device", ConnectionID: "socket"}
+			defer c.client.Del(ctx, groupRoomKey(id), groupRoomConversationKey(conversation), groupRoomUserKey(owner.UserID))
+			defer c.client.ZRem(ctx, groupRoomExpiryKey, id.String())
+			if _, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: id, ConversationID: conversation, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}}); err != nil {
+				t.Fatal(err)
+			}
+			attemptKey, err := c.client.HGet(ctx, groupRoomKey(id), "start_attempt_key").Result()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.client.Del(ctx, attemptKey, groupStartConnectionKey(owner))
+			past := time.Now().Add(-time.Second).UnixMilli()
+			if err := c.client.HSet(ctx, groupRoomKey(id), "expires_at_unix_ms", past).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(past), Member: id.String()}).Err(); err != nil {
+				t.Fatal(err)
+			}
+			first, err := c.ExpireGroupRooms(ctx, 100)
+			if err != nil || len(first) != 1 || first[0].ID != id {
+				t.Fatalf("initial claim=%+v err=%v", first, err)
+			}
+			if mode != "new pending" {
+				// An older service could have retained an unbounded pending room.
+				if err := c.client.Persist(ctx, groupRoomKey(id)).Err(); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "legacy ack" {
+					if err := c.AckExpiredGroupRoom(ctx, first[0]); err != nil {
+						t.Fatalf("ack legacy claim: %v", err)
+					}
+					if ttl, err := c.client.PTTL(ctx, groupRoomKey(id)).Result(); err != nil || ttl <= 0 || ttl > groupRoomEndedTTL {
+						t.Fatalf("legacy ack retention ttl=%s err=%v", ttl, err)
+					}
+					if err := c.client.ZScore(ctx, groupRoomExpiryKey, id.String()).Err(); err != redis.Nil {
+						t.Fatalf("legacy ack left pending index: %v", err)
+					}
+					return
+				}
+				if err := c.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(past), Member: id.String()}).Err(); err != nil {
+					t.Fatal(err)
+				}
+				first, err = c.ExpireGroupRooms(ctx, 100)
+				if err != nil || len(first) != 1 || first[0].ID != id {
+					t.Fatalf("legacy claim=%+v err=%v", first, err)
+				}
+			}
+			ttl, err := c.client.PTTL(ctx, groupRoomKey(id)).Result()
+			if err != nil || ttl <= 0 || ttl > groupRoomEndedTTL {
+				t.Fatalf("pending retention ttl=%s err=%v", ttl, err)
+			}
+			deadline, err := c.client.Do(ctx, "PEXPIRETIME", groupRoomKey(id)).Int64()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(past), Member: id.String()}).Err(); err != nil {
+				t.Fatal(err)
+			}
+			retry, err := c.ExpireGroupRooms(ctx, 100)
+			if err != nil || len(retry) != 1 || retry[0].ID != id || retry[0].StateRevision != first[0].StateRevision {
+				t.Fatalf("retry=%+v err=%v", retry, err)
+			}
+			if got, err := c.client.Do(ctx, "PEXPIRETIME", groupRoomKey(id)).Int64(); err != nil || got != deadline {
+				t.Fatalf("retry extended retention: before=%d after=%d err=%v", deadline, got, err)
+			}
+			// Simulate timeout without waiting a minute; the next sweep must
+			// remove the stale index but leave a newer reservation untouched.
+			newID := uuid.NewString()
+			if err := c.client.Set(ctx, groupRoomConversationKey(conversation), newID, time.Minute).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.client.PExpireAt(ctx, groupRoomKey(id), time.Now().Add(-time.Second)).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.client.ZAdd(ctx, groupRoomExpiryKey, redis.Z{Score: float64(past), Member: id.String()}).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if rooms, err := c.ExpireGroupRooms(ctx, 100); err != nil || len(rooms) != 0 {
+				t.Fatalf("expired snapshot claimed=%+v err=%v", rooms, err)
+			}
+			if err := c.client.ZScore(ctx, groupRoomExpiryKey, id.String()).Err(); err != redis.Nil {
+				t.Fatalf("expired index not removed: %v", err)
+			}
+			if err := c.AckExpiredGroupRoom(ctx, retry[0]); !errors.Is(err, application.ErrCallUnavailable) {
+				t.Fatalf("expired snapshot acknowledged: %v", err)
+			}
+			if got, err := c.client.Get(ctx, groupRoomConversationKey(conversation)).Result(); err != nil || got != newID {
+				t.Fatalf("newer reservation changed: %q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestMembershipRetirementRetryIsExactAndDoesNotTouchNewRoom(t *testing.T) {
+	rawURL := os.Getenv("ZWEI_TEST_REDIS_URL")
+	if rawURL == "" {
+		t.Skip("set ZWEI_TEST_REDIS_URL to run Redis integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewPresenceCoordinator(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	conversation, oldID, newID := uuid.New(), uuid.New(), uuid.New()
+	owner := application.GroupParticipant{UserID: uuid.New(), DeviceID: "owner", ConnectionID: "old-socket"}
+	member := application.GroupParticipant{UserID: uuid.New(), DeviceID: "member", ConnectionID: "member-socket"}
+	defer c.client.Del(ctx, groupRoomKey(oldID), groupRoomKey(newID), groupRoomConversationKey(conversation), groupRoomUserKey(owner.UserID), groupRoomUserKey(member.UserID), groupStartConnectionKey(owner), groupMembershipRetirementKey(conversation, 2))
+	defer c.client.ZRem(ctx, groupRoomExpiryKey, oldID.String(), newID.String())
+	old, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: oldID, ConversationID: conversation, MembershipRevision: 1, Generation: 1, Participants: []application.GroupParticipant{owner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAttempt, err := c.client.HGet(ctx, groupRoomKey(oldID), "start_attempt_key").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.client.Del(ctx, oldAttempt)
+	old, err = joinAdmittedGroupRoom(ctx, c, oldID, member, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The mutation committed, but its response was lost to the caller.
+	terminal, err := c.EndGroupRoomForMembershipChange(ctx, conversation, oldID, old.Generation, old.StateRevision, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := c.client.Do(ctx, "PEXPIRETIME", groupMembershipRetirementKey(conversation, 2)).Int64()
+	if err != nil || deadline <= time.Now().UnixMilli() || deadline > time.Now().Add(groupRoomEndedTTL).UnixMilli() {
+		t.Fatalf("retirement evidence deadline=%d err=%v", deadline, err)
+	}
+	newRoom, err := startAdmittedGroupRoom(ctx, c, application.GroupRoom{ID: newID, ConversationID: conversation, MembershipRevision: 2, Generation: 2, Participants: []application.GroupParticipant{owner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newAttempt, err := c.client.HGet(ctx, groupRoomKey(newID), "start_attempt_key").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.client.Del(ctx, newAttempt)
+	retry, err := c.EndGroupRoomForMembershipChange(ctx, conversation, oldID, old.Generation, old.StateRevision, 2)
+	if err != nil || retry.ID != oldID || retry.StateRevision != terminal.StateRevision || retry.Status != application.GroupRoomEnded {
+		t.Fatalf("exact retry=%+v err=%v", retry, err)
+	}
+	if got, err := c.client.Do(ctx, "PEXPIRETIME", groupMembershipRetirementKey(conversation, 2)).Int64(); err != nil || got != deadline {
+		t.Fatalf("retry extended retirement evidence: before=%d after=%d err=%v", deadline, got, err)
+	}
+	recovered, err := c.GetGroupMembershipRetirement(ctx, conversation, 2)
+	if err != nil || recovered.ID != oldID || recovered.StateRevision != terminal.StateRevision || recovered.Status != application.GroupRoomEnded || len(recovered.Participants) != 2 {
+		t.Fatalf("recovered retirement=%+v err=%v", recovered, err)
+	}
+	connections := make(map[uuid.UUID]string)
+	for _, participant := range recovered.Participants {
+		connections[participant.UserID] = participant.ConnectionID
+	}
+	if connections[owner.UserID] != owner.ConnectionID || connections[member.UserID] != member.ConnectionID {
+		t.Fatalf("recovered wrong socket owners: %+v", connections)
+	}
+	savedConnections, err := c.client.HGet(ctx, groupRoomKey(oldID), "ended_connections").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.client.HDel(ctx, groupRoomKey(oldID), "ended_connections").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetGroupMembershipRetirement(ctx, conversation, 2); !errors.Is(err, application.ErrCallUnavailable) {
+		t.Fatalf("partial routing evidence: %v", err)
+	}
+	if err := c.client.HSet(ctx, groupRoomKey(oldID), "ended_connections", savedConnections).Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []struct {
+		conversation uuid.UUID
+		revision     int64
+	}{{uuid.New(), 2}, {conversation, 3}} {
+		if _, err := c.GetGroupMembershipRetirement(ctx, candidate.conversation, candidate.revision); !errors.Is(err, application.ErrCallNotFound) {
+			t.Fatalf("foreign retirement lookup: %+v: %v", candidate, err)
+		}
+	}
+	if _, err := c.EndGroupRoomForMembershipChange(ctx, uuid.New(), oldID, old.Generation, old.StateRevision, 2); !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("foreign conversation retirement retry: %v", err)
+	}
+	for _, wrong := range []struct{ generation, stateRevision, membershipRevision int64 }{
+		{old.Generation + 1, old.StateRevision, 2}, {old.Generation, old.StateRevision + 1, 2}, {old.Generation, old.StateRevision, 3},
+	} {
+		if _, err := c.EndGroupRoomForMembershipChange(ctx, conversation, oldID, wrong.generation, wrong.stateRevision, wrong.membershipRevision); err == nil {
+			t.Fatalf("foreign retirement accepted: %+v", wrong)
+		}
+	}
+	current, err := c.GetGroupRoomForConversation(ctx, conversation)
+	if err != nil || current.ID != newID || current.StateRevision != newRoom.StateRevision || current.Status != application.GroupRoomRinging {
+		t.Fatalf("new room changed: %+v err=%v", current, err)
+	}
+	if err := c.client.PExpireAt(ctx, groupMembershipRetirementKey(conversation, 2), time.Now().Add(-time.Second)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetGroupMembershipRetirement(ctx, conversation, 2); !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("expired evidence lookup: %v", err)
+	}
+	if _, err := c.EndGroupRoomForMembershipChange(ctx, conversation, oldID, old.Generation, old.StateRevision, 2); err == nil {
+		t.Fatal("expired retirement evidence allowed a retry")
+	}
+	// An observer sees the replacement rather than the retired room. A former
+	// participant with a newer reservation is not falsely declared absent.
+	if room, err := c.GetGroupRoomForConversation(ctx, conversation); err != nil || room.ID != newID {
+		t.Fatalf("observer discovery after cutoff=%+v err=%v", room, err)
+	}
+	if _, status, err := c.SyncGroupRoomOwnership(ctx, conversation, oldID, old.Generation, 2, owner); err != nil || status != "room_unavailable" {
+		t.Fatalf("owner with newer reservation=%q err=%v", status, err)
+	}
+	if _, status, err := c.SyncGroupRoomOwnership(ctx, conversation, oldID, old.Generation, 2, member); err != nil || status != "participant_absent" {
+		t.Fatalf("released participant=%q err=%v", status, err)
+	}
+	if _, err := c.EndGroupRoom(ctx, newID, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetGroupRoomForConversation(ctx, conversation); !errors.Is(err, application.ErrCallNotFound) {
+		t.Fatalf("observer discovery after ending replacement: %v", err)
+	}
+	if _, status, err := c.SyncGroupRoomOwnership(ctx, conversation, oldID, old.Generation, 2, owner); err != nil || status != "participant_absent" {
+		t.Fatalf("released owner=%q err=%v", status, err)
 	}
 }
 
@@ -964,7 +1410,12 @@ func TestAdmissionTokenFencesStaleDirectStartAndConflictsWithGroupStart(t *testi
 	if _, err := coordinator.Start(ctx, call, tokenB); err != nil {
 		t.Fatalf("replacement B commit: %v", err)
 	}
-	if _, err := coordinator.StartGroupRoom(ctx, room, tokenB); !errors.Is(err, application.ErrCallBusy) {
+	attempt, _, err := coordinator.PrepareGroupRoomStart(ctx, room.ConversationID, room.Participants[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.client.Del(ctx, groupStartAttemptKey(attempt))
+	if _, err := coordinator.StartPreparedGroupRoom(ctx, room, tokenB, attempt); !errors.Is(err, application.ErrCallBusy) {
 		t.Fatalf("conflicting group start error = %v, want busy", err)
 	}
 	if _, err := coordinator.AcquireCallAdmission(ctx, []uuid.UUID{callerID}); !errors.Is(err, application.ErrCallBusy) {

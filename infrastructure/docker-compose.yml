@@ -6,6 +6,9 @@ services:
       target: dev
       args:
         SERVICE: auth
+    volumes:
+      # Go contract tests read the live shared WebSocket protocol document.
+      - ../protocol:/app/protocol:ro
     environment:
       AUTH_PORT: 8081
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
@@ -14,7 +17,6 @@ services:
       GIPHY_API_KEY: ${GIPHY_API_KEY:-}
       ACCESS_TOKEN_LIFETIME: ${ACCESS_TOKEN_LIFETIME}
       REFRESH_TOKEN_LIFETIME: ${REFRESH_TOKEN_LIFETIME}
-      AUTH_UNIQUE_REFRESH_COOKIES: ${AUTH_UNIQUE_REFRESH_COOKIES:-false}
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT}
       SMTP_FROM: ${SMTP_FROM}

@@ -40,7 +40,7 @@ func TestBrowserV2CompositionRoutes(t *testing.T) {
 				t.Errorf("unauthenticated logout: %d", w.Code)
 			}
 		}
-		for _, path := range []string{"register", "login", "refresh"} {
+		for _, path := range []string{"register", "login", "refresh", "logout"} {
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/auth/"+path, strings.NewReader("{}")))
 			if w.Code != http.StatusNotFound {

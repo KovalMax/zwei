@@ -16,25 +16,20 @@ import (
 )
 
 type Handler struct {
-	auth                 *application.Service
-	admins               *application.AdminService
-	sessions             *sharedauth.SessionValidator
-	adminIPs             *IPAllowlist
-	allowedOrigins       map[string]struct{}
-	vapidPublicKey       string
-	giphyAPIKey          string
-	uniqueRefreshCookies bool
-	browserDiscovery     application.BrowserHeadDiscovery
+	auth             *application.Service
+	admins           *application.AdminService
+	sessions         *sharedauth.SessionValidator
+	adminIPs         *IPAllowlist
+	allowedOrigins   map[string]struct{}
+	vapidPublicKey   string
+	giphyAPIKey      string
+	browserDiscovery application.BrowserHeadDiscovery
 }
 
 // SetBrowserDiscovery wires the read-only v2 discovery capability.
 func (h *Handler) SetBrowserDiscovery(discovery application.BrowserHeadDiscovery) {
 	h.browserDiscovery = discovery
 }
-
-// EnableUniqueRefreshCookies changes issuance only; all instances must support
-// reading both formats before enabling this on any instance.
-func (h *Handler) EnableUniqueRefreshCookies() { h.uniqueRefreshCookies = true }
 
 func NewHandler(auth *application.Service, admins *application.AdminService, sessions *sharedauth.SessionValidator, adminIPs *IPAllowlist, allowedOrigins map[string]struct{}, vapidPublicKey string, giphyAPIKey ...string) *Handler {
 	key := ""
@@ -44,7 +39,6 @@ func NewHandler(auth *application.Service, admins *application.AdminService, ses
 	return &Handler{auth: auth, admins: admins, sessions: sessions, adminIPs: adminIPs, allowedOrigins: allowedOrigins, vapidPublicKey: vapidPublicKey, giphyAPIKey: key}
 }
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/auth/logout", h.logout)
 	mux.HandleFunc("GET /api/auth/push/vapid-public-key", h.vapidPublicKeyEndpoint)
 	mux.HandleFunc("GET /api/auth/giphy-key", h.giphyKey)
 	mux.HandleFunc("POST /api/auth/push-subscription", h.storePushSubscription)
@@ -83,122 +77,6 @@ type profileUpdateRequest struct {
 	AutoLoadApprovedMedia *bool   `json:"auto_load_approved_media"`
 }
 
-func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
-	var request credentialsRequest
-	if !decodeJSON(w, r, &request) {
-		errorJSON(w, http.StatusBadRequest, "invalid registration request")
-		return
-	}
-	result, err := h.auth.Register(r.Context(), application.Credentials{Email: request.Email, Password: request.Password, DisplayName: request.DisplayName, DeviceID: request.DeviceID, DeviceName: request.DeviceName, InvitationCode: request.InvitationCode})
-	if errors.Is(err, application.ErrInvalidInput) {
-		errorJSON(w, http.StatusBadRequest, "invalid registration request")
-		return
-	}
-	if uniqueViolation(err) {
-		errorJSON(w, http.StatusConflict, "email already registered")
-		return
-	}
-	if errors.Is(err, application.ErrInvitationInvalid) {
-		errorJSON(w, http.StatusBadRequest, "invalid invitation code")
-		return
-	}
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "could not create user")
-		return
-	}
-	if result.Pending {
-		runtime.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "pending"})
-		return
-	}
-	clearObservedSignedOutCookie(w, r)
-	h.writeTokens(w, http.StatusCreated, result.Tokens)
-}
-func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
-	if !h.authHostAllowed(w, r) {
-		return
-	}
-	var request credentialsRequest
-	if !decodeJSON(w, r, &request) {
-		errorJSON(w, http.StatusBadRequest, "invalid login request")
-		return
-	}
-	tokens, err := h.auth.Login(r.Context(), application.Credentials{Email: request.Email, Password: request.Password, DeviceID: request.DeviceID, DeviceName: request.DeviceName})
-	if errors.Is(err, application.ErrInvalidInput) {
-		errorJSON(w, http.StatusBadRequest, "invalid login request")
-		return
-	}
-	if errors.Is(err, application.ErrCredentials) {
-		errorJSON(w, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-	if errors.Is(err, application.ErrAccountInactive) {
-		errorJSON(w, http.StatusForbidden, "account is not active")
-		return
-	}
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "could not create session")
-		return
-	}
-	clearObservedSignedOutCookie(w, r)
-	h.writeTokens(w, http.StatusOK, tokens)
-}
-func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
-	if !h.refreshOriginAllowed(w, r) {
-		return
-	}
-	if !h.authHostAllowed(w, r) {
-		return
-	}
-	cookies, parseErr := refreshCandidateCookies(r)
-	if parseErr != nil {
-		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
-		return
-	}
-	if hasSignedOutCookie(r) {
-		errorJSON(w, http.StatusUnauthorized, "signed out")
-		return
-	}
-	if len(cookies) == 0 {
-		errorJSON(w, http.StatusUnauthorized, "invalid refresh token")
-		return
-	}
-	// A legacy response would overwrite an independently observed legacy cookie
-	// if selection chose a different name. Do not consume either credential.
-	if !h.uniqueRefreshCookies && len(cookies) > 1 {
-		for _, cookie := range cookies {
-			if cookie.Name == legacyRefreshCookie {
-				errorJSON(w, http.StatusConflict, "refresh cookie selection unavailable")
-				return
-			}
-		}
-	}
-	values := make([]string, len(cookies))
-	for i, cookie := range cookies {
-		values[i] = cookie.Value
-	}
-	tokens, selected, err := h.auth.RefreshCandidatesSelected(r.Context(), values)
-	if errors.Is(err, application.ErrInvalidInput) {
-		errorJSON(w, http.StatusBadRequest, "invalid refresh request")
-		return
-	}
-	if errors.Is(err, application.ErrRefreshToken) {
-		errorJSON(w, http.StatusUnauthorized, "invalid refresh token")
-		return
-	}
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "could not rotate refresh token")
-		return
-	}
-	newName := legacyRefreshCookie
-	if h.uniqueRefreshCookies {
-		newName = uniqueRefreshCookieName(tokens.RefreshToken)
-	}
-	if cookies[selected].Name != newName {
-		writeRefreshCookie(w, cookies[selected].Name, "", -1)
-	}
-	h.writeTokens(w, http.StatusOK, tokens)
-}
-
 func (h *Handler) refreshOriginAllowed(w http.ResponseWriter, r *http.Request) bool {
 	origins := r.Header.Values("Origin")
 	if len(origins) != 1 || origins[0] == "" || origins[0] == "null" || strings.TrimSpace(origins[0]) != origins[0] {
@@ -211,49 +89,6 @@ func (h *Handler) refreshOriginAllowed(w http.ResponseWriter, r *http.Request) b
 	}
 	return true
 }
-func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	if !h.authHostAllowed(w, r) {
-		return
-	}
-	userID, ok := h.userID(w, r)
-	if !ok {
-		return
-	}
-	cookies, cookieErr := refreshCandidateCookies(r)
-	var owned []*http.Cookie
-	if cookieErr == nil {
-		for _, cookie := range cookies {
-			err := h.auth.CheckLogoutCookie(r.Context(), userID, cookie.Value)
-			if err == nil {
-				owned = append(owned, cookie)
-			} else if cookieErr == nil || !errors.Is(err, application.ErrLogoutCookieMismatch) {
-				cookieErr = err
-			}
-		}
-	}
-	// The bearer authorizes revocation independently of the cookie's ownership.
-	// Never clear an unverified cookie, even when revocation succeeds.
-	if err := h.auth.Logout(r.Context(), userID); err != nil {
-		errorJSON(w, http.StatusInternalServerError, "could not revoke sessions")
-		return
-	}
-	// A foreign cookie must not silently restore another account after logout.
-	// Only explicit successful login/registration removes this browser fence.
-	writeRefreshCookie(w, signedOutCookie, "1", 400*24*60*60)
-	for _, cookie := range owned {
-		writeRefreshCookie(w, cookie.Name, "", -1)
-	}
-	if cookieErr != nil {
-		if errors.Is(cookieErr, application.ErrLogoutCookieMismatch) {
-			errorJSON(w, http.StatusConflict, "sessions revoked; refresh cookie ownership mismatch")
-		} else {
-			errorJSON(w, http.StatusInternalServerError, "sessions revoked; could not verify refresh cookie")
-		}
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (h *Handler) vapidPublicKeyEndpoint(w http.ResponseWriter, _ *http.Request) {
 	if h.vapidPublicKey == "" {
 		errorJSON(w, http.StatusServiceUnavailable, "push is not configured")
@@ -356,23 +191,6 @@ func (h *Handler) pushSubscriptionError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (h *Handler) writeTokens(w http.ResponseWriter, status int, tokens application.Tokens) {
-	if h.uniqueRefreshCookies {
-		writeRefreshCookie(w, uniqueRefreshCookieName(tokens.RefreshToken), tokens.RefreshToken, 30*24*60*60)
-	} else {
-		setRefreshCookie(w, tokens.RefreshToken)
-	}
-	tokens.RefreshToken = ""
-	runtime.WriteJSON(w, status, tokens)
-}
-
-func setRefreshCookie(w http.ResponseWriter, token string) {
-	writeRefreshCookie(w, legacyRefreshCookie, token, 30*24*60*60)
-}
-
-func clearRefreshCookie(w http.ResponseWriter) {
-	writeRefreshCookie(w, legacyRefreshCookie, "", -1)
-}
 func (h *Handler) websocketTicket(w http.ResponseWriter, r *http.Request) {
 	identity, err := h.sessions.AuthenticateBearer(r.Context(), r.Header.Get("Authorization"))
 	if err != nil || identity.DeviceID == "" {

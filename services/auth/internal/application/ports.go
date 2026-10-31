@@ -14,11 +14,6 @@ type Repository interface {
 	CreateUserWithDevice(context.Context, CreateUserParams) (uuid.UUID, uuid.UUID, error)
 	FindUserByEmail(context.Context, string) (user.User, error)
 	EnsureDevice(context.Context, uuid.UUID, string, string) (uuid.UUID, error)
-	CreateSession(context.Context, uuid.UUID, uuid.UUID, []byte, int64, time.Time) error
-	RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error
-	RotateRefreshCandidates(context.Context, [][]byte, []byte, time.Time, func(user.Session, []byte) error) error
-	RefreshTokenOwner(context.Context, []byte) (uuid.UUID, error)
-	RevokeAllSessions(context.Context, uuid.UUID) error
 	StorePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, uuid.UUID, uuid.UUID, PushSubscription) error
 	VerifyPushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, PushSubscription) (bool, error)
 	DeletePushSubscription(context.Context, uuid.UUID, uuid.UUID, int64, uuid.UUID, uuid.UUID, string) error

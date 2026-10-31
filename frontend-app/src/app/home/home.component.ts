@@ -384,6 +384,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         switch (intent.type) {
             case 'collapse': this.minimizeGroupCall(); break;
             case 'join': this.joinGroupCall(); break;
+            case 'stay': this.groupCall?.stayInSoloCall(); break;
             case 'enable-sound': this.groupCall?.enableRemoteAudio(); break;
             case 'action': this.onGroupCallAction(intent.actionID); break;
             case 'control-change': this.onGroupCallControlChange(intent.change); break;
@@ -400,6 +401,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public trackGroupMember(_index: number, member: GroupConversation['members'][number]): string { return member.userId; }
     public trackGroupPeer(_index: number, peer: GroupCallPeer): string { return `${peer.userID}:${peer.deviceID}`; }
     public trackMessage(_index: number, message: Message): string { return `${message.senderId}:${message.clientMessageId}`; }
+    public trackSegment(index: number): number { return index; }
 
     public playGroupPresentation(event: Event): void {
         if (event.target instanceof HTMLVideoElement) void event.target.play().catch(() => undefined);
@@ -413,6 +415,11 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     public groupParticipantName(userID: string): string {
         return this.groupCallConversation()?.members.find(member => member.userId === userID)?.displayName || 'Group participant';
+    }
+
+    public groupCallMemberIDs(): readonly string[] {
+        const group = this.groupCallConversation();
+        return group && !group.accessNeedsVerification ? group.members.map(member => member.userId) : [];
     }
 
     public directCallProfile(): CallPresentationProfile {
@@ -798,7 +805,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         // UX/quota hygiene only—not a security boundary. Public production keys still require provider-side origin restrictions and quota monitoring.
         this.giphySearchCooldownUntil = Date.now() + GIPHY_SEARCH_COOLDOWN_MS;
         window.clearTimeout(this.giphySearchCooldownTimer);
-        this.giphySearchCooldownTimer = window.setTimeout(() => this.changeDetector.markForCheck(), GIPHY_SEARCH_COOLDOWN_MS);
+        this.scheduleGiphyCooldownUpdate();
         this.giphySearchRequest?.unsubscribe();
         const generation = ++this.giphySearchGeneration;
         this.giphyActiveQuery = term;
@@ -808,6 +815,12 @@ export class HomeComponent implements OnInit, OnDestroy {
             next: page => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled || !this.giphyPickerOpen) return; this.acceptGiphyPage(page, false); },
             error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.changeDetector.markForCheck(); },
         });
+    }
+
+    private scheduleGiphyCooldownUpdate(): void {
+        const remaining = this.giphySearchCooldownUntil - Date.now();
+        if (remaining <= 0) { this.changeDetector.markForCheck(); return; }
+        this.giphySearchCooldownTimer = window.setTimeout(() => this.scheduleGiphyCooldownUpdate(), remaining);
     }
 
     public loadMoreGiphy(): void {
@@ -2437,7 +2450,7 @@ export class HomeComponent implements OnInit, OnDestroy {
             if (!this.dataProvider.send({
                 type: 'message.send',
                 request_id: requestID,
-                payload: {conversation_id: message.conversationId, client_message_id: message.clientMessageId, body: message.body, ...(mentions.length ? {mentions} : {})},
+                payload: {conversation_id: message.conversationId, client_message_id: message.clientMessageId, body: message.body, content_type: 'text', ...(mentions.length ? {mentions} : {})},
             })) continue;
             const timeout = window.setTimeout(() => this.markMessageUncertain(requestID), 10_000);
             this.pendingRequests.set(requestID, {clientMessageID: message.clientMessageId, timeout});

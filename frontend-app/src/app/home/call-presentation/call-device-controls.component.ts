@@ -1,5 +1,5 @@
 import {ConnectedPosition, CdkConnectedOverlay, Overlay} from '@angular/cdk/overlay';
-import {ChangeDetectionStrategy, Component, EventEmitter, HostListener, Input, OnDestroy, Output, ViewChild} from '@angular/core';
+import {ChangeDetectionStrategy, Component, ElementRef, EventEmitter, HostBinding, HostListener, Input, OnDestroy, Output, ViewChild} from '@angular/core';
 import {CallPresentationControl, CallPresentationControlChange, CallPresentationControlID} from '../call-presentation.model';
 
 @Component({
@@ -22,6 +22,7 @@ export class CallDeviceControlsComponent implements OnDestroy {
     @Output() public readonly controlChange = new EventEmitter<CallPresentationControlChange>();
     @Output() public readonly shareAudioChange = new EventEmitter<boolean>();
     public qualityPickerOpen = false;
+    @HostBinding('class.quality-picker-open') public get reservePickerSpace(): boolean { return this.qualityPickerOpenBelow && this.qualityPickerOpen; }
     public activeQualityIndex = 0;
     public readonly qualityAbovePositions: ConnectedPosition[] = [{originX: 'start', originY: 'top', overlayX: 'start', overlayY: 'bottom'}];
     public readonly qualityBelowPositions: ConnectedPosition[] = [{originX: 'start', originY: 'bottom', overlayX: 'start', overlayY: 'top'}];
@@ -50,7 +51,7 @@ export class CallDeviceControlsComponent implements OnDestroy {
             : null;
     }
 
-    public constructor(overlay: Overlay) {
+    public constructor(overlay: Overlay, private readonly host: ElementRef<HTMLElement>) {
         this.repositionOnScroll = overlay.scrollStrategies.reposition();
     }
 
@@ -145,7 +146,17 @@ export class CallDeviceControlsComponent implements OnDestroy {
         if (!this.qualityPickerOpen || this.positionFrame !== null || !overlay) return;
         this.positionFrame = window.requestAnimationFrame(() => {
             this.positionFrame = null;
-            if (this.qualityPickerOpen) overlay.overlayRef?.updatePosition();
+            if (this.qualityPickerOpen) {
+                if (this.qualityPickerOpenBelow) {
+                    const content = this.host.nativeElement.closest<HTMLElement>('.group-call-content');
+                    const trigger = this.host.nativeElement.querySelector<HTMLElement>('.call-quality-trigger');
+                    if (content && trigger) {
+                        const shortage = trigger.getBoundingClientRect().bottom + 110 - content.getBoundingClientRect().bottom;
+                        if (shortage > 0) content.scrollTop += shortage;
+                    }
+                }
+                overlay.overlayRef?.updatePosition();
+            }
         });
     }
 

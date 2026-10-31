@@ -1,5 +1,6 @@
 import { errors, expect, Locator, Page, test } from '@playwright/test';
 import {restoreSession, fixtureToken, reloadSession} from './session-helpers';
+import {markPersistedMessageAsLegacySticker} from './legacy-message-fixture';
 
 const password = 'Password123!';
 const adminBase = process.env.ADMIN_BASE_URL ?? 'https://kyc.localhost';
@@ -3180,13 +3181,23 @@ test('hides persisted legacy stickers while showing ordinary and GIPHY history i
     const token = await authenticatedToken(senderContext, senderEmail, 'legacy-sticker-history');
     const headers = {Authorization:`${token.token_type} ${token.access_token}`};
     const recipientID = await userID(senderContext, token, recipientEmail);
-    const postMessage = async (conversationID: string, body: string, content_type: 'text' | 'sticker') => senderContext.request.post(`${chatBase}/api/chat/conversations/${conversationID}/messages`, {
+    const postMessage = async (conversationID: string, body: string, content_type: 'text' | 'sticker') => senderContext.request.post(`${chatBase}/api/chat/v2/conversations/${conversationID}/messages`, {
       headers, data:{client_message_id:crypto.randomUUID(), body, content_type},
     });
+    const seedLegacySticker = async (conversationID: string, body: string) => {
+      const response = await postMessage(conversationID, body, 'text');
+      expect(response.status()).toBe(201);
+      const message = await response.json() as {id: string};
+      await markPersistedMessageAsLegacySticker(conversationID, message.id);
+      const history = await senderContext.request.get(`${chatBase}/api/chat/conversations/${conversationID}/messages`, {headers});
+      expect(history.status()).toBe(200);
+      const result = await history.json() as {messages: {id: string; body: string; content_type: string}[]};
+      expect(result.messages).toEqual(expect.arrayContaining([expect.objectContaining({id: message.id, body, content_type: 'sticker'})]));
+    };
     const directResponse = await senderContext.request.post(`${chatBase}/api/chat/conversations`, {headers, data:{other_user_id:recipientID}});
     expect(directResponse.status()).toBe(201);
     const direct = await directResponse.json() as {id:string};
-    expect((await postMessage(direct.id, 'cat', 'sticker')).status()).toBe(201);
+    await seedLegacySticker(direct.id, 'cat');
     await reloadSession(recipient); await waitForPresenceReady(recipient);
     await recipient.locator('.person-option').filter({hasText:'Legacy sticker sender'}).click();
     await expect(recipient.locator('.empty-messages')).toContainText('Sticker messages are no longer shown.');
@@ -3204,7 +3215,7 @@ test('hides persisted legacy stickers while showing ordinary and GIPHY history i
     const groupResponse = await senderContext.request.post(`${chatBase}/api/chat/groups`, {headers, data:{name:`Legacy sticker group ${Date.now()}`, member_ids:[recipientID]}});
     expect(groupResponse.status()).toBe(201);
     const group = await groupResponse.json() as {id:string;name:string};
-    expect((await postMessage(group.id, 'heart', 'sticker')).status()).toBe(201);
+    await seedLegacySticker(group.id, 'heart');
     expect((await postMessage(group.id, 'Visible group text', 'text')).status()).toBe(201);
     expect((await postMessage(group.id, 'https://media1.giphy.com/media/cZ7rmKfFYOvYI/200.gif', 'text')).status()).toBe(201);
     await reloadSession(recipient); await waitForPresenceReady(recipient);
@@ -5020,9 +5031,9 @@ test('message push click selects an authorized conversation and highlights the t
     expect(created.status()).toBe(201);
     const conversation = await created.json() as {id: string};
     const targetBody = `Push target ${Date.now()}`;
-    const sent = await recipientContext.request.post(`${chatBase}/api/chat/conversations/${conversation.id}/messages`, {
+    const sent = await recipientContext.request.post(`${chatBase}/api/chat/v2/conversations/${conversation.id}/messages`, {
       headers,
-      data: {client_message_id: crypto.randomUUID(), body: targetBody},
+      data: {client_message_id: crypto.randomUUID(), body: targetBody, content_type: 'text'},
     });
     expect(sent.status()).toBe(201);
     const target = await sent.json() as {id: string};
@@ -5098,8 +5109,8 @@ test('archived direct-message push click opens Archived without unarchiving', as
     expect(created.status()).toBe(201);
     const conversation = await created.json() as {id: string};
     const targetBody = `Archived push target ${Date.now()}`;
-    const sent = await context.request.post(`${chatBase}/api/chat/conversations/${conversation.id}/messages`, {
-      headers, data: {client_message_id: crypto.randomUUID(), body: targetBody},
+    const sent = await context.request.post(`${chatBase}/api/chat/v2/conversations/${conversation.id}/messages`, {
+      headers, data: {client_message_id: crypto.randomUUID(), body: targetBody, content_type: 'text'},
     });
     expect(sent.status()).toBe(201);
     const target = await sent.json() as {id: string};
@@ -5864,9 +5875,9 @@ test('keeps load older messages readable in both themes and responsive layouts',
     const conversation = await createdConversation.json() as {id: string};
 
     for (let index = 1; index <= 41; index += 1) {
-      const response = await context.request.post(`${chatBase}/api/chat/conversations/${conversation.id}/messages`, {
+      const response = await context.request.post(`${chatBase}/api/chat/v2/conversations/${conversation.id}/messages`, {
         headers: authorization,
-        data: {client_message_id: crypto.randomUUID(), body: `Older message ${String(index).padStart(2, '0')}`},
+        data: {client_message_id: crypto.randomUUID(), body: `Older message ${String(index).padStart(2, '0')}`, content_type: 'text'},
       });
       expect(response.status(), `Creating history message ${index}`).toBe(201);
     }
@@ -6064,7 +6075,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     await Promise.all([installDeterministicGroupMedia(owner, '#b84a3a'), installDeterministicGroupMedia(member, '#2563eb')]);
     // Delay only the removal notification: the real server and all other frames remain live.
     // A removal frame may precede the HTTP response, so the test must not depend on that ordering.
-    await member.routeWebSocket('**/ws/v2?ticket=*', socket => {
+    await member.routeWebSocket('**/ws/v3?ticket=*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (typeof message === 'string') {
@@ -7325,8 +7336,11 @@ test('contains group member, message, and rail lists across the required viewpor
     } finally {
       await touchContext.close();
     }
+    // Close the selected conversation through the mobile UI before reloading;
+    // changing storage alone leaves the component's selection alive.
+    await owner.getByRole('button', {name: 'Back to chats'}).click();
+    await expect(owner.locator('.person-option.selected')).toHaveCount(0);
     await owner.setViewportSize({width: 1440, height: 900});
-    await owner.evaluate(() => window.localStorage.removeItem('zwei_selected_conversation'));
     await reloadSession(owner);
     await waitForLiveConnection(owner);
     const ownerGroup = owner.locator('.person-option').filter({hasText: 'Browser acceptance group renamed'});
@@ -7379,7 +7393,7 @@ test('removing a member from an active group call stops only that member media a
       installDeterministicGroupMedia(removed, '#2563eb'),
       installDeterministicGroupMedia(remaining, '#15803d'),
     ]);
-    await removed.routeWebSocket('**/ws/v2*', socket => {
+    await removed.routeWebSocket('**/ws/v3*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (typeof message === 'string') {
@@ -7509,8 +7523,20 @@ test('hands a three-person group call from A to B to C and lets C leave and rejo
     await Promise.all([b, c].map(page => expect(page.getByRole('button', {name: 'Join call'})).toBeVisible({timeout: 10_000})));
     await c.screenshot({path: testInfo.outputPath('handoff-a-incoming-c-light-390.png'), fullPage: false});
     await b.getByRole('button', {name: 'Join call'}).click();
+    await expect(a.locator('.group-call-panel')).toContainText('2 participants in the group call.', {timeout: 10_000});
+    await expect(a.locator('.group-invitation-status')).toBeVisible();
     await c.getByRole('button', {name: 'Join call'}).click();
     await Promise.all([a, b, c].map(page => expect(page.locator('.group-call-panel')).toContainText('3 participants in the group call.', {timeout: 10_000})));
+    await Promise.all([a, b, c].map(page => expect(page.locator('.group-invitation-status')).toHaveCount(0)));
+    for (const [page, name] of [[a, 'light-desktop'], [b, 'dark-desktop'], [c, 'light-mobile']] as const) {
+      const containment = await page.evaluate(() => ({width: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth}));
+      expect(containment.width).toBeLessThanOrEqual(containment.viewport);
+      await page.screenshot({path: testInfo.outputPath(`handoff-complete-${name}.png`), fullPage: false});
+    }
+    await setTheme(c, 'dark');
+    await expect(c.locator('.group-invitation-status')).toHaveCount(0);
+    await c.screenshot({path: testInfo.outputPath('handoff-complete-dark-mobile.png'), fullPage: false});
+    await setTheme(c, 'light');
     await Promise.all([a, b, c].map(assertGroupCallAudioConnected));
     await a.waitForTimeout(2_000);
     await a.getByRole('button', {name: 'End group call for everyone'}).click();
@@ -7613,6 +7639,143 @@ test('hands a three-person group call from A to B to C and lets C leave and rejo
   }
 });
 
+test('group invitation expires without ending and solo starter can stay or end', async ({browser}, testInfo) => {
+  test.setTimeout(180_000);
+  const ownerEmail = uniqueEmail('group-deadline-owner');
+  const memberEmail = uniqueEmail('group-deadline-member');
+  const ownerContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const memberContext = await browser.newContext({viewport: {width: 1440, height: 900}});
+  const owner = await ownerContext.newPage();
+  const member = await memberContext.newPage();
+  const commands: string[] = [];
+  try {
+    await owner.routeWebSocket('**/ws/v3*', socket => {
+      const server = socket.connectToServer();
+      server.onMessage(message => socket.send(message));
+      socket.onMessage(message => {
+        if (typeof message === 'string') {
+          try { const parsed = JSON.parse(message) as {type?: string}; if (parsed.type) commands.push(parsed.type); } catch { /* Forward unchanged. */ }
+        }
+        server.send(message);
+      });
+    });
+    await Promise.all([installDeterministicGroupMedia(owner, '#b84a3a'), installDeterministicGroupMedia(member, '#2563eb')]);
+    await register(owner, ownerEmail, 'Deadline owner');
+    await register(member, memberEmail, 'Deadline member');
+    await Promise.all([waitForLiveConnection(owner), waitForLiveConnection(member)]);
+    const token = await authenticatedToken(ownerContext, ownerEmail, 'group-deadline-owner');
+    const memberID = await userID(ownerContext, token, memberEmail);
+    const created = await ownerContext.request.post(`${chatBase}/api/chat/groups`, {
+      headers: {Authorization: `${token.token_type} ${token.access_token}`},
+      data: {name: 'Invitation deadline group', member_ids: [memberID]},
+    });
+    expect(created.status()).toBe(201);
+    for (const page of [owner, member]) {
+      await reloadSession(page);
+      await page.locator('.person-option').filter({hasText: 'Invitation deadline group'}).click();
+      await expect(page.getByRole('button', {name: 'Join or start group audio call'})).toBeEnabled({timeout: 10_000});
+    }
+    await owner.getByRole('button', {name: 'Join or start group audio call'}).click();
+    await expect(owner.locator('.group-invitation-status')).toBeVisible({timeout: 10_000});
+    await expect(member.locator('.group-invitation-status')).toBeVisible({timeout: 10_000});
+    await expect(member.getByRole('button', {name: 'Join call'})).toBeVisible();
+    await owner.getByRole('button', {name: 'Minimize group call'}).click();
+    const prompt = owner.locator('.group-solo-prompt');
+    await expect(prompt).toBeVisible({timeout: 40_000});
+    await expect(owner.locator('.group-invitation-status')).toHaveCount(0);
+    await expect(member.locator('.group-invitation-status')).toHaveCount(0, {timeout: 5_000});
+    await expect(member.getByRole('button', {name: 'Join call'})).toBeVisible();
+    expect(commands.filter(type => type === 'group.call.end')).toHaveLength(0);
+    await expect(prompt).toHaveCount(1);
+
+    // Acceptance matrix for the prompt in its minimized state, including keyboard focus.
+    for (const theme of ['dark', 'light'] as const) {
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        await owner.keyboard.press('Tab');
+        await prompt.getByRole('button', {name: 'Stay in call'}).focus();
+        await expect(prompt.getByRole('button', {name: 'Stay in call'})).toBeFocused();
+        const geometry = await prompt.evaluate(element => {
+          const rect = (node: Element) => { const r = node.getBoundingClientRect(); return {left: r.left, right: r.right, top: r.top, bottom: r.bottom}; };
+          const buttons = Array.from(element.querySelectorAll('button')).map(rect);
+          const banner = document.querySelector('app-minimized-call-banner');
+          const focus = element.querySelector('button:focus-visible');
+          return {prompt: rect(element), buttons, banner: banner && rect(banner), focusOutline: focus && getComputedStyle(focus).outlineStyle, scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth};
+        });
+        const context = `${theme}/${viewport.width}: ${JSON.stringify(geometry)}`;
+        expect(geometry.scrollWidth, context).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        expect(geometry.prompt.left, context).toBeGreaterThanOrEqual(0);
+        expect(geometry.prompt.right, context).toBeLessThanOrEqual(viewport.width + 1);
+        expect(geometry.prompt.top, context).toBeGreaterThanOrEqual(0);
+        expect(geometry.prompt.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        expect(geometry.buttons).toHaveLength(2);
+        for (const button of geometry.buttons) {
+          expect(button.left, context).toBeGreaterThanOrEqual(geometry.prompt.left - 1);
+          expect(button.right, context).toBeLessThanOrEqual(geometry.prompt.right + 1);
+          expect(button.top, context).toBeGreaterThanOrEqual(geometry.prompt.top - 1);
+          expect(button.bottom, context).toBeLessThanOrEqual(geometry.prompt.bottom + 1);
+        }
+        const [a, b] = geometry.buttons;
+        expect(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top, context).toBe(false);
+        if (geometry.banner) expect(geometry.banner.bottom, context).toBeLessThanOrEqual(geometry.prompt.top + 1);
+        expect(geometry.focusOutline, context).toBeTruthy();
+        expect(geometry.focusOutline, context).not.toBe('none');
+        expect((await measureRenderedTextContrast(prompt.locator('p'))).ratio, context).toBeGreaterThanOrEqual(4.5);
+        await owner.screenshot({path: testInfo.outputPath(`group-invitation-prompt-minimized-${theme}-${viewport.width}.png`)});
+        for (const name of ['Stay in call', 'End call']) {
+          const contrast = await measureRenderedTextContrast(prompt.getByRole('button', {name}));
+          expect(contrast.ratio, `${context} ${name} contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+    await owner.setViewportSize({width: 1440, height: 900});
+    await owner.getByRole('button', {name: 'Return to group call'}).click();
+    await expect(prompt).toBeVisible();
+    for (const theme of ['dark', 'light'] as const) {
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        const restored = await owner.evaluate(() => {
+          const prompt = document.querySelector('.group-solo-prompt')?.getBoundingClientRect();
+          const frame = document.querySelector('.group-call-card')?.getBoundingClientRect();
+          return {prompt: prompt && {left: prompt.left, right: prompt.right, top: prompt.top, bottom: prompt.bottom}, frame: frame && {left: frame.left, right: frame.right, top: frame.top, bottom: frame.bottom}, width: document.documentElement.scrollWidth, client: document.documentElement.clientWidth};
+        });
+        const context = `${theme}/${viewport.width} restored: ${JSON.stringify(restored)}`;
+        expect(restored.prompt, context).not.toBeNull();
+        expect(restored.frame, context).not.toBeNull();
+        expect(restored.width, context).toBeLessThanOrEqual(restored.client + 1);
+        expect(restored.prompt?.bottom, context).toBeLessThanOrEqual((restored.frame?.top ?? 0) + 1);
+        expect(restored.frame?.bottom, context).toBeLessThanOrEqual(viewport.height + 1);
+        await owner.screenshot({path: testInfo.outputPath(`group-invitation-prompt-restored-${theme}-${viewport.width}.png`)});
+      }
+    }
+    // A late member can still join; joining dismisses the pending prompt.
+    await member.getByRole('button', {name: 'Join call'}).click();
+    await expect(prompt).toHaveCount(0, {timeout: 10_000});
+    await expect(owner.locator('.group-call-panel')).toContainText('2 participants in the group call.', {timeout: 10_000});
+    await owner.getByRole('button', {name: 'End group call for everyone'}).click();
+    await expect(member.locator('.group-call-terminal')).toContainText('Group call ended.', {timeout: 10_000});
+    await expect(owner.getByRole('button', {name: 'Join or start group audio call'})).toBeEnabled({timeout: 10_000});
+
+    // A second room exercises Stay once, then a third exercises explicit End.
+    await owner.getByRole('button', {name: 'Join or start group audio call'}).click();
+    await expect(prompt).toBeVisible({timeout: 40_000});
+    await prompt.getByRole('button', {name: 'Stay in call'}).click();
+    await expect(prompt).toHaveCount(0);
+    await expect(owner.getByRole('button', {name: 'End group call for everyone'})).toBeVisible();
+    await owner.getByRole('button', {name: 'End group call for everyone'}).click();
+    await expect(owner.getByRole('button', {name: 'Join or start group audio call'})).toBeEnabled({timeout: 10_000});
+    await owner.getByRole('button', {name: 'Join or start group audio call'}).click();
+    await expect(prompt).toBeVisible({timeout: 40_000});
+    await prompt.getByRole('button', {name: 'End call'}).click();
+    await expect(prompt).toHaveCount(0);
+    await expect(owner.locator('.group-call-terminal')).toContainText('Group call ended.');
+  } finally {
+    await Promise.allSettled([ownerContext.close(), memberContext.close()]);
+  }
+});
+
 test('runs a deterministic three-member group media lifecycle', async ({browser}, testInfo) => {
   test.setTimeout(240_000);
   const ownerEmail = uniqueEmail('group-media-owner');
@@ -7627,7 +7790,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
   let dropObserverTerminal = false;
 
   try {
-    await observer.routeWebSocket('**/ws/v2*', socket => {
+    await observer.routeWebSocket('**/ws/v3*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (dropObserverTerminal && typeof message === 'string') {
@@ -7755,6 +7918,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
         await presentationQuality.click();
         const qualityList = owner.getByRole('listbox', {name: 'Presentation quality options'});
         await expect(qualityList).toBeVisible();
+        await owner.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         const pickerGeometry = await owner.evaluate(() => {
           const picker = document.querySelector<HTMLElement>('.call-quality-listbox')?.getBoundingClientRect();
           const actions = document.querySelector<HTMLElement>('.group-call-actions')?.getBoundingClientRect();
@@ -7765,7 +7929,9 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
             .filter(control => control.rect.width > 0 && control.rect.height > 0 && picker && intersects(control.rect, picker));
           const audioLabel = document.querySelector<HTMLElement>('.share-audio-label')?.getBoundingClientRect();
           const audioLabelOverlaps = Boolean(audioLabel && picker && audioLabel.width > 0 && intersects(audioLabel, picker));
-          return {left: picker?.left ?? -1, right: picker?.right ?? Infinity, top: picker?.top ?? -1, bottom: picker?.bottom ?? Infinity, triggerBottom: trigger?.bottom ?? Infinity, actionsTop: actions?.top ?? 0, overlappingControls: overlappingControls.map(control => control.label), audioLabelOverlaps};
+          const support = document.querySelector<HTMLElement>('.group-call-support')?.getBoundingClientRect();
+          const supportOverlaps = Boolean(support && picker && intersects(support, picker));
+          return {left: picker?.left ?? -1, right: picker?.right ?? Infinity, top: picker?.top ?? -1, bottom: picker?.bottom ?? Infinity, triggerBottom: trigger?.bottom ?? Infinity, actionsTop: actions?.top ?? 0, overlappingControls: overlappingControls.map(control => control.label), audioLabelOverlaps, supportOverlaps};
         });
         expect(pickerGeometry.left).toBeGreaterThanOrEqual(0);
         expect(pickerGeometry.right, `${theme}/${viewport.width}px quality picker exceeds viewport`).toBeLessThanOrEqual(viewport.width + 1);
@@ -7773,6 +7939,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
         expect(pickerGeometry.bottom, `${theme}/${viewport.width}px quality picker overlaps the actions: ${JSON.stringify(pickerGeometry)}`).toBeLessThanOrEqual(pickerGeometry.actionsTop);
         expect(pickerGeometry.overlappingControls, `${theme}/${viewport.width}px quality picker overlaps microphone/speaker controls`).toEqual([]);
         expect(pickerGeometry.audioLabelOverlaps, `${theme}/${viewport.width}px quality picker obscures the Share audio label`).toBeFalsy();
+        expect(pickerGeometry.supportOverlaps, `${theme}/${viewport.width}px quality picker obscures support controls: ${JSON.stringify(pickerGeometry)}`).toBe(false);
         await owner.screenshot({path: testInfo.outputPath(`group-call-quality-open-${theme}-${viewport.width}.png`), fullPage: false});
         await owner.keyboard.press('Escape');
         await expect(qualityList).toHaveCount(0);
@@ -8492,7 +8659,8 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
         const join = owner.getByRole('button', {name: 'Join call', exact: true});
         await expect(join).toBeVisible();
         await expect(owner.locator('.group-call-card')).toHaveAttribute('aria-label', 'Group audio call');
-        await expect(owner.locator('.group-call-card')).toContainText('Group call is starting.');
+        await expect(owner.locator('.group-call-card')).toContainText('Incoming group call.');
+        await expect(owner.locator('.group-call-card')).not.toContainText('Group call is starting.');
         if (viewport.width <= 760) {
           const collapse = owner.getByRole('button', {name: 'Minimize group call'});
           await expect(collapse).toHaveAttribute('aria-label', 'Minimize group call');

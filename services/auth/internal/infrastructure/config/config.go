@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/KovalMax/zwei/services/shared/pushcrypto"
@@ -17,7 +16,6 @@ type Config struct {
 	GiphyAPIKey                  string
 	AccessLifetime               time.Duration
 	RefreshLifetime              time.Duration
-	UniqueRefreshCookies         bool
 	Port                         string
 	SMTPHost                     string
 	SMTPPort                     string
@@ -48,10 +46,6 @@ func Load() (Config, error) {
 	refresh, err := durationEnv("REFRESH_TOKEN_LIFETIME", 30*24*time.Hour)
 	if err != nil {
 		return Config{}, err
-	}
-	uniqueCookies, err := strconv.ParseBool(getenv("AUTH_UNIQUE_REFRESH_COOKIES", "false"))
-	if err != nil {
-		return Config{}, errors.New("AUTH_UNIQUE_REFRESH_COOKIES must be a boolean")
 	}
 	keys := map[string][]byte{}
 	for version, name := range map[string]string{"v1": "PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V1", "v2": "PUSH_SUBSCRIPTION_ENCRYPTION_KEY_V2"} {
@@ -90,7 +84,6 @@ func Load() (Config, error) {
 		GiphyAPIKey:                  os.Getenv("GIPHY_API_KEY"),
 		AccessLifetime:               access,
 		RefreshLifetime:              refresh,
-		UniqueRefreshCookies:         uniqueCookies,
 		Port:                         getenv("AUTH_PORT", "8081"),
 		SMTPHost:                     getenv("SMTP_HOST", "mailpit"),
 		SMTPPort:                     getenv("SMTP_PORT", "1025"),

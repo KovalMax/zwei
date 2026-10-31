@@ -1,4 +1,9 @@
 <ng-container *ngIf="state as callState">
+    <p class="group-invitation-status" *ngIf="invitationRinging" role="status">Group invitation ringing…</p>
+    <section class="group-solo-prompt" *ngIf="callState.soloPrompt" aria-labelledby="group-solo-prompt-title" role="region">
+        <p id="group-solo-prompt-title" role="status" aria-live="polite">No one has joined yet. Stay in the call or end it for everyone?</p>
+        <div class="group-solo-prompt-actions"><button mat-stroked-button type="button" (click)="emit({type: 'stay'})">Stay in call</button><button mat-flat-button color="warn" type="button" (click)="emit({type: 'end'})">End call</button></div>
+    </section>
     <ng-container *ngIf="callState.phase === 'active'">
         <audio *ngFor="let peer of callState.peers; trackBy: trackPeer" groupRemoteAudio autoplay playsinline [srcObject]="peer.stream"></audio>
     </ng-container>

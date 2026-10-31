@@ -20,72 +20,13 @@ import (
 func TestLoginDoesNotRequireDisplayName(t *testing.T) {
 	repository := &fakeRepository{account: user.User{ID: uuid.New(), PasswordHash: "hash", SessionVersion: 1, KYCStatus: user.KYCActive, EmailVerified: true}, deviceID: uuid.New()}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
-	tokens, err := service.Login(context.Background(), Credentials{Email: "user@example.test", Password: "password", DeviceID: "browser-device"})
+	target, err := service.AuthenticateBrowserLogin(context.Background(), Credentials{Email: "user@example.test", Password: "password", DeviceID: "browser-device"})
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
-	if tokens.AccessToken != "access-token" {
-		t.Fatalf("access token = %q", tokens.AccessToken)
+	if target.UserID != repository.account.ID || target.DeviceID != repository.deviceID {
+		t.Fatalf("target = %#v", target)
 	}
-}
-
-func TestRefreshPreservesRotationErrors(t *testing.T) {
-	storageFailure := errors.New("database unavailable")
-	for _, want := range []error{ErrRefreshToken, storageFailure, context.Canceled} {
-		service := NewService(&refreshErrorRepository{err: want}, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
-		_, err := service.Refresh(context.Background(), "refresh")
-		if !errors.Is(err, want) {
-			t.Errorf("Refresh() error = %v, want %v", err, want)
-		}
-	}
-}
-
-type refreshErrorRepository struct {
-	fakeRepository
-	err error
-}
-
-func (f *fakeRepository) RotateRefreshCandidates(context.Context, [][]byte, []byte, time.Time, func(user.Session, []byte) error) error {
-	return nil
-}
-
-type candidateRepository struct {
-	fakeRepository
-	hashes [][]byte
-	err    error
-}
-
-func (f *candidateRepository) RotateRefreshCandidates(_ context.Context, hashes [][]byte, _ []byte, _ time.Time, issue func(user.Session, []byte) error) error {
-	f.hashes = hashes
-	if f.err != nil {
-		return f.err
-	}
-	return issue(user.Session{UserID: uuid.New(), DeviceID: uuid.New(), SessionVersion: 1}, hashes[0])
-}
-
-func TestRefreshCandidatesBoundsAndDeduplicates(t *testing.T) {
-	repo := &candidateRepository{}
-	service := NewService(repo, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
-	for _, input := range [][]string{nil, {""}, {string(bytes.Repeat([]byte("x"), 4097))}, make([]string, MaxRefreshCandidates+1)} {
-		if _, err := service.RefreshCandidates(context.Background(), input); !errors.Is(err, ErrInvalidInput) {
-			t.Fatalf("invalid candidates: %v", err)
-		}
-	}
-	if _, err := service.RefreshCandidates(context.Background(), []string{"first", "first", "second"}); err != nil {
-		t.Fatal(err)
-	}
-	first, second := sha256.Sum256([]byte("first")), sha256.Sum256([]byte("second"))
-	if len(repo.hashes) != 2 || !bytes.Equal(repo.hashes[0], first[:]) || !bytes.Equal(repo.hashes[1], second[:]) {
-		t.Fatal("candidate hashes not deduplicated")
-	}
-	repo.err = ErrRefreshToken
-	if _, err := service.RefreshCandidates(context.Background(), []string{"first", "second"}); !errors.Is(err, ErrRefreshToken) {
-		t.Fatalf("ambiguity error: %v", err)
-	}
-}
-
-func (f *refreshErrorRepository) RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error {
-	return f.err
 }
 
 func TestPushSubscriptionRequiresVerifiedSessionDeviceAndSupportedEndpoint(t *testing.T) {
@@ -250,29 +191,24 @@ func TestTokensUseAPIFieldNames(t *testing.T) {
 func TestRegisterCreatesPendingAccountWithoutSession(t *testing.T) {
 	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
-	result, err := service.Register(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DisplayName: "Pending", DeviceID: "browser-device"})
+	err := service.registerPending(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DisplayName: "Pending", DeviceID: "browser-device"})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !result.Pending || result.Tokens.AccessToken != "" {
-		t.Fatalf("result = %#v", result)
 	}
 	if repository.params.KYCStatus != user.KYCPending || repository.params.EmailVerified {
 		t.Fatalf("create params = %#v", repository.params)
 	}
 }
 
-func TestRegisterWithInvitationCreatesActiveSession(t *testing.T) {
+func TestBrowserRegistrationCreatesPendingAccount(t *testing.T) {
 	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
-	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
-	result, err := service.Register(context.Background(), Credentials{Email: "invited@example.test", Password: "password", DisplayName: "Invited", DeviceID: "browser-device", InvitationCode: "invite-code"})
-	if err != nil {
-		t.Fatal(err)
+	auth := NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+	registration := NewBrowserRegistration(auth, nil, nil)
+	pending, result, err := registration.Register(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DisplayName: "Pending", DeviceID: "browser-device"}, nil)
+	if err != nil || !pending || result.Tokens.AccessToken != "" || result.Tokens.RefreshToken != "" {
+		t.Fatalf("pending registration: pending=%v result=%#v err=%v", pending, result, err)
 	}
-	if result.Pending || result.Tokens.AccessToken != "access-token" {
-		t.Fatalf("result = %#v", result)
-	}
-	if repository.params.KYCStatus != user.KYCActive || !repository.params.EmailVerified || len(repository.params.InvitationCode) == 0 {
+	if repository.params.KYCStatus != user.KYCPending || repository.params.EmailVerified {
 		t.Fatalf("create params = %#v", repository.params)
 	}
 }
@@ -280,7 +216,7 @@ func TestRegisterWithInvitationCreatesActiveSession(t *testing.T) {
 func TestLoginRejectsInactiveAccount(t *testing.T) {
 	repository := &fakeRepository{account: user.User{ID: uuid.New(), PasswordHash: "hash", SessionVersion: 1, KYCStatus: user.KYCPending}, deviceID: uuid.New()}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
-	_, err := service.Login(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DeviceID: "browser-device"})
+	_, err := service.AuthenticateBrowserLogin(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DeviceID: "browser-device"})
 	if !errors.Is(err, ErrAccountInactive) {
 		t.Fatalf("error = %v", err)
 	}
@@ -425,16 +361,6 @@ func (f *fakeRepository) FindUserByEmail(context.Context, string) (user.User, er
 }
 func (f *fakeRepository) EnsureDevice(context.Context, uuid.UUID, string, string) (uuid.UUID, error) {
 	return f.deviceID, nil
-}
-func (f *fakeRepository) CreateSession(context.Context, uuid.UUID, uuid.UUID, []byte, int64, time.Time) error {
-	return nil
-}
-func (f *fakeRepository) RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error {
-	return errors.New("not implemented")
-}
-func (f *fakeRepository) RevokeAllSessions(context.Context, uuid.UUID) error { return nil }
-func (f *fakeRepository) RefreshTokenOwner(context.Context, []byte) (uuid.UUID, error) {
-	return uuid.Nil, nil
 }
 func (f *fakeRepository) StorePushSubscription(_ context.Context, userID, deviceID uuid.UUID, sessionVersion int64, browserID, generation uuid.UUID, subscription PushSubscription) error {
 	f.pushBrowserID, f.pushGeneration = browserID, generation

@@ -39,13 +39,13 @@ func TestSenderRejectsClientMessageIDReuseAcrossConversations(t *testing.T) {
 	insertConversation(t, ctx, db, secondConversationID, senderID, secondRecipientID)
 
 	sender := NewSender(db, "sender-idempotency-test-key")
-	request := SendRequest{SenderID: senderID, ConversationID: firstConversationID, ClientMessageID: "uncertain-send", Body: "first message"}
+	request := SendRequest{SenderID: senderID, ConversationID: firstConversationID, ClientMessageID: "uncertain-send", Body: "first message", ContentType: "text"}
 	first, created, err := sender.Send(ctx, request)
 	if err != nil || !created {
 		t.Fatalf("first send = (%+v, %t, %v), want created message", first, created, err)
 	}
 	if first.ContentType != "text" {
-		t.Fatalf("default content type = %q, want text", first.ContentType)
+		t.Fatalf("content type = %q, want text", first.ContentType)
 	}
 	var intents int
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM message_push_outbox WHERE message_id = $1 AND recipient_id = $2 AND event_type = 'message.push'`, first.ID, firstRecipientID).Scan(&intents); err != nil {
@@ -115,7 +115,7 @@ func TestSenderRollsBackMessageDeliveryUnreadAndPushIntentTogether(t *testing.T)
 	if _, err = db.Exec(ctx, triggerSQL); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = NewSender(db, "push-atomic-test-key").Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "atomic-push-failure", Body: "private content"})
+	_, _, err = NewSender(db, "push-atomic-test-key").Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "atomic-push-failure", Body: "private content", ContentType: "text"})
 	if !errors.Is(err, ErrPersistence) {
 		t.Fatalf("send error=%v, want persistence failure", err)
 	}
@@ -139,7 +139,7 @@ func TestSenderRollsBackMessageDeliveryUnreadAndPushIntentTogether(t *testing.T)
 	}
 }
 
-func TestSenderPersistsStickerContentTypeAndReplaysItForDelivery(t *testing.T) {
+func TestHistoricalStickerReplaysForDeliveryAndNewWritesAreRejected(t *testing.T) {
 	databaseURL := os.Getenv("ZWEI_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("set ZWEI_TEST_DATABASE_URL to run PostgreSQL integration tests")
@@ -164,18 +164,21 @@ func TestSenderPersistsStickerContentTypeAndReplaysItForDelivery(t *testing.T) {
 		t.Fatalf("insert device: %v", err)
 	}
 	sender := NewSender(db, "sticker-persistence-test-key")
-	request := SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "sticker-send", Body: "heart", ContentType: "sticker"}
+	request := SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "sticker-send", Body: "heart", ContentType: "text"}
 	createdMessage, created, err := sender.Send(ctx, request)
-	if err != nil || !created || createdMessage.ContentType != "sticker" {
-		t.Fatalf("sticker send = (%+v, %t, %v), want created sticker result", createdMessage, created, err)
+	if err != nil || !created {
+		t.Fatalf("fixture text send = (%+v, %t, %v)", createdMessage, created, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE messages SET content_type = 'sticker' WHERE id = $1`, createdMessage.ID); err != nil {
+		t.Fatal(err)
 	}
 	var storedType string
 	if err := db.QueryRow(ctx, `SELECT content_type FROM messages WHERE id = $1`, createdMessage.ID).Scan(&storedType); err != nil || storedType != "sticker" {
 		t.Fatalf("stored content type = %q, error = %v, want sticker", storedType, err)
 	}
-	replayed, created, err := sender.Send(ctx, request)
-	if err != nil || created || replayed.ID != createdMessage.ID || replayed.ContentType != "sticker" {
-		t.Fatalf("idempotent sticker retry = (%+v, %t, %v), want original sticker", replayed, created, err)
+	request.ContentType = "sticker"
+	if _, created, err := sender.Send(ctx, request); !errors.Is(err, ErrInvalidMessage) || created {
+		t.Fatalf("sticker retry = (%t, %v), want invalid message", created, err)
 	}
 	pending, err := NewDeliveryRepository(db, "sticker-persistence-test-key").Pending(ctx, deviceID, 10)
 	if err != nil || len(pending) != 1 || pending[0].ID != createdMessage.ID || pending[0].ContentType != "sticker" {
@@ -183,6 +186,7 @@ func TestSenderPersistsStickerContentTypeAndReplaysItForDelivery(t *testing.T) {
 	}
 
 	for _, invalid := range []SendRequest{
+		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "missing-type", Body: "heart"},
 		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "bad-type", Body: "heart", ContentType: "image"},
 		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "bad-sticker", Body: "unknown", ContentType: "sticker"},
 		{SenderID: uuid.New(), ConversationID: uuid.New(), ClientMessageID: "sticker-mention", Body: "heart", ContentType: "sticker", Mentions: []Mention{{UserID: uuid.New(), Start: 0, End: 1}}},
@@ -219,11 +223,11 @@ func TestDeliveryPendingExcludesInactiveAndPreVisibilityMessages(t *testing.T) {
 	}
 
 	sender := NewSender(db, "delivery-visibility-test-key")
-	first, created, err := sender.Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "before-rejoin", Body: "first"})
+	first, created, err := sender.Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "before-rejoin", Body: "first", ContentType: "text"})
 	if err != nil || !created {
 		t.Fatalf("send first = (%+v, %t, %v)", first, created, err)
 	}
-	second, created, err := sender.Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "after-rejoin", Body: "second"})
+	second, created, err := sender.Send(ctx, SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "after-rejoin", Body: "second", ContentType: "text"})
 	if err != nil || !created {
 		t.Fatalf("send second = (%+v, %t, %v)", second, created, err)
 	}
@@ -271,7 +275,7 @@ func TestSenderPersistsAuthorizedMentionsAndReturnsThemOnRetryAndDelivery(t *tes
 	}
 	sender := NewSender(db, "mention-persistence-test-key")
 	mentions := []Mention{{UserID: recipientID, Start: 0, End: 4}, {UserID: recipientID, Start: 5, End: 9}}
-	request := SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "mention-send", Body: "@hey @hey", Mentions: mentions}
+	request := SendRequest{SenderID: senderID, ConversationID: conversationID, ClientMessageID: "mention-send", Body: "@hey @hey", ContentType: "text", Mentions: mentions}
 	created, wasCreated, err := sender.Send(ctx, request)
 	if err != nil || !wasCreated || len(created.Mentions) != 2 {
 		t.Fatalf("send = (%+v, %t, %v), want both mention spans", created, wasCreated, err)

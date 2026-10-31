@@ -1,12 +1,9 @@
 package httptransport
 
 import (
-	"bytes"
 	"context"
 	"crypto/elliptic"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,169 +12,10 @@ import (
 	"time"
 
 	"github.com/KovalMax/zwei/services/auth/internal/application"
-	"github.com/KovalMax/zwei/services/auth/internal/domain/user"
 	sharedauth "github.com/KovalMax/zwei/services/shared/auth"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
-
-type logoutRepository struct {
-	application.Repository
-	owner       uuid.UUID
-	err         error
-	revoked     bool
-	revokedUser uuid.UUID
-	revokeErr   error
-	hash        []byte
-}
-
-func (r *logoutRepository) RefreshTokenOwner(_ context.Context, hash []byte) (uuid.UUID, error) {
-	r.hash = append([]byte(nil), hash...)
-	return r.owner, r.err
-}
-func (r *logoutRepository) RevokeAllSessions(_ context.Context, userID uuid.UUID) error {
-	r.revoked = true
-	r.revokedUser = userID
-	return r.revokeErr
-}
-
-func TestLogoutRefreshCookieOwnership(t *testing.T) {
-	for _, tc := range []struct {
-		name             string
-		cookie           bool
-		owner            string
-		lookupErr        error
-		revokeErr        error
-		status           int
-		revoked, cleared bool
-	}{
-		{"different account", true, "other", nil, nil, http.StatusConflict, true, false},
-		{"matching account", true, "same", nil, nil, http.StatusNoContent, true, true},
-		{"no cookie", false, "", nil, nil, http.StatusNoContent, true, false},
-		{"unknown cookie", true, "", nil, nil, http.StatusConflict, true, false},
-		{"lookup failure", true, "", errors.New("sensitive database details"), nil, http.StatusInternalServerError, true, false},
-		{"revocation failure with mismatch", true, "other", nil, errors.New("sensitive database details"), http.StatusInternalServerError, true, false},
-		{"revocation failure with matching cookie", true, "same", nil, errors.New("sensitive database details"), http.StatusInternalServerError, true, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, existing, handler, bearer := authenticatedTestHandler(t, false)
-			repo := &logoutRepository{err: tc.lookupErr, revokeErr: tc.revokeErr}
-			if tc.owner == "same" {
-				repo.owner = existing.profile.ID
-			}
-			if tc.owner == "other" {
-				repo.owner = uuid.New()
-			}
-			handler.auth = application.NewService(repo, nil, nil, time.Minute, time.Hour)
-			request := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
-			request.Header.Set("Authorization", "Bearer "+bearer)
-			if tc.cookie {
-				request.AddCookie(&http.Cookie{Name: "zwei_refresh", Value: "secret-refresh"})
-			}
-			response := httptest.NewRecorder()
-			handler.logout(response, request)
-			if repo.revoked && repo.revokedUser != existing.profile.ID {
-				t.Fatalf("revoked wrong account: %v", repo.revokedUser)
-			}
-			if tc.revoked && tc.revokeErr == nil && (tc.status == http.StatusConflict || tc.lookupErr != nil) && !strings.Contains(response.Body.String(), "sessions revoked") {
-				t.Fatalf("response does not communicate revocation: %s", response.Body.String())
-			}
-			if tc.cookie {
-				want := sha256.Sum256([]byte("secret-refresh"))
-				if !bytes.Equal(repo.hash, want[:]) {
-					t.Fatal("repository did not receive refresh token hash")
-				}
-			}
-			cleared := false
-			marker := false
-			for _, cookie := range response.Result().Cookies() {
-				if cookie.Name == signedOutCookie {
-					marker = true
-				} else if cookie.Name == legacyRefreshCookie && cookie.MaxAge < 0 {
-					cleared = true
-				}
-			}
-			if response.Code != tc.status || repo.revoked != tc.revoked || cleared != tc.cleared || marker != (tc.revokeErr == nil && tc.revoked) || strings.Contains(response.Body.String(), "secret-refresh") || strings.Contains(response.Body.String(), "sensitive database details") {
-				t.Fatalf("status=%d revoked=%v cookies=%d body=%s", response.Code, repo.revoked, len(response.Result().Cookies()), response.Body.String())
-			}
-		})
-	}
-}
-
-func TestRefreshCookiesAreRestrictedToAuthEndpoints(t *testing.T) {
-	response := httptest.NewRecorder()
-	setRefreshCookie(response, "refresh-token")
-
-	cookie := response.Result().Cookies()[0]
-	if cookie.Name != "zwei_refresh" || cookie.Value != "refresh-token" || cookie.Path != "/api/auth" {
-		t.Fatalf("cookie = %#v", cookie)
-	}
-	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteNoneMode {
-		t.Fatalf("cookie security attributes = %#v", cookie)
-	}
-}
-
-func TestClearRefreshCookieExpiresRestrictedCookie(t *testing.T) {
-	response := httptest.NewRecorder()
-	clearRefreshCookie(response)
-
-	cookie := response.Result().Cookies()[0]
-	if cookie.Name != "zwei_refresh" || cookie.Path != "/api/auth" || cookie.MaxAge >= 0 {
-		t.Fatalf("cookie = %#v", cookie)
-	}
-	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteNoneMode {
-		t.Fatalf("cookie security attributes = %#v", cookie)
-	}
-}
-
-func TestRefreshWithoutCookieReturnsUnauthorized(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	request.Header.Set("Origin", "https://chat.localhost")
-	response := httptest.NewRecorder()
-
-	(&Handler{allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}}).refresh(response, request)
-
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("refresh status = %d, want %d", response.Code, http.StatusUnauthorized)
-	}
-}
-
-type failingRefreshRepository struct {
-	application.Repository
-	err error
-}
-
-func (r failingRefreshRepository) RotateRefreshToken(context.Context, []byte, []byte, time.Time, func(user.Session) error) error {
-	return r.err
-}
-
-func (r failingRefreshRepository) RotateRefreshCandidates(context.Context, [][]byte, []byte, time.Time, func(user.Session, []byte) error) error {
-	return r.err
-}
-
-func TestRefreshMapsRotationErrors(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		err    error
-		status int
-	}{
-		{"invalid", application.ErrRefreshToken, http.StatusUnauthorized},
-		{"infrastructure", errors.New("sensitive database details"), http.StatusInternalServerError},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			service := application.NewService(failingRefreshRepository{err: tc.err}, nil, nil, time.Minute, time.Hour)
-			handler := &Handler{auth: service, allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}}
-			request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-			request.Header.Set("Origin", "https://chat.localhost")
-			request.AddCookie(&http.Cookie{Name: "zwei_refresh", Value: "token"})
-			response := httptest.NewRecorder()
-			handler.refresh(response, request)
-			if response.Code != tc.status || strings.Contains(response.Body.String(), "sensitive database details") {
-				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-			}
-		})
-	}
-}
 
 func TestVAPIDPublicKeyEndpointRejectsInvalidCurvePoint(t *testing.T) {
 	handler := &Handler{vapidPublicKey: "encoded-public-key"}
@@ -359,7 +197,7 @@ func TestRefreshRequiresAllowlistedOrigin(t *testing.T) {
 		fetchSite  string
 		wantStatus int
 	}{
-		{name: "allowlisted same origin", origin: "https://chat.localhost", fetchSite: "same-origin", wantStatus: http.StatusUnauthorized},
+		{name: "allowlisted same origin", origin: "https://chat.localhost", fetchSite: "same-origin", wantStatus: http.StatusOK},
 		{name: "hostile origin", origin: "https://attacker.example", fetchSite: "cross-site", wantStatus: http.StatusForbidden},
 		{name: "null origin", origin: "null", fetchSite: "cross-site", wantStatus: http.StatusForbidden},
 		{name: "missing origin and fetch metadata", wantStatus: http.StatusForbidden},
@@ -376,29 +214,11 @@ func TestRefreshRequiresAllowlistedOrigin(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			handler := &Handler{allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}}
-			handler.refresh(response, request)
+			handler.refreshOriginAllowed(response, request)
 			if response.Code != test.wantStatus {
 				t.Fatalf("refresh status = %d, want %d", response.Code, test.wantStatus)
 			}
 		})
-	}
-}
-
-func TestWriteTokensSetsRefreshCookieAndOmitsItFromJSON(t *testing.T) {
-	response := httptest.NewRecorder()
-	(&Handler{}).writeTokens(response, http.StatusCreated, application.Tokens{
-		AccessToken: "access-token", TokenType: "Bearer", ExpiresIn: 900, RefreshToken: "refresh-token",
-	})
-
-	if response.Result().Cookies()[0].Value != "refresh-token" {
-		t.Fatalf("refresh cookie = %#v", response.Result().Cookies()[0])
-	}
-	var payload map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := payload["refresh_token"]; ok {
-		t.Fatalf("refresh token leaked in JSON: %v", payload)
 	}
 }
 
@@ -410,7 +230,7 @@ func TestKYCAuthenticationRequiresAllowlistedAddress(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "https://kyc.chat.false.tel/api/auth/login", nil)
 	request.Host = "kyc.chat.false.tel"
 	response := httptest.NewRecorder()
-	(&Handler{adminIPs: allowlist}).login(response, request)
+	(&Handler{adminIPs: allowlist}).authHostAllowed(response, request)
 
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)

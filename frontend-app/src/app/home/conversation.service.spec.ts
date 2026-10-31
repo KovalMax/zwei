@@ -74,21 +74,25 @@ describe('ConversationService group projection', () => {
         expect(rejected).toHaveBeenCalledWith(expect.any(InvalidGroupProjectionError));
     });
 
-    it('accepts a valid legacy group array as a complete page', () => {
+    it('rejects an unpaginated group array', () => {
         const received = vi.fn().mockName('received');
-        service.listGroupPage().subscribe(received);
+        const rejected = vi.fn().mockName('rejected');
+        service.listGroupPage().subscribe({next: received, error: rejected});
         const group = { id: 'group-1', name: 'Launch', avatar_seed: 'seed', owner_id: 'owner', membership_revision: 2, created_at: '2026-01-01T00:00:00Z', last_message_at: '2026-01-02T00:00:00Z', members: [{ user_id: 'owner', display_name: 'Owner', role: 'owner', visible_from_sequence: 1, joined_at: '2026-01-01T00:00:00Z' }] };
         http.expectOne(item => item.urlWithParams.endsWith('/api/chat/groups?limit=25')).flush([group]);
 
-        expect(received).toHaveBeenCalledWith({items: [expect.objectContaining({id: 'group-1', name: 'Launch'})], nextCursor: null});
+        expect(received).not.toHaveBeenCalled();
+        expect(rejected).toHaveBeenCalledWith(expect.any(InvalidGroupProjectionError));
     });
 
-    it('accepts an empty legacy group array as an exhausted page', () => {
+    it('rejects an empty unpaginated group array', () => {
         const received = vi.fn().mockName('received');
-        service.listGroupPage().subscribe(received);
+        const rejected = vi.fn().mockName('rejected');
+        service.listGroupPage().subscribe({next: received, error: rejected});
         http.expectOne(item => item.urlWithParams.endsWith('/api/chat/groups?limit=25')).flush([]);
 
-        expect(received).toHaveBeenCalledWith({items: [], nextCursor: null});
+        expect(received).not.toHaveBeenCalled();
+        expect(rejected).toHaveBeenCalledWith(expect.any(InvalidGroupProjectionError));
     });
 
     it('rejects a legacy group array atomically when an entry is malformed', () => {

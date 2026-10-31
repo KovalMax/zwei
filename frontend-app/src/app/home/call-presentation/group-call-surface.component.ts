@@ -5,6 +5,7 @@ import {CallPresentationAction, CallPresentationActionID, CallPresentationContro
 export type GroupCallSurfaceIntent =
     | {readonly type: 'collapse'}
     | {readonly type: 'join'}
+    | {readonly type: 'stay'}
     | {readonly type: 'enable-sound'}
     | {readonly type: 'action'; readonly actionID: CallPresentationActionID}
     | {readonly type: 'control-change'; readonly change: CallPresentationControlChange}
@@ -31,6 +32,7 @@ export class GroupCallSurfaceComponent implements OnDestroy {
     @Input() public ongoing = false;
     @Input() public profile?: CallPresentationProfile;
     @Input() public participants: readonly CallPresentationParticipants[] = [];
+    @Input() public memberIDs: readonly string[] = [];
     @Input() public controls: readonly CallPresentationControl[] = [];
     @Input() public actions: readonly CallPresentationAction[] = [];
     @Input() public panelClass = '';
@@ -39,6 +41,13 @@ export class GroupCallSurfaceComponent implements OnDestroy {
     public presentationFullscreen = false;
     public fullscreenStatus = '';
     @ViewChild('presentationStage') private presentationStage?: ElementRef<HTMLElement>;
+
+    public get invitationRinging(): boolean {
+        if (!this.state?.invitationRinging) return false;
+        if (!this.memberIDs.length || !this.state.room) return true;
+        const joined = new Set(this.state.room.participants.map(participant => participant.user_id));
+        return !this.memberIDs.every(id => joined.has(id));
+    }
 
     public get fullscreenSupported(): boolean {
         return typeof document.createElement('section').requestFullscreen === 'function'

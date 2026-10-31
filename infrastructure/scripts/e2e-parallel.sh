@@ -3,6 +3,11 @@
 set -Eeuo pipefail
 
 NAME_PREFIX="${1:-messenger}"
+MODE="${2:-all}"
+if [[ "$MODE" != all && "$MODE" != turn ]]; then
+  printf '%s\n' 'Unsupported isolated E2E mode' >&2
+  exit 2
+fi
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 source "$SCRIPT_DIR/e2e-env.sh"
@@ -17,9 +22,20 @@ if [[ ! "$NAME_PREFIX" =~ ^[a-z0-9][a-z0-9_-]{0,24}$ ]]; then
   exit 2
 fi
 
+# The TURN harness also bounds preflight and cleanup Docker operations. Its
+# supervised worker has a separate whole-run deadline that includes builds.
+if [[ "$MODE" == turn ]]; then E2E_BOUND_CLEANUP=1; fi
+bounded_cleanup() {
+  if [[ "${E2E_BOUND_CLEANUP:-0}" == 1 ]]; then
+    python3 "$SCRIPT_DIR/e2e-deadline.py" 30 3 "$@"
+  else
+    "$@"
+  fi
+}
+
 validate_compose_version() {
   local version major minor patch
-  version="$(docker compose version --short)"
+  version="$(bounded_cleanup docker compose version --short)"
   IFS=. read -r major minor patch <<<"$version"
   patch="${patch%%-*}"
   if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "$patch" =~ ^[0-9]+$ ]] || \
@@ -47,13 +63,14 @@ ipv4_bounds() {
 }
 
 validate_network_subnets() {
-  local network_id details network_name subnet candidate_start candidate_end existing_start existing_end
+  local network_id details network_name subnet candidate_start candidate_end existing_start existing_end networks
   local candidate
+  networks="$(bounded_cleanup docker network ls -q)"
   for candidate in 172.30.10.0/24 172.30.11.0/24; do
     read -r candidate_start candidate_end < <(ipv4_bounds "$candidate")
     while IFS= read -r network_id; do
       [[ -n "$network_id" ]] || continue
-      details="$(docker network inspect --format '{{.Name}}{{range .IPAM.Config}} {{.Subnet}}{{end}}' "$network_id")"
+      details="$(bounded_cleanup docker network inspect --format '{{.Name}}{{range .IPAM.Config}} {{.Subnet}}{{end}}' "$network_id")"
       read -r network_name subnet _ <<<"$details"
       for subnet in ${details#"$network_name"}; do
         read -r existing_start existing_end < <(ipv4_bounds "$subnet") || continue
@@ -62,7 +79,7 @@ validate_network_subnets() {
           return 1
         fi
       done
-    done < <(docker network ls -q)
+    done <<<"$networks"
   done
 }
 
@@ -82,11 +99,18 @@ RUN_ID="$(date -u +%Y%m%d%H%M%S)-$$"
 PROJECT_A="$NAME_PREFIX-e2e-$RUN_ID-a"
 PROJECT_B="$NAME_PREFIX-e2e-$RUN_ID-b"
 E2E_RUNNER_IMAGE="zwei-e2e:e2e-$RUN_ID"
-export E2E_RUNNER_IMAGE
+E2E_TURN_IMAGE="zwei-realtime-turn:e2e-$RUN_ID"
+export E2E_RUNNER_IMAGE E2E_TURN_IMAGE
+if [[ "$MODE" == turn ]]; then
+  # Never reuse the development TURN secret, including when .env is overridden.
+  E2E_TURN_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  export E2E_TURN_SECRET
+fi
 PIDS=()
 EXIT_STATUS=0
 LOCK_ACQUIRED=0
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml -f docker-compose.e2e-parallel.yml)
+if [[ "$MODE" == turn ]]; then COMPOSE_FILES+=(-f docker-compose.e2e-turn.yml); fi
 ASSIGNED_SPECS=("${E2E_CHAT_SPECS[@]}" "${E2E_OTHER_SPECS[@]}")
 
 for spec in "$ROOT_DIR"/e2e/tests/*.spec.ts; do
@@ -116,13 +140,14 @@ group_compose() {
   E2E_COTURN_IP="$coturn_ip" \
   TURN_EXTERNAL_IP="$coturn_ip" \
   PLAYWRIGHT_HOST_RESOLVER_RULES="MAP turn.chat.localhost $coturn_ip,MAP *.localhost host.docker.internal" \
-    docker compose -p "$project" "${COMPOSE_FILES[@]}" "$@"
+    bounded_cleanup docker compose -p "$project" "${COMPOSE_FILES[@]}" "$@"
 }
 
 cleanup() {
   local status=$?
-  local pid cleanup_failed=0
+  local pid container project containers cleanup_failed=0
   trap - EXIT INT TERM
+  if [[ "$MODE" == turn ]]; then E2E_BOUND_CLEANUP=1; fi
   for pid in "${PIDS[@]:-}"; do
     [[ -n "$pid" ]] || continue
     if kill -0 "$pid" 2>/dev/null; then
@@ -130,26 +155,51 @@ cleanup() {
     fi
   done
   wait_for_terminated_shards
-  if ! group_compose "$PROJECT_A" 172.30.10.0/24 172.30.10.250 172.30.10.251 down --rmi local --volumes --remove-orphans >/dev/null; then
+  # A killed Compose CLI can leave an interrupted `run --rm` one-off behind.
+  # Only remove one-offs carrying this invocation's unique project label.
+  for project in "$PROJECT_A" "$PROJECT_B"; do
+    if ! containers="$(bounded_cleanup docker ps -aq --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.oneoff=True')"; then
+      printf 'Failed to enumerate isolated one-off containers for %s\n' "$project" >&2
+      cleanup_failed=1
+      continue
+    fi
+    while IFS= read -r container; do
+      [[ -n "$container" ]] || continue
+      if ! bounded_cleanup docker rm -f "$container" >/dev/null; then cleanup_failed=1; fi
+    done <<<"$containers"
+  done
+  if ! group_compose "$PROJECT_A" 172.30.10.0/24 172.30.10.250 172.30.10.251 down --timeout 10 --rmi local --volumes --remove-orphans >/dev/null; then
     printf 'Failed to remove isolated Compose project %s\n' "$PROJECT_A" >&2
     cleanup_failed=1
   fi
-  if ! group_compose "$PROJECT_B" 172.30.11.0/24 172.30.11.250 172.30.11.251 down --rmi local --volumes --remove-orphans >/dev/null; then
+  if ! group_compose "$PROJECT_B" 172.30.11.0/24 172.30.11.250 172.30.11.251 down --timeout 10 --rmi local --volumes --remove-orphans >/dev/null; then
     printf 'Failed to remove isolated Compose project %s\n' "$PROJECT_B" >&2
     cleanup_failed=1
   fi
-  if docker image inspect "$E2E_RUNNER_IMAGE" >/dev/null 2>&1; then
-    if ! docker image rm "$E2E_RUNNER_IMAGE" >/dev/null; then
-      printf 'Failed to remove this run’s E2E image %s\n' "$E2E_RUNNER_IMAGE" >&2
-      cleanup_failed=1
-    fi
-  fi
+  cleanup_image "$E2E_RUNNER_IMAGE" || cleanup_failed=1
+  if [[ "$MODE" == turn ]]; then cleanup_image "$E2E_TURN_IMAGE" || cleanup_failed=1; fi
   if [[ "$LOCK_ACQUIRED" -eq 1 ]]; then
     rm -f "$LOCK_FILE" || cleanup_failed=1
   fi
   if [[ -n "$OWNER_FILE" ]]; then rm -f "$OWNER_FILE" || cleanup_failed=1; fi
   if [[ "$cleanup_failed" -eq 1 ]]; then status=1; fi
   exit "$status"
+}
+
+cleanup_image() {
+  local image="$1" inspect_status=0
+  bounded_cleanup docker image inspect "$image" >/dev/null 2>&1 || inspect_status=$?
+  # Docker returns 1 for an absent image. Timeouts and other errors are not
+  # evidence of successful cleanup and must fail closed.
+  if [[ "$inspect_status" -eq 1 ]]; then return 0; fi
+  if [[ "$inspect_status" -ne 0 ]]; then
+    printf '%s\n' 'Failed to inspect an isolated E2E image during cleanup' >&2
+    return 1
+  fi
+  if ! bounded_cleanup docker image rm "$image" >/dev/null; then
+    printf '%s\n' 'Failed to remove an isolated E2E image' >&2
+    return 1
+  fi
 }
 
 terminate_process_tree() {
@@ -209,6 +259,19 @@ rm -f "$OWNER_FILE"
 OWNER_FILE=""
 
 printf 'Preparing isolated E2E groups %s (chat) and %s (other specs)\n' "$PROJECT_A" "$PROJECT_B"
+if [[ "$MODE" == turn ]]; then
+  export PLAYWRIGHT_RUN_ID="turn-$RUN_ID"
+  # The process-group deadline covers configuration, image builds, setup, and
+  # Playwright. It escalates resistant descendants even if their parent exits.
+  python3 "$SCRIPT_DIR/e2e-deadline.py" 300 5 bash "$SCRIPT_DIR/e2e-turn-worker.sh" "$PROJECT_A" &
+  turn_pid="$!"
+  PIDS+=("$turn_pid")
+  if wait "$turn_pid"; then status=0; else status=$?; fi
+  PIDS=()
+  if [[ "$status" -ne 0 ]]; then exit "$status"; fi
+  printf '%s\n' 'Isolated TURN acceptance passed.'
+  exit 0
+fi
 # Prepare each project's frontend image and the shared E2E runner image before
 # either suite starts; the production bundle is built once below.
 group_compose "$PROJECT_A" 172.30.10.0/24 172.30.10.250 172.30.10.251 build frontend e2e

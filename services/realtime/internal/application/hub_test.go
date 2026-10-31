@@ -25,7 +25,7 @@ func (testClient) Close()                        {}
 
 func TestHubHandlePreservesRequestIDForRejectedCommand(t *testing.T) {
 	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
-	err := hub.Handle(context.Background(), testClient{}, []byte(`{"version":2,"type":"unsupported","request_id":"request-1"}`))
+	err := hub.Handle(context.Background(), testClient{}, []byte(`{"version":3,"type":"unsupported","request_id":"request-1"}`))
 
 	var requestError *RequestError
 	if !errors.As(err, &requestError) {
@@ -55,7 +55,7 @@ func TestCallRecoverProjectsOnlyRecipientRingingCall(t *testing.T) {
 	hub := NewHub(nil, authorizedPresence{}, onlinePresence{}, nil, nil, calls, nil)
 	hub.now = func() time.Time { return now }
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"call.recover","request_id":"recover-1","payload":{"call_id":"`+call.ID.String()+`"}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"call.recover","request_id":"recover-1","payload":{"call_id":"`+call.ID.String()+`"}}`))
 	if err != nil {
 		t.Fatalf("HandleVersion() error = %v", err)
 	}
@@ -63,7 +63,7 @@ func TestCallRecoverProjectsOnlyRecipientRingingCall(t *testing.T) {
 		t.Fatalf("events = %#v, want one recovery reply", client.events)
 	}
 	event, ok := client.events[0].(serverEvent)
-	if !ok || event.Version != 2 || event.Type != "call.recovered" || event.RequestID != "recover-1" {
+	if !ok || event.Version != 3 || event.Type != "call.recovered" || event.RequestID != "recover-1" {
 		t.Fatalf("event = %#v, want correlated v2 call.recovered", client.events[0])
 	}
 	payload := event.Payload.(CallRecovery)
@@ -116,8 +116,8 @@ func TestCallRecoverReturnsSameMissedOutcomeForExpiredMissingAndUnauthorizedCall
 			client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: "device"}}
 			hub := NewHub(nil, authorizedPresence{}, onlinePresence{}, nil, nil, &fakeCalls{call: test.call, getErr: test.err}, nil)
 			hub.now = func() time.Time { return now }
-			request := []byte(`{"version":2,"type":"call.recover","request_id":"recover-safe","payload":{"call_id":"` + call.ID.String() + `"}}`)
-			if err := hub.HandleVersion(context.Background(), client, 2, request); err != nil {
+			request := []byte(`{"version":3,"type":"call.recover","request_id":"recover-safe","payload":{"call_id":"` + call.ID.String() + `"}}`)
+			if err := hub.HandleVersion(context.Background(), client, 3, request); err != nil {
 				t.Fatalf("HandleVersion() error = %v", err)
 			}
 			if len(client.events) != 1 {
@@ -148,7 +148,7 @@ func TestHubReconcilesBoundedAuthorizedV2Conversation(t *testing.T) {
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: uuid.NewString()}}
 	hub := NewHubWithReconciliationAndLogger(nil, nil, reconciliationRateCoordinator{allowed: true}, nil, nil, reconciler, nil, nil, slog.Default())
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"conversation.reconcile","request_id":"reconcile-1","payload":{"conversation_id":"`+conversationID.String()+`","after_sequence":4}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"conversation.reconcile","request_id":"reconcile-1","payload":{"conversation_id":"`+conversationID.String()+`","after_sequence":4}}`))
 
 	if err != nil {
 		t.Fatalf("HandleVersion() error = %v", err)
@@ -160,7 +160,7 @@ func TestHubReconcilesBoundedAuthorizedV2Conversation(t *testing.T) {
 		t.Fatalf("events = %#v", client.events)
 	}
 	event, ok := client.events[0].(serverEvent)
-	if !ok || event.Version != 2 || event.Type != "conversation.reconciled" || event.RequestID != "reconcile-1" {
+	if !ok || event.Version != 3 || event.Type != "conversation.reconciled" || event.RequestID != "reconcile-1" {
 		t.Fatalf("event = %#v", client.events[0])
 	}
 	payload := event.Payload.(Reconciliation)
@@ -175,7 +175,7 @@ func TestHubReconciliationEmptyMessagesMarshalAsArray(t *testing.T) {
 	client := &recordingClient{identity: sharedauth.Identity{UserID: userID, DeviceID: uuid.NewString()}}
 	hub := NewHubWithReconciliationAndLogger(nil, nil, reconciliationRateCoordinator{allowed: true}, nil, nil, &fakeReconciler{}, nil, nil, slog.Default())
 
-	err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"conversation.reconcile","request_id":"reconcile-1","payload":{"conversation_id":"`+conversationID.String()+`","after_sequence":0}}`))
+	err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"conversation.reconcile","request_id":"reconcile-1","payload":{"conversation_id":"`+conversationID.String()+`","after_sequence":0}}`))
 	if err != nil {
 		t.Fatalf("HandleVersion() error = %v", err)
 	}
@@ -211,7 +211,7 @@ func TestHubRejectsRateLimitedReconciliationBeforeRepository(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			reconciler := &fakeReconciler{}
 			hub := NewHubWithReconciliationAndLogger(nil, nil, reconciliationRateCoordinator{err: test.err}, nil, nil, reconciler, nil, nil, slog.Default())
-			err := hub.HandleVersion(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: uuid.New()}}, 2, []byte(`{"version":2,"type":"conversation.reconcile","request_id":"reconcile-1","payload":{"conversation_id":"`+uuid.NewString()+`","after_sequence":0}}`))
+			err := hub.HandleVersion(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: uuid.New()}}, 3, []byte(`{"version":3,"type":"conversation.reconcile","request_id":"reconcile-1","payload":{"conversation_id":"`+uuid.NewString()+`","after_sequence":0}}`))
 
 			var requestError *RequestError
 			if !errors.As(err, &requestError) || requestError.Error() != "reconciliation rate limit exceeded" {
@@ -262,7 +262,7 @@ func TestHubPropagatesCallerContextToConversationPublication(t *testing.T) {
 func TestHubRejectsRateLimitedMessage(t *testing.T) {
 	hub := NewHub(nil, nil, rateLimitedCoordinator{}, nil, nil, nil, nil)
 	client := &recordingClient{}
-	err := hub.Handle(context.Background(), client, []byte(`{"version":2,"type":"message.send","request_id":"request-1","payload":{}}`))
+	err := hub.Handle(context.Background(), client, []byte(`{"version":3,"type":"message.send","request_id":"request-1","payload":{"content_type":"text"}}`))
 
 	var requestError *RequestError
 	if !errors.As(err, &requestError) {
@@ -283,7 +283,7 @@ func TestHubRejectsMessageWithoutSharedRateCoordinator(t *testing.T) {
 	client := &recordingClient{}
 	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
 
-	err := hub.Handle(context.Background(), client, []byte(`{"version":2,"type":"message.send","request_id":"request-1","payload":{}}`))
+	err := hub.Handle(context.Background(), client, []byte(`{"version":3,"type":"message.send","request_id":"request-1","payload":{"content_type":"text"}}`))
 
 	var requestError *RequestError
 	if !errors.As(err, &requestError) || requestError.Error() != "message rate limit exceeded" {
@@ -310,11 +310,23 @@ func TestHubRejectsV1Protocol(t *testing.T) {
 	}
 }
 
+func TestHubRejectsNonTextMessageWrites(t *testing.T) {
+	for _, payload := range []string{`{}`, `{"content_type":"sticker"}`, `{"content_type":"image"}`} {
+		client := &recordingClient{}
+		hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
+		err := hub.Handle(context.Background(), client, []byte(`{"version":3,"type":"message.send","request_id":"invalid-type","payload":`+payload+`}`))
+		var requestError *RequestError
+		if !errors.As(err, &requestError) || requestError.RequestID != "invalid-type" || !errors.Is(err, messaging.ErrInvalidMessage) || len(client.events) != 0 {
+			t.Fatalf("payload %s: error=%v events=%v", payload, err, client.events)
+		}
+	}
+}
+
 func TestHubRejectsMessageWhenSharedRateCoordinatorFails(t *testing.T) {
 	client := &recordingClient{}
 	hub := NewHub(nil, nil, messageRateCoordinator{err: errors.New("redis unavailable")}, nil, nil, nil, nil)
 
-	err := hub.Handle(context.Background(), client, []byte(`{"version":2,"type":"message.send","request_id":"request-1","payload":{}}`))
+	err := hub.Handle(context.Background(), client, []byte(`{"version":3,"type":"message.send","request_id":"request-1","payload":{"content_type":"text"}}`))
 
 	var requestError *RequestError
 	if !errors.As(err, &requestError) || requestError.Error() != "message rate limit exceeded" {
@@ -334,9 +346,9 @@ func TestHubRejectsRateLimitedRealtimeCommands(t *testing.T) {
 		payload string
 		want    string
 	}{
-		{name: "presence refresh", payload: `{"version":2,"type":"presence.refresh"}`, want: "presence refresh rate limit exceeded"},
-		{name: "read", payload: `{"version":2,"type":"conversation.read","request_id":"read-1","payload":{"sequence":1}}`, want: "read rate limit exceeded"},
-		{name: "call", payload: `{"version":2,"type":"call.start","request_id":"call-1","payload":{}}`, want: "call rate limit exceeded"},
+		{name: "presence refresh", payload: `{"version":3,"type":"presence.refresh"}`, want: "presence refresh rate limit exceeded"},
+		{name: "read", payload: `{"version":3,"type":"conversation.read","request_id":"read-1","payload":{"sequence":1}}`, want: "read rate limit exceeded"},
+		{name: "call", payload: `{"version":3,"type":"call.start","request_id":"call-1","payload":{}}`, want: "call rate limit exceeded"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -356,9 +368,9 @@ func TestHubRejectsRealtimeCommandsWithoutSharedRateCoordinator(t *testing.T) {
 		requestID string
 		want      string
 	}{
-		{name: "call", request: `{"version":2,"type":"call.start","request_id":"call-missing","payload":{"conversation_id":"` + uuid.NewString() + `"}}`, requestID: "call-missing", want: "call rate limit exceeded"},
-		{name: "presence", request: `{"version":2,"type":"presence.refresh","request_id":"presence-missing"}`, requestID: "presence-missing", want: "presence refresh rate limit exceeded"},
-		{name: "read", request: `{"version":2,"type":"conversation.read","request_id":"read-missing","payload":{"conversation_id":"` + uuid.NewString() + `","sequence":2}}`, requestID: "read-missing", want: "read rate limit exceeded"},
+		{name: "call", request: `{"version":3,"type":"call.start","request_id":"call-missing","payload":{"conversation_id":"` + uuid.NewString() + `"}}`, requestID: "call-missing", want: "call rate limit exceeded"},
+		{name: "presence", request: `{"version":3,"type":"presence.refresh","request_id":"presence-missing"}`, requestID: "presence-missing", want: "presence refresh rate limit exceeded"},
+		{name: "read", request: `{"version":3,"type":"conversation.read","request_id":"read-missing","payload":{"conversation_id":"` + uuid.NewString() + `","sequence":2}}`, requestID: "read-missing", want: "read rate limit exceeded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			userID := uuid.New()
@@ -402,9 +414,9 @@ func TestHubRejectsRealtimeCommandsWhenSharedRateCoordinatorFails(t *testing.T) 
 		requestID string
 		want      string
 	}{
-		{name: "call", request: `{"version":2,"type":"call.start","request_id":"call-error","payload":{"conversation_id":"` + uuid.NewString() + `"}}`, requestID: "call-error", want: "call rate limit exceeded"},
-		{name: "presence", request: `{"version":2,"type":"presence.refresh","request_id":"presence-error"}`, requestID: "presence-error", want: "presence refresh rate limit exceeded"},
-		{name: "read", request: `{"version":2,"type":"conversation.read","request_id":"read-error","payload":{"conversation_id":"` + uuid.NewString() + `","sequence":2}}`, requestID: "read-error", want: "read rate limit exceeded"},
+		{name: "call", request: `{"version":3,"type":"call.start","request_id":"call-error","payload":{"conversation_id":"` + uuid.NewString() + `"}}`, requestID: "call-error", want: "call rate limit exceeded"},
+		{name: "presence", request: `{"version":3,"type":"presence.refresh","request_id":"presence-error"}`, requestID: "presence-error", want: "presence refresh rate limit exceeded"},
+		{name: "read", request: `{"version":3,"type":"conversation.read","request_id":"read-error","payload":{"conversation_id":"` + uuid.NewString() + `","sequence":2}}`, requestID: "read-error", want: "read rate limit exceeded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client := &recordingClient{identity: sharedauth.Identity{UserID: uuid.New()}}
@@ -546,7 +558,7 @@ func TestHubDeliversTypingLocallyWhenPublishingSucceeds(t *testing.T) {
 	hub.Add(context.Background(), peer)
 	peer.events = nil
 
-	err := hub.Handle(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: senderID, DeviceID: uuid.NewString()}}, []byte(`{"version":2,"type":"typing.start","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.Handle(context.Background(), &recordingClient{identity: sharedauth.Identity{UserID: senderID, DeviceID: uuid.NewString()}}, []byte(`{"version":3,"type":"typing.start","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
@@ -577,7 +589,7 @@ func TestHubFansOutGroupTypingOnlyToResolvedOtherMembers(t *testing.T) {
 		client.events = nil
 	}
 
-	request := []byte(`{"version":2,"type":"typing.stop","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
+	request := []byte(`{"version":3,"type":"typing.stop","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
 	if err := hub.Handle(context.Background(), sender, request); err != nil {
 		t.Fatalf("handle group typing.stop: %v", err)
 	}
@@ -616,7 +628,7 @@ func TestHubPublishesAuthorizedReadCursorToPeer(t *testing.T) {
 	peer.events = nil
 	reader.events = nil
 
-	err := hub.Handle(context.Background(), reader, []byte(`{"version":2,"type":"conversation.read","payload":{"conversation_id":"`+conversationID.String()+`","sequence":9}}`))
+	err := hub.Handle(context.Background(), reader, []byte(`{"version":3,"type":"conversation.read","payload":{"conversation_id":"`+conversationID.String()+`","sequence":9}}`))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -657,7 +669,7 @@ func TestHubReadCursorFansOutToGroupPeersOnceAndAuthorizesBeforeAdvance(t *testi
 		hub.Add(context.Background(), client)
 		client.events = nil
 	}
-	request := []byte(`{"version":2,"type":"conversation.read","payload":{"conversation_id":"` + conversationID.String() + `","sequence":8}}`)
+	request := []byte(`{"version":3,"type":"conversation.read","payload":{"conversation_id":"` + conversationID.String() + `","sequence":8}}`)
 	if err := hub.Handle(context.Background(), reader, request); err != nil {
 		t.Fatalf("group read: %v", err)
 	}
@@ -685,7 +697,7 @@ func TestHubStartsCallForOnlineConversationPeer(t *testing.T) {
 	caller.events = nil
 	recipient.events = nil
 
-	err := hub.Handle(context.Background(), caller, []byte(`{"version":2,"type":"call.start","request_id":"call-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.Handle(context.Background(), caller, []byte(`{"version":3,"type":"call.start","request_id":"call-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -710,7 +722,7 @@ func TestHubStartsAuthorizedDirectCallWhileRecipientOfflineAndEnqueuesPush(t *te
 	queue := &callPushRecorder{}
 	hub.SetCallPushQueue(queue)
 	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: "caller-device"}, connectionID: "caller-socket"}
-	request := []byte(`{"version":2,"type":"call.start","request_id":"offline-call","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
+	request := []byte(`{"version":3,"type":"call.start","request_id":"offline-call","payload":{"conversation_id":"` + conversationID.String() + `"}}`)
 	if err := hub.Handle(context.Background(), caller, request); err != nil {
 		t.Fatalf("offline call start: %v", err)
 	}
@@ -740,7 +752,7 @@ func TestHubGeneratesSupportRefBeforeDirectStartRejection(t *testing.T) {
 	callerID, conversationID := uuid.New(), uuid.New()
 	hub := NewHub(nil, authorizedPresence{recipientID: uuid.New()}, onlinePresence{}, nil, nil, nil, nil)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: "device"}, connectionID: "socket-1"}
-	err := hub.Handle(context.Background(), client, []byte(`{"version":2,"type":"call.start","request_id":"start-rejected","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+	err := hub.Handle(context.Background(), client, []byte(`{"version":3,"type":"call.start","request_id":"start-rejected","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 	var requestError *RequestError
 	if !errors.As(err, &requestError) || requestError.SupportRef == uuid.Nil {
 		t.Fatalf("rejected start error = %#v, want support_ref", err)
@@ -754,11 +766,11 @@ func TestHubMalformedDirectCallStartsDoNotGenerateSupportRef(t *testing.T) {
 	}{
 		{
 			name:    "invalid conversation UUID",
-			command: `{"version":2,"type":"call.start","request_id":"invalid-uuid","payload":{"conversation_id":"not-a-uuid"}}`,
+			command: `{"version":3,"type":"call.start","request_id":"invalid-uuid","payload":{"conversation_id":"not-a-uuid"}}`,
 		},
 		{
 			name:    "missing conversation ID",
-			command: `{"version":2,"type":"call.start","request_id":"missing-conversation","payload":{}}`,
+			command: `{"version":3,"type":"call.start","request_id":"missing-conversation","payload":{}}`,
 		},
 	}
 	for _, test := range tests {
@@ -788,7 +800,7 @@ func TestHubV2DirectCallStartSupportRef(t *testing.T) {
 		hub.Add(context.Background(), recipient)
 		caller.events, recipient.events = nil, nil
 
-		err := hub.HandleVersion(context.Background(), caller, 2, []byte(`{"version":2,"type":"call.start","request_id":"v2-start","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+		err := hub.HandleVersion(context.Background(), caller, 3, []byte(`{"version":3,"type":"call.start","request_id":"v2-start","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 		if err != nil {
 			t.Fatalf("HandleVersion() error = %v", err)
 		}
@@ -814,7 +826,7 @@ func TestHubV2DirectCallStartSupportRef(t *testing.T) {
 		callerID, conversationID := uuid.New(), uuid.New()
 		hub := NewHub(nil, authorizedPresence{recipientID: uuid.New()}, onlinePresence{}, nil, nil, nil, nil)
 		client := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: "device"}, connectionID: "socket-v2"}
-		err := hub.HandleVersion(context.Background(), client, 2, []byte(`{"version":2,"type":"call.start","request_id":"v2-rejected","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
+		err := hub.HandleVersion(context.Background(), client, 3, []byte(`{"version":3,"type":"call.start","request_id":"v2-rejected","payload":{"conversation_id":"`+conversationID.String()+`"}}`))
 		var requestError *RequestError
 		if !errors.As(err, &requestError) || requestError.SupportRef == uuid.Nil {
 			t.Fatalf("rejected v2 start error = %#v, want support_ref", err)
@@ -838,7 +850,7 @@ func TestHubCallStartLogsAreJSONStructuredAndContainNoSignalMaterial(t *testing.
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	hub := NewHubWithLogger(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, &fakeCalls{}, nil, logger)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: "device"}, connectionID: "opaque-current-socket"}
-	request := `{"version":2,"type":"call.start","request_id":"json-start","payload":{"conversation_id":"` + conversationID.String() + `"}}`
+	request := `{"version":3,"type":"call.start","request_id":"json-start","payload":{"conversation_id":"` + conversationID.String() + `"}}`
 	if err := hub.Handle(context.Background(), client, []byte(request)); err != nil {
 		t.Fatalf("start call: %v", err)
 	}
@@ -983,7 +995,7 @@ func TestHubQueuesCallerRingingBeforeRecipientIncoming(t *testing.T) {
 	hub.Add(context.Background(), recipient)
 	deliveryOrder = nil
 
-	if err := hub.Handle(context.Background(), caller, []byte(`{"version":2,"type":"call.start","request_id":"call-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`)); err != nil {
+	if err := hub.Handle(context.Background(), caller, []byte(`{"version":3,"type":"call.start","request_id":"call-1","payload":{"conversation_id":"`+conversationID.String()+`"}}`)); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
 	if got, want := deliveryOrder, []string{"caller:call.ringing", "recipient:call.incoming"}; !equalStrings(got, want) {
@@ -1014,7 +1026,7 @@ func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
 	acceptedOtherTab.events = nil
 	otherDevice.events = nil
 
-	err := hub.Handle(context.Background(), caller, []byte(`{"version":2,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"private"}}}`))
+	err := hub.Handle(context.Background(), caller, []byte(`{"version":3,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"private"}}}`))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -1030,7 +1042,7 @@ func TestHubRoutesSignalOnlyToAcceptedDevice(t *testing.T) {
 	if strings.Contains(logs.String(), "call command accepted") {
 		t.Fatalf("successful call.signal emitted lifecycle log: %s", logs.String())
 	}
-	if err := hub.Handle(context.Background(), callerOtherTab, []byte(`{"version":2,"type":"call.signal","request_id":"signal-2","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"forbidden"}}}`)); !errors.Is(err, ErrCallNotAllowed) {
+	if err := hub.Handle(context.Background(), callerOtherTab, []byte(`{"version":3,"type":"call.signal","request_id":"signal-2","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"offer","sdp":"forbidden"}}}`)); !errors.Is(err, ErrCallNotAllowed) {
 		t.Fatalf("other caller tab signal error = %v, want not allowed", err)
 	}
 }
@@ -1042,7 +1054,7 @@ func TestHubRejectsUnsupportedCallSignal(t *testing.T) {
 	hub := NewHub(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, &fakeCalls{call: call}, nil)
 	caller := &recordingClient{identity: sharedauth.Identity{UserID: callerID, DeviceID: call.CallerDeviceID}}
 
-	err := hub.Handle(context.Background(), caller, []byte(`{"version":2,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"unknown"}}}`))
+	err := hub.Handle(context.Background(), caller, []byte(`{"version":3,"type":"call.signal","request_id":"signal-1","payload":{"call_id":"`+call.ID.String()+`","signal":{"type":"unknown"}}}`))
 	if err == nil || !strings.Contains(err.Error(), "unsupported call signal") {
 		t.Fatalf("Handle() error = %v", err)
 	}
@@ -1055,7 +1067,10 @@ func TestHubValidatesExactDirectCallSignalShapes(t *testing.T) {
 		valid  bool
 	}{
 		{name: "offer", signal: `{"type":"offer","sdp":"private"}`, valid: true},
+		{name: "answer", signal: `{"type":"answer","sdp":"private"}`, valid: true},
+		{name: "direct offer rejects negotiation ID", signal: `{"type":"offer","sdp":"private","negotiation_id":"8c72dd14-fafe-4e2d-9735-e09c37358bf1"}`},
 		{name: "candidate", signal: `{"type":"candidate","candidate":{"candidate":"ice"}}`, valid: true},
+		{name: "direct opaque candidate", signal: `{"type":"candidate","candidate":{}}`, valid: true},
 		{name: "marker", signal: `{"type":"screen-share-started"}`, valid: true},
 		{name: "marker with sdp", signal: `{"type":"screen-share-started","sdp":"private"}`},
 		{name: "marker with candidate", signal: `{"type":"screen-share-stopped","candidate":{}}`},
@@ -1067,7 +1082,7 @@ func TestHubValidatesExactDirectCallSignalShapes(t *testing.T) {
 			callID := uuid.New()
 			hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
 			client := &recordingClient{}
-			request := `{"version":2,"type":"call.signal","request_id":"signal-shape","payload":{"call_id":"` + callID.String() + `","signal":` + test.signal + `}}`
+			request := `{"version":3,"type":"call.signal","request_id":"signal-shape","payload":{"call_id":"` + callID.String() + `","signal":` + test.signal + `}}`
 			err := hub.Handle(context.Background(), client, []byte(request))
 			if test.valid {
 				var requestError *RequestError
@@ -1096,7 +1111,7 @@ func TestHubLogsAcceptedCallDeclineWithActorAndCallContext(t *testing.T) {
 	hub := NewHubWithLogger(nil, authorizedPresence{recipientID: recipientID}, onlinePresence{}, nil, nil, calls, nil, logger)
 	client := &recordingClient{identity: sharedauth.Identity{UserID: recipientID, DeviceID: "recipient-device"}}
 
-	err := hub.Handle(context.Background(), client, []byte(`{"version":2,"type":"call.decline","request_id":"decline-1","payload":{"call_id":"`+call.ID.String()+`"}}`))
+	err := hub.Handle(context.Background(), client, []byte(`{"version":3,"type":"call.decline","request_id":"decline-1","payload":{"call_id":"`+call.ID.String()+`"}}`))
 	if err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}

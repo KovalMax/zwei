@@ -65,7 +65,7 @@ func (r *CallPushRepository) Resolve(ctx context.Context, job callpush.Job, reci
 		if err != nil {
 			return "", nil, false, err
 		}
-		if room.ID != job.CallID || room.ConversationID != job.ConversationID || room.Status != application.GroupRoomRinging || room.MembershipRevision <= 0 || !room.ExpiresAt.Equal(job.ExpiresAt) {
+		if room.ID != job.CallID || room.ConversationID != job.ConversationID || (room.Status != application.GroupRoomRinging && room.Status != application.GroupRoomActive) || room.MembershipRevision <= 0 || !room.RingExpiresAt.Equal(job.ExpiresAt) {
 			return "", nil, false, nil
 		}
 		lease, err := r.authorizer.BeginGroupCall(ctx, job.ConversationID, recipient)

@@ -109,6 +109,41 @@ func TestHistoryMessagesRejectsInvalidQueryBeforeStoreCall(t *testing.T) {
 	}
 }
 
+func TestSendMessageRejectsMissingOrNonTextContentType(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, sharedauth.Claims{BrowserID: uuid.NewString(), BrowserGeneration: uuid.NewString(), SessionVersion: 7,
+		RegisteredClaims: jwt.RegisteredClaims{Subject: uuid.NewString(), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
+	}).SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{limiter: &testRequestLimiter{allowed: true}, sessions: sharedauth.NewSessionValidator(rateLimitSessionReader{}, []byte(secret))}
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	for _, body := range []string{`{"body":"hello"}`, `{"body":"hello","content_type":"sticker"}`, `{"body":"hello","content_type":"image"}`} {
+		request := httptest.NewRequest(http.MethodPost, "/api/chat/v2/conversations/"+uuid.NewString()+"/messages", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status=%d response=%s", body, recorder.Code, recorder.Body)
+		}
+	}
+}
+
+func TestLegacyMessageWriteRequiresUpgrade(t *testing.T) {
+	mux := http.NewServeMux()
+	(&Handler{}).Register(mux)
+	for _, body := range []string{`{"body":"hello"}`, `{"body":"hello","content_type":"text"}`, `{"body":"hello","content_type":"sticker"}`} {
+		request := httptest.NewRequest(http.MethodPost, "/api/chat/conversations/"+uuid.NewString()+"/messages", strings.NewReader(body))
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUpgradeRequired || !strings.Contains(recorder.Body.String(), "update required") {
+			t.Fatalf("body %s: status=%d response=%s", body, recorder.Code, recorder.Body)
+		}
+	}
+}
+
 type historyQueryStore struct {
 	calls  int
 	before int64

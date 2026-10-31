@@ -15,7 +15,11 @@
     border: 6px solid #2102cf;
     border-radius: 50%;
     animation: lds-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-    border-color: #2102cf transparent transparent transparent;
+    border-color: var(--loading-spinner-color, #2102cf) transparent transparent transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .lds-ring div { animation: none; }
 }
 
 .lds-ring div:nth-child(1) {
