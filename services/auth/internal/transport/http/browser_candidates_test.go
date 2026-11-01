@@ -42,7 +42,7 @@ func TestV2DiscoveryRecoversManyStaleCookiesWithoutDeletingLiveProofs(t *testing
 		parts = append(parts, uniqueRefreshCookieName(token)+"="+token)
 	}
 	parts = append(parts, uniqueRefreshCookieName("live-a")+"=live-a", uniqueRefreshCookieName("live-b")+"=live-b")
-	r := httptest.NewRequest("POST", "/", strings.NewReader(`{}`))
+	r := newAllowedAuthRequest("POST", "/", strings.NewReader(`{}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", strings.Join(parts, "; "))
@@ -67,7 +67,7 @@ func TestV2DiscoveryOverCandidateLimitDoesNotDeleteCookies(t *testing.T) {
 		token := fmt.Sprintf("stale-%d", i)
 		parts = append(parts, uniqueRefreshCookieName(token)+"="+token)
 	}
-	r := httptest.NewRequest("POST", "/", strings.NewReader(`{}`))
+	r := newAllowedAuthRequest("POST", "/", strings.NewReader(`{}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", strings.Join(parts, "; "))
@@ -90,7 +90,7 @@ func TestV2DiscoveryNeverCleansUpWithoutValidatedMutation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), nil, nil, nil, nil)
 			h.SetCandidateDiscovery(tc.repo)
-			r := httptest.NewRequest("POST", "/", strings.NewReader(`{}`))
+			r := newAllowedAuthRequest("POST", "/", strings.NewReader(`{}`))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Cookie", "zwei_refresh=legacy; "+uniqueRefreshCookieName("stale")+"=stale")
@@ -109,7 +109,7 @@ func TestV2LogoutExpiresOnlySelectedObservedProof(t *testing.T) {
 	s := &v2SessionsFake{}
 	h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), nil, nil, s, v2BearerFake{sharedauth.Identity{UserID: uid, BrowserID: b, BrowserGeneration: gb, SessionVersion: 1}})
 	h.SetCandidateDiscovery(candidateRepo{heads: []application.BrowserCandidateHead{{BrowserID: a, Generation: ga, RefreshHash: ha[:]}, {BrowserID: b, Generation: gb, RefreshHash: hb[:]}}})
-	r := httptest.NewRequest("POST", "/", strings.NewReader(`{"browser_id":"`+b.String()+`","generation":"`+gb.String()+`"}`))
+	r := newAllowedAuthRequest("POST", "/", strings.NewReader(`{"browser_id":"`+b.String()+`","generation":"`+gb.String()+`"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", uniqueRefreshCookieName("proof-a")+"=proof-a; "+uniqueRefreshCookieName("proof-b")+"=proof-b")
@@ -121,7 +121,7 @@ func TestV2LogoutExpiresOnlySelectedObservedProof(t *testing.T) {
 	}
 	h.SetCandidateDiscovery(candidateRepo{err: errors.New("unavailable")})
 	w = httptest.NewRecorder()
-	r = httptest.NewRequest("POST", "/", strings.NewReader(`{"browser_id":"`+b.String()+`","generation":"`+gb.String()+`"}`))
+	r = newAllowedAuthRequest("POST", "/", strings.NewReader(`{"browser_id":"`+b.String()+`","generation":"`+gb.String()+`"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", uniqueRefreshCookieName("proof-b")+"=proof-b")
@@ -148,7 +148,7 @@ func TestV2CandidateDiscoveryAndContinue(t *testing.T) {
 	h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), nil, nil, s, nil)
 	h.SetCandidateDiscovery(repo)
 	request := func(handler http.HandlerFunc, body, origin, cookie string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		r := newAllowedAuthRequest("POST", "/", strings.NewReader(body))
 		r.Header.Set("Origin", origin)
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Cookie", cookie)
@@ -208,7 +208,7 @@ func TestV2CandidateDiscoveryAndContinue(t *testing.T) {
 	h.base.Register(mux)
 	for _, path := range []string{"/api/auth/v2/discovery", "/api/auth/v2/continue"} {
 		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, httptest.NewRequest("POST", path, nil))
+		mux.ServeHTTP(w, newAllowedAuthRequest("POST", path, nil))
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("%s unexpectedly registered", path)
 		}

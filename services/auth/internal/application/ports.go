@@ -28,11 +28,16 @@ type Repository interface {
 	PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, bool, error)
 	PrepareActivationEmail(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error)
 	VerifyActivation(context.Context, []byte, time.Time) error
-	SetPasswordFromSetup(context.Context, []byte, string, time.Time) error
 	CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error)
 	ListInvitations(context.Context) ([]user.Invitation, error)
 	RevokeInvitation(context.Context, uuid.UUID) error
 	CreateAdmin(context.Context, string, string, string) error
+}
+
+// LegacyPasswordSetupRepository preserves setup completion for clients that have
+// not yet been updated to issue a browser session during password setup.
+type LegacyPasswordSetupRepository interface {
+	SetPasswordFromSetup(context.Context, []byte, string, time.Time) error
 }
 
 type PushSubscription struct {

@@ -39,4 +39,11 @@ describe('LoginComponent', () => {
         expect(restore).toHaveBeenCalled();
         expect(login).not.toHaveBeenCalled();
     });
+
+    it('keeps failed sign-in feedback visible in the page as an accessible error notice', () => {
+        component.errorMessage = 'Email or password is incorrect.';
+        fixture.detectChanges();
+        const notice = fixture.nativeElement.querySelector('app-notice [role="alert"]') as HTMLElement;
+        expect(notice.textContent).toContain('Email or password is incorrect.');
+    });
 });

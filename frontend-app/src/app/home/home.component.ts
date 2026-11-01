@@ -1,4 +1,5 @@
-import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, Inject, OnDestroy, OnInit, Optional, ViewChild} from '@angular/core';
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, Inject, OnDestroy, OnInit, Optional, QueryList, ViewChild, ViewChildren} from '@angular/core';
+import {MatTooltip} from '@angular/material/tooltip';
 import {BehaviorSubject, finalize, map, Observable, Subscription, timeout} from 'rxjs';
 import {Conversation, GroupConversation, GroupMember, GroupPeerReadCursor, GroupRole} from './conversation.model';
 import {compareConversationActivityDescending} from './conversation-activity';
@@ -90,6 +91,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public giphyPreviewFailed = false;
     public giphySearchState: 'idle' | 'loading' | 'results' | 'empty' | 'error' = 'idle';
     public giphySearchError = '';
+    public giphySearchRetryable = false;
     public giphyPageLoading = false;
     public giphyPageError = false;
     public giphyHasMore = false;
@@ -194,6 +196,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     @ViewChild('giphyPickerTrigger') private giphyPickerTrigger?: ElementRef<HTMLButtonElement>;
     @ViewChild('giphySearchInput') private set giphySearchInput(input: ElementRef<HTMLInputElement> | undefined) { input?.nativeElement.focus(); }
     @ViewChild('archiveModeControl') private archiveModeControl?: ElementRef<HTMLButtonElement>;
+    @ViewChildren('archiveActionTooltipRef') private archiveActionTooltips?: QueryList<MatTooltip>;
     @ViewChild(GroupMemberListComponent) private groupMemberList?: GroupMemberListComponent;
 
     constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService, @Optional() private readonly giphySearch?: GiphySearchService, @Optional() @Inject(PushClickService) private readonly pushClicks?: PushClickService) {
@@ -817,8 +820,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     public searchGiphy(): void {
         const term = this.giphyQuery.trim();
         if (!this.giphyEnabled || !this.giphyPickerOpen || !this.selectedConversation || !this.socketReady) return;
-        if (!term || term.length > 50) { this.giphySearchState = 'error'; this.giphySearchError = 'Enter a search term of 1 to 50 characters.'; return; }
-        if (!this.giphySearch) { this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; return; }
+        if (!term || term.length > 50) { this.giphySearchState = 'error'; this.giphySearchError = 'Enter a search term of 1 to 50 characters.'; this.giphySearchRetryable = false; this.changeDetector.markForCheck(); return; }
+        if (!this.giphySearch) { this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search is unavailable.'; this.giphySearchRetryable = false; this.changeDetector.markForCheck(); return; }
         if (this.giphySearchCoolingDown) return;
         // UX/quota hygiene only—not a security boundary. Public production keys still require provider-side origin restrictions and quota monitoring.
         this.giphySearchCooldownUntil = Date.now() + GIPHY_SEARCH_COOLDOWN_MS;
@@ -827,11 +830,11 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphySearchRequest?.unsubscribe();
         const generation = ++this.giphySearchGeneration;
         this.giphyActiveQuery = term;
-        this.giphySearchState = 'loading'; this.giphySearchError = ''; this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined;
+        this.giphySearchState = 'loading'; this.giphySearchError = ''; this.giphySearchRetryable = false; this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined;
         this.giphyPageError = false; this.giphyPageLoading = false; this.giphyHasMore = false; this.giphyNextOffset = 0;
         this.giphySearchRequest = this.giphySearch.search(term, 0).subscribe({
             next: page => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled || !this.giphyPickerOpen) return; this.acceptGiphyPage(page, false); },
-            error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.changeDetector.markForCheck(); },
+            error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.giphySearchRetryable = true; this.changeDetector.markForCheck(); },
         });
     }
 
@@ -871,6 +874,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphyHasMore = page.hasMore && this.giphyNextOffset <= 4999;
         this.giphyPageError = false;
         this.giphySearchState = this.giphyResults.length ? 'results' : 'empty';
+        this.giphySearchRetryable = false;
         this.changeDetector.markForCheck();
     }
 
@@ -905,7 +909,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     private clearGiphyPicker(): void {
         this.giphySearchGeneration++;
         this.giphySearchRequest?.unsubscribe(); this.giphySearchRequest = undefined;
-        this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = '';
+        this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = ''; this.giphySearchRetryable = false;
         this.giphyPageLoading = false; this.giphyPageError = false; this.giphyHasMore = false; this.giphyNextOffset = 0; this.giphyActiveQuery = '';
     }
 
@@ -1200,6 +1204,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.stopTyping();
         this.clearRemoteTypingState();
         if (!preserveCallSurface && this.isOngoingCall()) this.minimizeCall();
+        if (!preserveCallSurface && this.groupCall?.isOngoing) this.minimizeGroupCall();
         const selectedConversation = {...conversation};
         if (this.selectedConversation?.id !== selectedConversation.id) { this.giphyPickerOpen = false; this.clearGiphyPicker(); this.clearReplies(); }
         if (this.selectedConversation?.id !== selectedConversation.id) this.draftMentions.splice(0);
@@ -1235,6 +1240,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public closeConversation(trackNavigationIntent = true): void {
+        if (this.groupCall?.isOngoing) this.minimizeGroupCall();
+        if (this.isOngoingCall()) this.minimizeCall();
         this.clearReplies();
         this.giphyPickerOpen = false;
         this.clearGiphyPicker();
@@ -1991,6 +1998,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     public toggleArchive(conversation: Conversation): void {
         if (this.archiveActionsPending.has(conversation.id)) return;
+        this.archiveActionTooltips?.forEach(tooltip => tooltip.hide(0));
         const sourceMode = this.archiveMode;
         const archiving = sourceMode === 'active';
         const destinationMode = archiving ? 'archived' : 'active';

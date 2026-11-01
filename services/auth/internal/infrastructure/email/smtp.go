@@ -27,7 +27,7 @@ func (s *SMTP) SendActivation(ctx context.Context, recipient, displayName, link 
 }
 
 func (s *SMTP) SendPasswordSetup(ctx context.Context, recipient, displayName, link string) error {
-	return s.send(ctx, recipient, "Set your Zwei account password", fmt.Sprintf("Hello %s,\r\n\r\nSet your account password here:\r\n%s\r\n\r\nThis link expires in 72 hours. Your account will remain pending until an administrator approves it. After approval, sign in separately.\r\n", displayName, link))
+	return s.send(ctx, recipient, "Set your Zwei account password", fmt.Sprintf("Hello %s,\r\n\r\nSet your account password here:\r\n%s\r\n\r\nThis link expires in 72 hours. Completing password setup activates your account and signs you in automatically.\r\n", displayName, link))
 }
 
 func (s *SMTP) SendInvitation(ctx context.Context, recipient, link string) error {

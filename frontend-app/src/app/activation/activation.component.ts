@@ -3,6 +3,7 @@ import {ActivatedRoute, Router} from '@angular/router';
 import {AuthService} from '../auth/auth.service';
 import {finalize} from 'rxjs/operators';
 import {FormControl, FormGroup, Validators} from '@angular/forms';
+import {AuthCookieLockUnavailableError} from '../auth/auth-cookie-lock.service';
 
 @Component({
     standalone: false,
@@ -16,6 +17,9 @@ export class ActivationComponent implements OnInit {
     public error = false;
     public setupMode = false;
     public passwordSet = false;
+    public legacySetupComplete = false;
+    public sessionAcceptanceFailed = false;
+    public lockUnavailable = false;
     public setupToken: string | null = null;
     public readonly passwordForm = new FormGroup({
         password: new FormControl('', {nonNullable: true, validators: [Validators.required, Validators.minLength(8), Validators.maxLength(64)]}),
@@ -34,11 +38,13 @@ export class ActivationComponent implements OnInit {
             });
             return;
         }
-        const match = /^#setup=([A-Za-z0-9_-]{43})$/.exec(window.location.hash);
+        const setupFragment = window.location.hash;
+        const match = /^#setup=([A-Za-z0-9_-]{43})$/.exec(setupFragment);
+        if (setupFragment.startsWith('#setup=')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
         if (!match) {
             this.isLoading = false;
             this.error = true;
-            this.setupMode = window.location.hash.startsWith('#setup=');
+            this.setupMode = setupFragment.startsWith('#setup=');
             return;
         }
         this.setupMode = true;
@@ -51,14 +57,35 @@ export class ActivationComponent implements OnInit {
         if (this.passwordForm.invalid || this.password !== this.confirmPassword || !this.setupToken || this.isLoading) return;
         this.isLoading = true;
         this.error = false;
+        this.sessionAcceptanceFailed = false;
+        this.lockUnavailable = false;
         this.auth.setupPassword(this.setupToken, this.password).pipe(finalize(() => { this.isLoading = false; this.changeDetector.markForCheck(); })).subscribe({
-            next: () => {
-                this.passwordSet = true;
-                this.setupToken = null;
-                window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+            next: session => {
+                if (session === null) {
+                    this.legacySetupComplete = true;
+                    this.passwordSet = true;
+                    this.setupToken = null;
+                    this.changeDetector.markForCheck();
+                    return;
+                }
+                try {
+                    this.auth.acceptToken(session);
+                    this.passwordSet = true;
+                    this.setupToken = null;
+                    this.changeDetector.markForCheck();
+                    void this.router.navigate([this.auth.defaultAuthenticatedRoute()]);
+                } catch {
+                    this.passwordSet = true;
+                    this.setupToken = null;
+                    this.sessionAcceptanceFailed = true;
+                    this.changeDetector.markForCheck();
+                }
+            },
+            error: error => {
+                this.lockUnavailable = error instanceof AuthCookieLockUnavailableError;
+                this.error = true;
                 this.changeDetector.markForCheck();
             },
-            error: () => { this.error = true; this.changeDetector.markForCheck(); },
         });
     }
 

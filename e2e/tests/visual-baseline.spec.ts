@@ -250,6 +250,25 @@ test('stable authenticated Home, search, and group-create visual baselines', asy
     const capture = {animations: 'disabled', caret: 'hide', fullPage: false} as const;
     const saveAndCompare = async (state: string, theme: typeof themes[number], viewport: typeof viewports[number]) => {
       const name = `${state}-${theme}-${viewport.width}x${viewport.height}.png`;
+      if (state === 'home-empty') {
+        const outline = await page.locator('.search-field .mdc-notched-outline').evaluate(element => {
+          const notch = element.querySelector('.mdc-notched-outline__notch');
+          const edge = element.querySelector('.mdc-notched-outline__trailing');
+          if (!notch || !edge) throw new Error('Home search outline is missing a segment');
+          const notchStyle = getComputedStyle(notch);
+          const edgeStyle = getComputedStyle(edge);
+          return {
+            notchTop: notchStyle.borderTopColor,
+            notchBottom: notchStyle.borderBottomColor,
+            notchLeft: notchStyle.borderLeftColor,
+            edgeTop: edgeStyle.borderTopColor,
+            edgeBottom: edgeStyle.borderBottomColor,
+          };
+        });
+        expect(outline.notchTop, `${theme}/${viewport.width}px search notch top must match its outline`).toBe(outline.edgeTop);
+        expect(outline.notchBottom, `${theme}/${viewport.width}px search notch bottom must match its outline`).toBe(outline.edgeBottom);
+        expect(outline.notchLeft, `${theme}/${viewport.width}px search notch must not show a vertical seam`).toBe('rgba(0, 0, 0, 0)');
+      }
       await page.evaluate(() => document.fonts.ready);
       await page.screenshot({path: testInfo.outputPath(`diagnostic-${name}`), ...capture});
       await expect(page).toHaveScreenshot(name, capture);
@@ -277,6 +296,23 @@ test('stable authenticated Home, search, and group-create visual baselines', asy
         const result = page.getByRole('button', {name: 'Start a conversation with E2E Admin'});
         await expect(result).toBeVisible();
         await expect(result.locator('small')).toHaveText('e2e-admin@example.test');
+        await expect(search).toBeFocused();
+        await expect(search.locator('xpath=ancestor::mat-form-field')).toHaveClass(/mat-focused/);
+        const focusedSearchOutline = await search.evaluate(input => {
+          const field = input.closest('mat-form-field');
+          const outline = field?.querySelector<HTMLElement>('.mdc-notched-outline');
+          const bounds = outline?.getBoundingClientRect();
+          const style = outline && getComputedStyle(outline);
+          const paintedSegments = Array.from(outline?.querySelectorAll<HTMLElement>('.mdc-notched-outline__leading, .mdc-notched-outline__trailing') ?? []).map(segment => {
+            const segmentStyle = getComputedStyle(segment);
+            return {widths: [segmentStyle.borderTopWidth, segmentStyle.borderRightWidth, segmentStyle.borderBottomWidth, segmentStyle.borderLeftWidth], colors: [segmentStyle.borderTopColor, segmentStyle.borderRightColor, segmentStyle.borderBottomColor, segmentStyle.borderLeftColor]};
+          });
+          return {focused: field?.classList.contains('mat-focused'), visible: !!bounds && bounds.width > 0 && bounds.height > 0 && style?.visibility === 'visible', paintedSegments};
+        });
+        expect(focusedSearchOutline.focused, `${theme}/${viewport.width}px search field focus class`).toBeTruthy();
+        expect(focusedSearchOutline.visible, `${theme}/${viewport.width}px search outline visibility`).toBeTruthy();
+        expect(focusedSearchOutline.paintedSegments.length).toBeGreaterThan(0);
+        expect(focusedSearchOutline.paintedSegments.some(segment => segment.widths.some((width, index) => Number.parseFloat(width) > 0 && segment.colors[index] !== 'rgba(0, 0, 0, 0)')), `${theme}/${viewport.width}px search focus outline has a visible border`).toBeTruthy();
         await saveAndCompare('search-open', theme, viewport);
 
         await search.clear();

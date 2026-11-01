@@ -13,6 +13,80 @@ import (
 )
 
 var _ application.BrowserSessionRepository = (*Repository)(nil)
+var _ application.PasswordSetupSessionRepository = (*Repository)(nil)
+var _ application.LegacyPasswordSetupRepository = (*Repository)(nil)
+
+// SetPasswordFromSetup is the compatibility path for cached pre-v2 clients.
+// It deliberately does not create or alter browser sessions.
+func (r *Repository) SetPasswordFromSetup(ctx context.Context, tokenHash []byte, passwordHash string, now time.Time) error {
+	result, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $1, email_verified_at = $2, activation_token_hash = NULL, activation_expires_at = NULL, activation_token_purpose = NULL, updated_at = $2 WHERE activation_token_hash = $3 AND activation_token_purpose = 'setup' AND activation_expires_at > $2 AND password_hash IS NULL AND kyc_status IN ($4, $5)`, passwordHash, now, tokenHash, user.KYCPending, user.KYCActive)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return application.ErrPasswordSetupInvalid
+	}
+	return nil
+}
+
+func (r *Repository) CompletePasswordSetup(ctx context.Context, tokenHash []byte, passwordHash, clientDeviceID, deviceName string, browser, generation uuid.UUID, refreshHash []byte, expiresAt, now time.Time, issue func(user.Session) error) error {
+	if len(tokenHash) != 32 || passwordHash == "" || clientDeviceID == "" || browser == uuid.Nil || generation == uuid.Nil || len(refreshHash) != 32 || issue == nil {
+		return application.ErrInvalidInput
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var session user.Session
+	var status user.KYCStatus
+	err = tx.QueryRow(ctx, `SELECT u.id, u.session_version, u.kyc_status
+		FROM users u
+		WHERE u.activation_token_hash=$1 AND u.activation_token_purpose='setup'
+		AND u.activation_expires_at>$2 AND u.password_hash IS NULL
+		AND u.kyc_status IN ($3,$4)
+		FOR UPDATE OF u`, tokenHash, now, user.KYCPending, user.KYCActive).Scan(&session.UserID, &session.SessionVersion, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.ErrPasswordSetupInvalid
+	}
+	if err != nil {
+		return err
+	}
+	if status != user.KYCPending && status != user.KYCActive {
+		return application.ErrPasswordSetupInvalid
+	}
+	result, err := tx.Exec(ctx, `UPDATE users SET password_hash=$1, email_verified_at=$2,
+		kyc_status=CASE WHEN kyc_status=$3 THEN $4 ELSE kyc_status END,
+		activation_token_hash=NULL, activation_expires_at=NULL, activation_token_purpose=NULL, updated_at=$2
+		WHERE id=$5 AND activation_token_hash=$6 AND activation_token_purpose='setup'
+		AND activation_expires_at>$2 AND password_hash IS NULL AND kyc_status IN ($3,$4)`, passwordHash, now, user.KYCPending, user.KYCActive, session.UserID, tokenHash)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return application.ErrPasswordSetupInvalid
+	}
+	session.DeviceID, err = ensureDevice(ctx, tx, session.UserID, clientDeviceID, deviceName)
+	if err != nil {
+		return err
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO sessions (user_id,device_id,refresh_token_hash,user_session_version,expires_at)
+		VALUES ($1,$2,$3,$4,$5) RETURNING id,user_id,device_id,user_session_version`, session.UserID, session.DeviceID, refreshHash, session.SessionVersion, expiresAt).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.SessionVersion)
+	if err != nil {
+		return err
+	}
+	result, err = tx.Exec(ctx, `INSERT INTO browser_auth_heads (browser_id,generation,user_id,current_refresh_hash) VALUES ($1,$2,$3,$4) ON CONFLICT (browser_id) DO NOTHING`, browser, generation, session.UserID, refreshHash)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return application.ErrRefreshToken
+	}
+	if err := issue(session); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
 // These unwired methods implement the persistence boundary only. All operations
 // acquire the user row before the browser head, matching account revocation.

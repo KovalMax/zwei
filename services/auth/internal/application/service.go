@@ -76,23 +76,68 @@ func (s *Service) registerPending(ctx context.Context, input Credentials) (strin
 	return token, nil
 }
 
-// SetPasswordFromSetup consumes a one-time setup token without creating a session.
+// CompletePasswordSetup consumes the one-use setup token and creates a fresh,
+// independent browser session in the same repository transaction.
+func (s *Service) CompletePasswordSetup(ctx context.Context, sessions *BrowserSessions, token, password, deviceID, deviceName string) (BrowserSessionResult, error) {
+	if len(token) < 32 || len(token) > 128 || !validPassword(password) || len(strings.TrimSpace(deviceID)) < 8 || len(deviceID) > 128 || sessions == nil {
+		return BrowserSessionResult{}, ErrInvalidInput
+	}
+	repository, ok := s.repository.(PasswordSetupSessionRepository)
+	if !ok {
+		return BrowserSessionResult{}, errors.New("password setup unavailable")
+	}
+	hash, err := s.passwords.Hash(password)
+	if err != nil {
+		return BrowserSessionResult{}, err
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	result, err := sessions.CompletePasswordSetup(ctx, repository, tokenHash[:], hash, strings.TrimSpace(deviceID), deviceName)
+	if errors.Is(err, ErrPasswordSetupInvalid) {
+		return BrowserSessionResult{}, ErrPasswordSetupInvalid
+	}
+	return result, err
+}
+
+// SetPasswordFromSetup retains the pre-v2 setup contract for cached clients.
+// New clients should use CompletePasswordSetup so account activation and the
+// new browser session are committed atomically.
 func (s *Service) SetPasswordFromSetup(ctx context.Context, token, password string) error {
 	if len(token) < 32 || len(token) > 128 || !validPassword(password) {
 		return ErrInvalidInput
+	}
+	repository, ok := s.repository.(LegacyPasswordSetupRepository)
+	if !ok {
+		return errors.New("legacy password setup unavailable")
 	}
 	hash, err := s.passwords.Hash(password)
 	if err != nil {
 		return err
 	}
 	tokenHash := sha256.Sum256([]byte(token))
-	if err := s.repository.SetPasswordFromSetup(ctx, tokenHash[:], hash, s.clock()); err != nil {
+	if err := repository.SetPasswordFromSetup(ctx, tokenHash[:], hash, s.clock()); err != nil {
 		if errors.Is(err, ErrPasswordSetupInvalid) {
 			return ErrPasswordSetupInvalid
 		}
 		return err
 	}
 	return nil
+}
+
+type PasswordSetup interface {
+	CompletePasswordSetup(context.Context, string, string, string, string) (BrowserSessionResult, error)
+}
+
+type PasswordSetupService struct {
+	auth     *Service
+	sessions *BrowserSessions
+}
+
+func NewPasswordSetupService(auth *Service, sessions *BrowserSessions) *PasswordSetupService {
+	return &PasswordSetupService{auth: auth, sessions: sessions}
+}
+
+func (s *PasswordSetupService) CompletePasswordSetup(ctx context.Context, token, password, deviceID, deviceName string) (BrowserSessionResult, error) {
+	return s.auth.CompletePasswordSetup(ctx, s.sessions, token, password, deviceID, deviceName)
 }
 
 // AuthenticateBrowserLogin validates credentials and resolves the account's device

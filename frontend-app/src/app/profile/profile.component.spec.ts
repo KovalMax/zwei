@@ -235,8 +235,8 @@ describe('ProfileComponent enabled push presentation', () => {
         await vi.waitFor(() => expect(fixture.componentInstance.pushError).toContain('push service did not respond'));
         fixture.detectChanges();
 
-        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('This browser’s push service did not respond');
-        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('Safari or Google Chrome');
+        expect(fixture.nativeElement.querySelector('app-notice [role="alert"]')?.textContent).toContain('This browser’s push service did not respond');
+        expect(fixture.nativeElement.querySelector('app-notice [role="alert"]')?.textContent).toContain('Safari or Google Chrome');
         const retry = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
         expect(retry.disabled).toBe(false);
     });
@@ -246,7 +246,7 @@ describe('ProfileComponent enabled push presentation', () => {
         push.enrollFromUserGesture.mockRejectedValueOnce(new Error('subscription-key-mismatch'));
         await fixture.componentInstance.enablePush();
         fixture.detectChanges();
-        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('different server key');
+        expect(fixture.nativeElement.querySelector('app-notice [role="alert"]')?.textContent).toContain('different server key');
         expect(fixture.componentInstance.pushError).toContain('other accounts');
         expect(push.disable).not.toHaveBeenCalled();
     });

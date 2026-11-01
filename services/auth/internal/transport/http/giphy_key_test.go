@@ -68,7 +68,7 @@ func TestGiphyKeyGrantRequiresAuthenticatedEnabledPolicyAndConfiguredKey(t *test
 func performGiphyKeyRequest(handler *Handler, bearer string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	handler.Register(mux)
-	request := httptest.NewRequest(http.MethodGet, "/api/auth/giphy-key", nil)
+	request := newAllowedAuthRequest(http.MethodGet, "/api/auth/giphy-key", nil)
 	if bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+bearer)
 	}

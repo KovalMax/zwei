@@ -1,6 +1,5 @@
 import {ChangeDetectorRef, Component, OnInit} from '@angular/core';
 import {AdminService, AdminUser, GiphyMediaSource, Invitation, KYCStatus} from '../auth/admin.service';
-import {MatSnackBar} from '@angular/material/snack-bar';
 import {FormControl, Validators} from '@angular/forms';
 import {finalize} from 'rxjs/operators';
 
@@ -25,8 +24,9 @@ export class AdminComponent implements OnInit {
     public activationFeedback: {message: string; kind: 'success' | 'error'} | null = null;
     public createdCode = '';
     private reloadGeneration = 0;
+    private mediaSaveRetryValue: boolean | null = null;
 
-    constructor(private admins: AdminService, private snack: MatSnackBar, private changeDetector: ChangeDetectorRef) {}
+    constructor(private admins: AdminService, private changeDetector: ChangeDetectorRef) {}
 
     public ngOnInit(): void {
         this.reload();
@@ -53,12 +53,21 @@ export class AdminComponent implements OnInit {
     public setGiphyEnabled(enabled: boolean): void {
         if (!this.giphyMediaSource || this.mediaSaving) return;
         const previous = this.giphyMediaSource.enabled;
+        this.mediaSaveRetryValue = enabled;
         this.mediaSaving = true;
         this.mediaError = '';
         this.admins.updateGiphyMediaSource(enabled).pipe(finalize(() => { this.mediaSaving = false; this.changeDetector.markForCheck(); })).subscribe({
-            next: source => { this.giphyMediaSource = source; },
+            next: source => { this.giphyMediaSource = source; this.mediaSaveRetryValue = null; },
             error: () => { if (this.giphyMediaSource) this.giphyMediaSource = {...this.giphyMediaSource, enabled: previous}; this.mediaError = 'Could not save media source settings.'; },
         });
+    }
+
+    public retryMediaSettings(): void {
+        if (this.mediaSaveRetryValue !== null) {
+            this.setGiphyEnabled(this.mediaSaveRetryValue);
+            return;
+        }
+        this.selectMediaView();
     }
 
     public reload(): void {
@@ -151,6 +160,6 @@ export class AdminComponent implements OnInit {
         return user.kyc_status === 1 && !user.email_verified;
     }
 
-    private showMessage(message: string): void { this.snack.open(message, 'Close', {duration: 5000}); }
-    private showError(message: string): void { this.snack.open(message, 'Close', {duration: 10000}); }
+    private showMessage(message: string): void { this.activationFeedback = {message, kind: 'success'}; }
+    private showError(message: string): void { this.activationFeedback = {message, kind: 'error'}; this.changeDetector.markForCheck(); }
 }

@@ -16,11 +16,11 @@
         </nav>
 
         <div *ngIf="isLoading" class="admin-loading"><app-loading-spinner></app-loading-spinner></div>
+        <app-notice *ngIf="activationFeedback" [kind]="activationFeedback.kind" [message]="activationFeedback.message" actionLabel="Close" (action)="activationFeedback = null"></app-notice>
 
         <section *ngIf="!isLoading && activeView === 'accounts'" aria-labelledby="accounts-title">
             <h2 id="accounts-title">Accounts</h2>
             <p class="table-scroll-hint" id="accounts-scroll-hint">Scroll horizontally to review account details. Email and row actions stay visible.</p>
-            <p *ngIf="activationFeedback" class="activation-feedback" [class.feedback-error]="activationFeedback.kind === 'error'" role="status" aria-live="polite">{{ activationFeedback.message }}</p>
             <div class="table-wrap" role="region" aria-label="Account list; scroll horizontally for details" tabindex="0">
                 <table aria-describedby="accounts-scroll-hint">
                     <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Email verification</th><th>Actions</th></tr></thead>
@@ -58,7 +58,7 @@
             <h2 id="media-sources-title">Reviewed media sources</h2>
             <p>Only reviewed provider sources can render inline. Disabling GIPHY suppresses future inline media after clients refresh policy; requests already started cannot be recalled.</p>
             <p *ngIf="mediaLoading" role="status">Loading media source settings…</p>
-            <p *ngIf="mediaError" role="alert">{{ mediaError }}</p>
+            <app-notice *ngIf="mediaError" kind="error" [message]="mediaError" actionLabel="Retry" (action)="retryMediaSettings()"></app-notice>
             <label *ngIf="giphyMediaSource" class="media-source-toggle"><input type="checkbox" [checked]="giphyMediaSource.enabled" [disabled]="mediaSaving" (change)="setGiphyEnabled(readChecked($event))"> Enable reviewed GIPHY source</label>
             <p *ngIf="mediaSaving" role="status">Saving media source setting…</p>
         </section>

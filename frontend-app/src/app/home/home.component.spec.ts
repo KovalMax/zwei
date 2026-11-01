@@ -50,6 +50,86 @@ describe('HomeComponent', () => {
         expect(component).toBeTruthy();
     });
 
+    it('renders people-search failures as actionable shared notices', () => {
+        fixture.detectChanges();
+        const search = vi.spyOn(TestBed.inject(ConversationService), 'searchUsers').mockReturnValue(throwError(() => new Error('search unavailable')));
+        component.searchQuery = 'al';
+        component.searchUsers();
+        fixture.detectChanges();
+
+        const notices = Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[];
+        const notice = notices.find(item => item.getAttribute('role') === 'alert' && item.querySelector('button')?.textContent?.trim() === 'Retry');
+        if (!notice) throw new Error('People-search failure notice was not rendered.');
+        expect(notice.getAttribute('role')).toBe('alert');
+        expect(notice.textContent).toContain('Could not search for people. Try again.');
+        const button = notice.querySelector('button') as HTMLButtonElement;
+        expect(button.textContent).toContain('Retry');
+        expect(search).toHaveBeenCalledTimes(1);
+        button.click();
+        expect(search).toHaveBeenCalledTimes(2);
+    });
+
+    it('renders GIPHY search failures as actionable shared notices', () => {
+        fixture.detectChanges();
+        component.selectedConversation = conversation('gif-notice');
+        component.socketReady = true;
+        component.giphyPickerOpen = true;
+        component.giphyEnabled = true;
+        component.giphyQuery = 'cats';
+        const search = vi.spyOn(TestBed.inject(GiphySearchService), 'search').mockReturnValue(throwError(() => new Error('GIPHY unavailable')));
+        component.searchGiphy();
+        fixture.detectChanges();
+
+        const searchNotice = (Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[])
+            .find(item => item.getAttribute('role') === 'alert' && item.querySelector('button')?.textContent?.trim() === 'Retry');
+        if (!searchNotice) throw new Error('GIPHY search failure notice was not rendered.');
+        expect(searchNotice.getAttribute('role')).toBe('alert');
+        const searchButton = searchNotice.querySelector('button') as HTMLButtonElement;
+        expect(searchButton.textContent).toContain('Retry');
+        expect(searchButton.disabled).toBe(true);
+        searchButton.click();
+        expect(search).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not offer retry for invalid GIPHY search input', () => {
+        fixture.detectChanges();
+        component.selectedConversation = conversation('gif-invalid-notice');
+        component.socketReady = true;
+        component.giphyPickerOpen = true;
+        component.giphyEnabled = true;
+        component.giphyQuery = 'x'.repeat(51);
+        component.searchGiphy();
+        fixture.detectChanges();
+
+        const invalidNotice = (Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[])
+            .find(item => item.textContent?.includes('Enter a search term of 1 to 50 characters.'));
+        if (!invalidNotice) throw new Error('Invalid GIPHY search notice was not rendered.');
+        expect(invalidNotice.querySelector('button')).toBeNull();
+    });
+
+    it('renders GIPHY pagination failures as actionable shared notices', () => {
+        fixture.detectChanges();
+        component.selectedConversation = conversation('gif-page-notice');
+        component.socketReady = true;
+        component.giphyPickerOpen = true;
+        component.giphyEnabled = true;
+        component.giphyQuery = 'cats';
+        const search = vi.spyOn(TestBed.inject(GiphySearchService), 'search')
+            .mockReturnValueOnce(of(giphyPage([{id: 'gif-1', title: 'Cats', url: 'https://media1.giphy.com/media/1/200.gif'}], 0, 1, 2)))
+            .mockReturnValue(throwError(() => new Error('GIPHY unavailable')));
+        component.searchGiphy();
+        component.loadMoreGiphy();
+        fixture.detectChanges();
+        const pageNotice = (Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[])
+            .find(item => item.getAttribute('role') === 'alert' && item.querySelector('button')?.textContent?.trim() === 'Retry loading more');
+        if (!pageNotice) throw new Error('GIPHY pagination failure notice was not rendered.');
+        expect(pageNotice.textContent).toContain('Could not load more GIFs.');
+        const pageButton = pageNotice.querySelector('button') as HTMLButtonElement;
+        expect(pageButton.textContent).toContain('Retry loading more');
+        pageButton.click();
+        expect(search).toHaveBeenCalledTimes(3);
+    });
+
     it('closes only an eligible selected chat on a mobile edge swipe', () => {
         const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
         Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
@@ -150,6 +230,31 @@ describe('HomeComponent', () => {
         } finally {
             if (width) Object.defineProperty(window, 'innerWidth', width);
         }
+    });
+
+    it('minimizes an ongoing group call and shows its restore action on the chats rail', async () => {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        component.selectedConversation = groupConversation('group-active-call');
+        const groupCall = component.groupCall;
+        if (!groupCall) throw new Error('Group call facade missing');
+        const originalState = groupCall.state;
+        vi.spyOn(groupCall, 'state', 'get').mockReturnValue({
+            ...originalState,
+            phase: 'active',
+            room: {room_id: 'room-1', conversation_id: 'group-active-call', generation: 1, membership_revision: 1, state_revision: 1, status: 'active', expires_at: '2026-01-01T00:00:00Z', participants: []},
+            statusLabel: 'In group call',
+        } as GroupCallState);
+
+        component.closeConversation();
+        fixture.detectChanges();
+
+        expect(component.selectedConversation).toBeUndefined();
+        expect(component.groupCallMinimized).toBe(true);
+        const banner = fixture.nativeElement.querySelector('.call-minimized-banner-rail') as HTMLElement | null;
+        expect(banner).not.toBeNull();
+        expect(banner?.querySelector('[aria-label="Return to group call"]')).not.toBeNull();
+        expect(banner?.querySelector('[aria-label="End group call for everyone"]')).not.toBeNull();
     });
 
     it('cancels a swipe when a call begins before the touch ends', async () => {
@@ -1300,6 +1405,49 @@ describe('HomeComponent', () => {
         home.ngOnDestroy();
     });
 
+    it('renders an ended group-call notice in the mobile chats rail without a duplicate in the hidden chat panel', async () => {
+        const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+        Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
+        try {
+            const state: GroupCallState = {
+                phase: 'ended', conversationID: 'origin-group', peers: [], muted: false, sharing: false,
+                screenShareAudioEnabled: false, screenShareAudioActive: false, shareTransitioning: false,
+                inputDevices: [], outputDevices: [], audioPlaybackBlocked: false,
+                statusLabel: 'Group call ended.', supportRef: 'support-123',
+            };
+            component.groupCall = {
+                state,
+                state$: new BehaviorSubject(state),
+                isOngoing: false,
+                close: () => undefined,
+            } as unknown as GroupCallFacade;
+            component.selectedConversation = undefined;
+            fixture.detectChanges();
+            await fixture.whenStable();
+            fixture.detectChanges();
+
+            const railNotice = fixture.nativeElement.querySelector('.conversation-rail app-call-terminal-notice') as HTMLElement | null;
+            const chatPanel = fixture.nativeElement.querySelector('.chat-panel') as HTMLElement;
+            expect(getComputedStyle(chatPanel).display).toBe('none');
+            expect(component.selectedConversation).toBeUndefined();
+            expect(component.showGroupCallTerminalNotice(state)).toBe(true);
+            expect(railNotice).not.toBeNull();
+            expect(railNotice?.textContent || '').toContain('Group call ended.');
+            expect(railNotice?.querySelector('[aria-label="Copy support reference"]')).not.toBeNull();
+            expect(fixture.nativeElement.querySelectorAll('app-call-terminal-notice').length).toBe(1);
+            const noticeSurface = railNotice?.querySelector('.call-terminal-notice') as HTMLElement | null;
+            if (!railNotice || !noticeSurface) throw new Error('Rail terminal notice surface is missing');
+            const railRect = (fixture.nativeElement.querySelector('.conversation-rail') as HTMLElement).getBoundingClientRect();
+            const noticeRect = noticeSurface.getBoundingClientRect();
+            expect(noticeRect.width).toBeGreaterThan(0);
+            expect(noticeRect.left).toBeGreaterThanOrEqual(railRect.left);
+            expect(noticeRect.right).toBeLessThanOrEqual(railRect.right);
+            expect(noticeRect.right).toBeLessThanOrEqual(window.innerWidth);
+        } finally {
+            if (width) Object.defineProperty(window, 'innerWidth', width);
+        }
+    });
+
     it('renders the direct-call surface only before terminal phases', () => {
         expect(component.shouldRenderDirectCallSurface('idle')).toBe(false);
         expect(component.shouldRenderDirectCallSurface('ended')).toBe(false);
@@ -1795,7 +1943,7 @@ describe('HomeComponent', () => {
             expect(historyComponent.conversations.getValue()).toEqual([]);
             expect(historyComponent.selectedConversation).toBeUndefined();
             expect(historyComponent.departedGroupRefreshFailed).toBe(true);
-            const alert = fixture.debugElement.query(By.css('.group-settings-error[role="alert"]'));
+            const alert = fixture.debugElement.query(By.css('app-notice [role="alert"]'));
             expect(alert.nativeElement.textContent).toContain('hidden until access is verified');
             expect(fixture.debugElement.query(By.css('.workspace.conversation-open'))).not.toBeNull();
             expect((fixture.debugElement.query(By.css('.composer textarea')).nativeElement as HTMLTextAreaElement).disabled).toBe(true);

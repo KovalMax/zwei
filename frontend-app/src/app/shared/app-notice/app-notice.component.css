@@ -1,0 +1,31 @@
+:host { display: block; min-width: 0; }
+.app-notice { display: flex; min-width: 0; box-sizing: border-box; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 16px; border: 1px solid var(--notice-border); border-inline-start-width: 4px; border-radius: var(--zwei-radius-control, 12px); background: var(--notice-surface); color: var(--notice-text); overflow-wrap: anywhere; }
+.app-notice p { min-width: 0; flex: 1 1 16rem; margin: 0; font: 600 14px/1.5 'DM Sans', sans-serif; white-space: pre-line; }
+.app-notice-info { --notice-surface: #eaf3fc; --notice-border: #3f76ac; --notice-text: #173b60; }
+.app-notice-success { --notice-surface: #e9f5ec; --notice-border: #327446; --notice-text: #204c2c; }
+.app-notice-warning { --notice-surface: var(--chat-warning-surface, #fff5df); --notice-border: #9b6b16; --notice-text: var(--chat-warning-text, #5f3b00); }
+.app-notice-error { --notice-surface: var(--chat-danger-surface, #fae9e7); --notice-border: #a43b32; --notice-text: var(--chat-danger-text, #6b2525); }
+.app-notice button { min-height: 44px; flex: 0 0 auto; padding: 0 14px; border: 1px solid currentColor; border-radius: var(--zwei-radius-control, 12px); background: transparent; color: inherit; font: 700 13px/1.2 'DM Sans', sans-serif; cursor: pointer; }
+.app-notice button:hover:not(:disabled) { background: color-mix(in srgb, currentColor 10%, var(--notice-surface)); }
+.app-notice button:focus-visible { outline: 3px solid var(--zwei-focus, #1769c2); outline-offset: 2px; }
+.app-notice button:disabled { cursor: wait; opacity: .7; }
+:host-context(.light-theme) .app-notice-info { --notice-surface: #eaf3fc; --notice-border: #315f8a; --notice-text: #173b60; }
+:host-context(.light-theme) .app-notice-success { --notice-surface: #e9f5ec; --notice-border: #28623a; --notice-text: #204c2c; }
+:host-context(.dark-theme) .app-notice-info { --notice-surface: #26394f; --notice-border: #74b7f3; --notice-text: #d8e6f5; }
+:host-context(.dark-theme) .app-notice-success { --notice-surface: #263d32; --notice-border: #77bd8e; --notice-text: #d5f0dc; }
+:host-context(.dark-theme) .app-notice-warning { --notice-surface: #4c452e; --notice-border: #e5c36f; --notice-text: #f7dd8d; }
+:host-context(.dark-theme) .app-notice-error { --notice-surface: #4c3034; --notice-border: #ff9d96; --notice-text: #ffc0bd; }
+@media (max-width: 480px) {
+    .app-notice { align-items: stretch; gap: 8px; padding: 12px; }
+    .app-notice p { flex-basis: 100%; }
+    .app-notice button { align-self: flex-start; max-width: 100%; white-space: normal; }
+}
+.app-notice.app-notice-compact { gap: 8px 12px; padding: 10px 12px; }
+.app-notice.app-notice-compact p { flex-basis: 10rem; }
+.app-notice.app-notice-compact button { min-height: 40px; padding-inline: 12px; }
+@media (max-width: 480px) {
+    .app-notice.app-notice-compact { align-items: center; gap: 8px; padding: 10px 12px; }
+    .app-notice.app-notice-compact p { flex-basis: 10rem; }
+    .app-notice.app-notice-compact button { align-self: center; }
+}
+@media (prefers-reduced-motion: reduce) { .app-notice button { transition: none; } }

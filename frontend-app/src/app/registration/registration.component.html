@@ -1,6 +1,7 @@
 <main class="auth-page">
     <section class="auth-card registration-card" aria-labelledby="registration-title">
         <div class="auth-intro"><span class="eyebrow">Make room for better conversations</span><h1 id="registration-title">Create your account</h1><p>A private space for the people you actually want to hear from.</p></div>
+        <app-notice *ngIf="errorMessage" class="auth-request-error" kind="error" [compact]="true" [message]="errorMessage" actionLabel="Close" (action)="errorMessage = ''"></app-notice>
         <div *ngIf="isLoading" class="auth-loading"><app-loading-spinner></app-loading-spinner></div>
         <form (ngSubmit)="onSubmit()" *ngIf="!isLoading" [formGroup]="registrationForm" class="auth-form">
             <mat-form-field appearance="outline"><mat-label>Email address</mat-label><input formControlName="email" matInput type="email" autocomplete="email"><zwei-icon matPrefix name="mail"></zwei-icon><mat-error *ngIf="email.errors?.['required']">Email is required.</mat-error><mat-error *ngIf="email.errors?.['email']">Enter a valid email.</mat-error><mat-error *ngIf="email.errors?.['maxlength']">Email is too long.</mat-error></mat-form-field>

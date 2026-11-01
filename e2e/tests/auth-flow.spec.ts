@@ -17,6 +17,15 @@ function field(page: Page, name: string) {
   return page.locator('mat-form-field').filter({has: input(page, name)});
 }
 
+async function expectNoVisibleNotchSeam(page: Page, selector: string, context: string): Promise<void> {
+  const seams = await page.locator(`${selector} .mdc-notched-outline__notch`).evaluateAll(elements => elements.map(element => {
+    const color = getComputedStyle(element).borderLeftColor;
+    return {color, alpha: color.match(/[\d.]+/g)?.map(Number)?.[3] ?? 1};
+  }));
+  expect(seams.length, `${context}: expected notched outline segments`).toBeGreaterThan(0);
+  for (const seam of seams) expect(seam.alpha, `${context}: ${JSON.stringify(seam)}`).toBe(0);
+}
+
 // Sample the browser-painted backdrop across each text line, not an assumed
 // gradient stop. Hiding only the text preserves all background compositing.
 async function renderedTextContrast(page: Page, selector: string): Promise<number> {
@@ -783,6 +792,7 @@ test('shows every registration and login validation state', async ({page}) => {
   });
   await page.goto('/sign-up?invite=1&code=validation-case');
   await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
+  await expectNoVisibleNotchSeam(page, '.auth-form', 'registration fields before validation');
   await expect(page.getByRole('button', {name: 'Account menu'})).toHaveCount(0);
   await expect(page.locator('zwei-icon').first().locator('svg')).toBeVisible();
   expect(thirdPartyAssetRequests).toEqual([]);
@@ -798,6 +808,7 @@ test('shows every registration and login validation state', async ({page}) => {
   await expect(field(page, 'nickName').getByText('Nickname is required.')).toBeVisible();
   await expect(field(page, 'password').getByText('Password is required.')).toBeVisible();
   await expect(field(page, 'confirmPassword').getByText('Please confirm your password.')).toBeVisible();
+  await expectNoVisibleNotchSeam(page, '.auth-form', 'registration fields with validation errors');
 
   await input(page, 'email').fill('not-an-email');
   await input(page, 'email').blur();
@@ -874,6 +885,7 @@ test('keeps login text and fields readable in both themes across the acceptance 
       await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
       await expect(page.getByRole('button', {name: 'Sign in'})).toBeDisabled();
       await expect(page.locator('html')).toHaveClass(new RegExp(`${theme}-theme`));
+      await expectNoVisibleNotchSeam(page, '.auth-form', `${theme}/${viewport.width}px initial login fields`);
       const metrics = await page.evaluate(() => {
         const color = (value: string): [number, number, number, number] => {
           const parts = value.match(/[\d.]+/g)?.map(Number);
@@ -999,6 +1011,7 @@ test('keeps login text and fields readable in both themes across the acceptance 
       await page.screenshot({path: testInfo.outputPath(`login-${theme}-${viewport.width}-${viewport.height}.png`), fullPage: false});
       await input(page, 'email').fill('reader@example.test');
       await input(page, 'password').fill('ExamplePass123!');
+      await expectNoVisibleNotchSeam(page, '.auth-form', `${theme}/${viewport.width}px populated login fields`);
       const populatedFieldContrast = await page.locator('.auth-form input').evaluateAll(inputs => inputs.map(inputElement => {
         const foreground = getComputedStyle(inputElement).color;
         const parse = (value: string): [number, number, number, number] => {
@@ -1080,6 +1093,21 @@ test('keeps login text and fields readable in both themes across the acceptance 
       expect(errorContrast).toHaveLength(2);
       for (const error of errorContrast) expect(error.contrast, `${theme} ${viewport.width}px validation contrast ${JSON.stringify(error)}`).toBeGreaterThanOrEqual(4.5);
       await page.screenshot({path: testInfo.outputPath(`login-${theme}-${viewport.width}-validation.png`), fullPage: false});
+      const focusedLoginEmail = input(page, 'email');
+      await focusedLoginEmail.focus();
+      await expect(focusedLoginEmail).toBeFocused();
+      await expect(focusedLoginEmail.locator('xpath=ancestor::mat-form-field')).toHaveClass(/mat-focused/);
+      const loginFocus = await focusedLoginEmail.evaluate(element => {
+        const field = element.closest('mat-form-field');
+        const outline = field?.querySelector<HTMLElement>('.mdc-notched-outline');
+        const rect = outline?.getBoundingClientRect();
+        const style = outline && getComputedStyle(outline);
+        return {focused: field?.classList.contains('mat-focused'), visible: !!rect && rect.width > 0 && rect.height > 0 && style?.visibility === 'visible', borderColor: style?.borderColor};
+      });
+      expect(loginFocus.focused, `${theme}/${viewport.width}px login focus class`).toBeTruthy();
+      expect(loginFocus.visible, `${theme}/${viewport.width}px login focus outline`).toBeTruthy();
+      expect(loginFocus.borderColor, `${theme}/${viewport.width}px login outline color`).not.toBe('rgba(0, 0, 0, 0)');
+      await page.screenshot({path: testInfo.outputPath(`login-${theme}-${viewport.width}-focus.png`), fullPage: false});
       await context.close();
     }
   }
@@ -1215,6 +1243,7 @@ test('registration fields preserve readable empty, filled, failure, and keyboard
       const first = page.locator('[formControlName="firstName"]');
       await first.focus();
       await expect(first.locator('xpath=ancestor::mat-form-field')).toHaveClass(/mat-focused/);
+      await expectNoVisibleNotchSeam(page, '.auth-form', `${theme}/${viewport.width}px focused registration field`);
       const focus = await first.evaluate(element => {
         const outline = getComputedStyle(element).outline;
         const wrapper = element.closest('.mat-mdc-text-field-wrapper');
@@ -1224,6 +1253,151 @@ test('registration fields preserve readable empty, filled, failure, and keyboard
       expect(focus.rect.left).toBeGreaterThanOrEqual(0);
       expect(focus.rect.right).toBeLessThanOrEqual(viewport.width + 1);
       await page.screenshot({path: testInfo.outputPath(`registration-${theme}-${viewport.width}-focus.png`), fullPage: false});
+      await context.close();
+    }
+  }
+});
+
+test('contains auth validation and request-error notices across themes and viewports', async ({browser}, testInfo) => {
+  const viewports = [
+    {width: 2560, height: 1440},
+    {width: 1440, height: 900},
+    {width: 1024, height: 768},
+    {width: 390, height: 844},
+  ];
+  for (const viewport of viewports) {
+    for (const theme of ['light', 'dark'] as const) {
+      const context = await browser.newContext({viewport});
+      const page = await context.newPage();
+      await page.addInitScript(selectedTheme => localStorage.setItem('zwei_theme', selectedTheme), theme);
+      await page.goto('/login');
+      for (const name of ['email', 'password']) {
+        await input(page, name).focus();
+        await input(page, name).blur();
+      }
+      await expect(field(page, 'email').getByText('Email is required.')).toBeVisible();
+      await expect(field(page, 'password').getByText('Password is required.')).toBeVisible();
+      const inspect = async (label: string, noticeExpected: boolean) => {
+        const geometry = await page.evaluate(() => {
+          const notice = document.querySelector<HTMLElement>('app-notice .app-notice');
+          const firstField = document.querySelector<HTMLElement>('.auth-form mat-form-field');
+          const firstLabel = firstField?.querySelector<HTMLElement>('.mdc-floating-label');
+          const card = document.querySelector<HTMLElement>('.auth-card');
+          const noticeRect = notice?.getBoundingClientRect();
+          const fieldRect = firstField?.getBoundingClientRect();
+          const labelRect = firstLabel?.getBoundingClientRect();
+          const cardRect = card?.getBoundingClientRect();
+          const outlines = Array.from(document.querySelectorAll<HTMLElement>('.auth-form mat-form-field')).map(fieldElement => {
+            const colors = Array.from(fieldElement.querySelectorAll<HTMLElement>('.mdc-notched-outline > *')).flatMap(part => {
+              const style = getComputedStyle(part);
+              const widths = [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth];
+              const colors = [style.borderTopColor, style.borderRightColor, style.borderBottomColor, style.borderLeftColor];
+              return colors.filter((_, index) => parseFloat(widths[index]) > 0 && !(part.classList.contains('mdc-notched-outline__notch') && index === 3));
+            });
+            const notch = fieldElement.querySelector<HTMLElement>('.mdc-notched-outline__notch');
+            return {
+              invalid: fieldElement.classList.contains('mat-form-field-invalid'),
+              colors: [...new Set(colors)],
+              notchLeft: notch ? getComputedStyle(notch).borderLeftColor : 'missing',
+            };
+          });
+          const actionRect = notice?.querySelector<HTMLElement>('button')?.getBoundingClientRect();
+          return {
+            notice: noticeRect && {left: noticeRect.left, right: noticeRect.right, top: noticeRect.top, bottom: noticeRect.bottom, width: noticeRect.width, height: noticeRect.height},
+            field: fieldRect && {left: fieldRect.left, right: fieldRect.right, top: fieldRect.top, bottom: fieldRect.bottom, width: fieldRect.width, height: fieldRect.height},
+            labelTop: labelRect?.top,
+            card: cardRect && {left: cardRect.left, right: cardRect.right, top: cardRect.top, bottom: cardRect.bottom, width: cardRect.width, height: cardRect.height},
+            documentWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+            outlines,
+            outlineParts: Array.from(document.querySelectorAll<HTMLElement>('.auth-form .mdc-notched-outline > *')).map(part => ({
+              className: part.className,
+              borderColor: getComputedStyle(part).borderColor,
+              borderWidths: [getComputedStyle(part).borderTopWidth, getComputedStyle(part).borderRightWidth, getComputedStyle(part).borderBottomWidth, getComputedStyle(part).borderLeftWidth],
+            })),
+            noticeAction: actionRect && {left: actionRect.left, right: actionRect.right, top: actionRect.top, bottom: actionRect.bottom},
+          };
+        });
+        expect(geometry.documentWidth, `${label}/${theme}/${viewport.width}px horizontal overflow`).toBeLessThanOrEqual(geometry.clientWidth + 1);
+        if (noticeExpected) {
+          await expect(page.locator('app-notice .app-notice')).toBeVisible();
+          expect(geometry.notice?.left).toBeGreaterThanOrEqual((geometry.card?.left ?? 0) - 1);
+          expect(geometry.notice?.right).toBeLessThanOrEqual((geometry.card?.right ?? viewport.width) + 1);
+          expect(geometry.notice?.bottom, `${label}/${theme}/${viewport.width}px notice must not overlap the floating field label: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual((geometry.labelTop ?? 0) - 8);
+          expect(geometry.notice?.height, `${label}/${theme}/${viewport.width}px error notice should stay compact`).toBeLessThanOrEqual(viewport.width <= 480 ? 80 : 72);
+          expect(geometry.noticeAction?.left).toBeGreaterThanOrEqual((geometry.notice?.left ?? 0) - 1);
+          expect(geometry.noticeAction?.right).toBeLessThanOrEqual((geometry.notice?.right ?? viewport.width) + 1);
+        } else {
+          expect(geometry.notice).toBeUndefined();
+        }
+        for (const [index, outline] of geometry.outlines.entries()) {
+          expect(outline.colors, `${label}/${theme}/${viewport.width}px field ${index} outline segment colors`).toHaveLength(1);
+          expect(outline.notchLeft, `${label}/${theme}/${viewport.width}px field ${index} notch seam`).toBe('rgba(0, 0, 0, 0)');
+          if (outline.invalid) expect(outline.colors[0]).toBe(theme === 'dark' ? 'rgb(255, 180, 171)' : 'rgb(186, 26, 26)');
+        }
+        await page.screenshot({path: testInfo.outputPath(`auth-${label}-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: false});
+      };
+      await inspect('login-validation', false);
+      const focusedLoginEmail = input(page, 'email');
+      await focusedLoginEmail.focus();
+      await expect(focusedLoginEmail).toBeFocused();
+      await expect(focusedLoginEmail.locator('xpath=ancestor::mat-form-field')).toHaveClass(/mat-focused/);
+      await page.screenshot({path: testInfo.outputPath(`auth-login-validation-focus-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: false});
+
+      await page.goto('/sign-up?invite=1&code=visual-case');
+      await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
+      const emptyForm = await page.evaluate(() => ({
+        documentWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+        fieldCount: document.querySelectorAll('.auth-form mat-form-field').length,
+        outlineColors: Array.from(document.querySelectorAll<HTMLElement>('.auth-form mat-form-field')).map(field => {
+          const pieces = Array.from(field.querySelectorAll<HTMLElement>('.mdc-notched-outline > *'));
+          return [...new Set(pieces.flatMap(part => {
+            const style = getComputedStyle(part);
+            const widths = [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth];
+            const colors = [style.borderTopColor, style.borderRightColor, style.borderBottomColor, style.borderLeftColor];
+            return colors.filter((_, index) => parseFloat(widths[index]) > 0 && !(part.classList.contains('mdc-notched-outline__notch') && index === 3));
+          }))];
+        }),
+      }));
+      expect(emptyForm.fieldCount).toBe(6);
+      expect(emptyForm.documentWidth).toBeLessThanOrEqual(emptyForm.clientWidth + 1);
+      for (const [index, colors] of emptyForm.outlineColors.entries()) expect(colors, `${theme}/${viewport.width}px signup field ${index} outline`).toHaveLength(1);
+      const signupLabel = page.locator('.submit-button .mdc-button__label');
+      await expect(signupLabel).toHaveText('Create account');
+      const signupLabelStyle = await signupLabel.evaluate(element => {
+        const style = getComputedStyle(element);
+        const bounds = element.getBoundingClientRect();
+        return {color: style.color, textFill: style.webkitTextFillColor, visibility: style.visibility, opacity: Number(style.opacity), width: bounds.width, height: bounds.height};
+      });
+      expect(signupLabelStyle.visibility, `${theme}/${viewport.width}px disabled signup label visibility`).toBe('visible');
+      expect(signupLabelStyle.opacity, `${theme}/${viewport.width}px disabled signup label opacity`).toBeGreaterThan(0);
+      expect(signupLabelStyle.width, `${theme}/${viewport.width}px disabled signup label width`).toBeGreaterThan(0);
+      expect(signupLabelStyle.height, `${theme}/${viewport.width}px disabled signup label height`).toBeGreaterThan(0);
+      expect(signupLabelStyle.textFill, `${theme}/${viewport.width}px disabled signup label paint color`).toBe('rgb(255, 255, 255)');
+      expect(await renderedTextContrast(page, '.submit-button .mdc-button__label'), `${theme}/${viewport.width}px disabled signup label contrast`).toBeGreaterThanOrEqual(4.5);
+      await expect(page.locator('.auth-form mat-form-field').first()).toBeInViewport();
+      await page.screenshot({path: testInfo.outputPath(`auth-signup-empty-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: false});
+      const signupButton = page.getByRole('button', {name: 'Create account'});
+      await signupButton.evaluate(button => button.scrollIntoView({block: 'center'}));
+      await expect(signupButton).toBeInViewport();
+      const signupButtonBounds = await signupButton.boundingBox();
+      if (!signupButtonBounds) throw new Error(`${theme}/${viewport.width}px signup button must have visible bounds`);
+      expect(signupButtonBounds.y).toBeGreaterThanOrEqual(2);
+      expect(signupButtonBounds.y + signupButtonBounds.height).toBeLessThanOrEqual(viewport.height - 2);
+      await page.screenshot({path: testInfo.outputPath(`auth-signup-empty-end-${theme}-${viewport.width}x${viewport.height}.png`), fullPage: false});
+
+      await page.route('**/api/auth/v2/login', route => route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({error: 'Service temporarily unavailable.'}),
+      }));
+      await page.goto('/login');
+      await input(page, 'email').fill('reader@example.test');
+      await input(page, 'password').fill('ExamplePass123!');
+      await page.getByRole('button', {name: 'Sign in'}).click();
+      await expect(page.getByText('Service temporarily unavailable.')).toBeVisible();
+      await inspect('login-request-error', true);
       await context.close();
     }
   }

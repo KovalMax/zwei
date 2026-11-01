@@ -2,7 +2,6 @@ import {ChangeDetectorRef, Component} from '@angular/core';
 import {FormControl, FormGroup, Validators} from '@angular/forms';
 import {AuthService} from '../auth/auth.service';
 import {Router} from '@angular/router';
-import {MatSnackBar} from '@angular/material/snack-bar';
 import {finalize} from 'rxjs/operators';
 import {HttpErrorResponse} from '@angular/common/http';
 import {ControlsOf} from '../shared/model/controlOf';
@@ -26,12 +25,12 @@ export class LoginComponent {
     public logoutRecoveryError = false;
     public logoutUnconfirmed = false;
     public canAbandonLogout = false;
+    public errorMessage = '';
     public loginForm: FormGroup<ControlsOf<Login>>;
 
     constructor(
         private client: AuthService,
         private router: Router,
-        private snackBar: MatSnackBar,
         private changeDetector: ChangeDetectorRef,
         host: HostService,
     ) {
@@ -59,6 +58,7 @@ export class LoginComponent {
             return;
         }
 
+        this.errorMessage = '';
         this.isLoading = true;
         this.client
             .login({
@@ -72,7 +72,7 @@ export class LoginComponent {
             }))
             .subscribe({
                 next: () => {
-                    this.snackBar.dismiss();
+                    this.errorMessage = '';
                     void this.router.navigate([this.client.defaultAuthenticatedRoute()]);
                 },
                 error: (error: string | HttpErrorResponse | AuthCookieLockUnavailableError) => this.showError(this.loginErrorMessage(error)),
@@ -134,11 +134,7 @@ export class LoginComponent {
 
     private showError(message: string): void {
         this.isLoading = false;
+        this.errorMessage = message;
         this.changeDetector.markForCheck();
-        this.snackBar.open(message, 'Close', {
-            duration: 60 * 1000,
-            horizontalPosition: 'center',
-            verticalPosition: 'top',
-        });
     }
 }

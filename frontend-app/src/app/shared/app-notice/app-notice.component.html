@@ -1,0 +1,4 @@
+<section class="app-notice" [class.app-notice-info]="kind === 'info'" [class.app-notice-success]="kind === 'success'" [class.app-notice-warning]="kind === 'warning'" [class.app-notice-error]="kind === 'error'" [class.app-notice-compact]="compact" [attr.role]="role" [attr.aria-live]="live" aria-atomic="true">
+    <p>{{ message }}</p>
+    <button *ngIf="actionLabel" type="button" [disabled]="actionDisabled" (click)="action.emit()">{{ actionLabel }}</button>
+</section>

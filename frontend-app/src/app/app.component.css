@@ -7,6 +7,6 @@
 
 .app-shell { background: var(--zwei-canvas); }
 .app-content { flex: 1; min-height: 0; overflow: hidden; }
-.offline-banner { flex: 0 0 auto; margin: 0 24px; padding: 10px 16px; border: 1px solid var(--chat-line-strong); border-radius: 10px; background: var(--chat-warning-surface); color: var(--chat-warning-text); font-size: 13px; font-weight: 700; text-align: center; }
+.offline-banner { flex: 0 0 auto; margin: 0 24px; }
 
 @media (max-width: 600px) { .offline-banner { margin: 0 12px; } }

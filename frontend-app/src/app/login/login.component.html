@@ -2,23 +2,21 @@
     <section class="auth-card" aria-labelledby="login-title">
         <div class="auth-intro" *ngIf="!isAdminHost"><span class="eyebrow">Welcome back</span><h1 id="login-title">Sign in to zwei</h1><p>Your private conversations are waiting for you.</p></div>
         <div class="auth-intro" *ngIf="isAdminHost"><span class="eyebrow">ZWEI admin panel</span><h1 id="login-title">Sign in to the admin panel</h1><p>Review accounts and manage invitations.</p></div>
+        <app-notice *ngIf="errorMessage" class="auth-request-error" kind="error" [compact]="true" [message]="errorMessage" actionLabel="Close" (action)="errorMessage = ''"></app-notice>
         <div *ngIf="isLoading" class="auth-loading"><app-loading-spinner></app-loading-spinner></div>
-        <p *ngIf="lockRecovery" role="alert">{{ lockRecovery }}</p>
-        <div *ngIf="pendingLogout" role="alert">
-            <p>Sign out is not complete. Retry before signing in or restoring a session.</p>
-            <p *ngIf="logoutRecoveryError">Could not complete sign out. Check your connection and try again.</p>
-            <button type="button" mat-button (click)="retryLogout()" [disabled]="isLoading">Retry sign out</button>
+        <app-notice *ngIf="lockRecovery && !pendingLogout" kind="warning" [message]="lockRecovery"></app-notice>
+        <div *ngIf="pendingLogout">
+            <app-notice kind="error" [message]="logoutRecoveryError ? 'Could not complete sign out. Check your connection and try again.' : 'Sign out is not complete. Retry before signing in or restoring a session.'" actionLabel="Retry sign out" [actionDisabled]="isLoading" (action)="retryLogout()"></app-notice>
             <div *ngIf="canAbandonLogout">
-                <p>Sign out could not be confirmed. Your previous sessions may still be active. You can continue to sign in without confirming revocation.</p>
+                <app-notice kind="warning" message="Sign out could not be confirmed. Your previous sessions may still be active. You can continue to sign in without confirming revocation."></app-notice>
                 <button type="button" mat-button (click)="abandonLogout()" [disabled]="isLoading">Continue to sign in without confirmation</button>
             </div>
         </div>
-        <p *ngIf="logoutUnconfirmed" role="alert">Previous sign out was not confirmed; your previous sessions may still be active.</p>
-        <div *ngIf="restoreFailure === 'temporarily-unavailable'" role="alert">
-            <p>We couldn't restore your session because the service is temporarily unavailable. Check your connection and try again.</p>
-            <button type="button" mat-button (click)="retryRestore()" [disabled]="isLoading">Retry session</button>
+        <app-notice *ngIf="logoutUnconfirmed" kind="warning" message="Previous sign out was not confirmed; your previous sessions may still be active."></app-notice>
+        <div *ngIf="restoreFailure === 'temporarily-unavailable'">
+            <app-notice kind="error" message="We couldn't restore your session because the service is temporarily unavailable. Check your connection and try again." actionLabel="Retry session" [actionDisabled]="isLoading" (action)="retryRestore()"></app-notice>
         </div>
-        <p *ngIf="restoreFailure === 'lock-unavailable' && !lockRecovery" role="alert">{{ lockRecovery || 'Session recovery requires browser lock support. Try a supported browser or enable browser locks.' }}</p>
+        <app-notice *ngIf="restoreFailure === 'lock-unavailable' && !lockRecovery" kind="error" message="Session recovery requires browser lock support. Try a supported browser or enable browser locks."></app-notice>
         <form (ngSubmit)="onSubmit()" [formGroup]="loginForm" class="auth-form" [attr.aria-busy]="isLoading">
             <mat-form-field appearance="outline"><mat-label>Email address</mat-label><input formControlName="email" matInput type="email" autocomplete="email" placeholder="you@example.com" [disabled]="isLoading"><zwei-icon matPrefix name="mail"></zwei-icon><mat-error *ngIf="email.errors?.['required']">Email is required.</mat-error><mat-error *ngIf="email.errors?.['email']">Enter a valid email.</mat-error></mat-form-field>
             <mat-form-field appearance="outline"><mat-label>Password</mat-label><input formControlName="password" matInput type="password" autocomplete="current-password" placeholder="Enter your password" [disabled]="isLoading"><zwei-icon matPrefix name="lock"></zwei-icon><mat-error *ngIf="password.errors?.['required']">Password is required.</mat-error></mat-form-field>

@@ -2,6 +2,7 @@
 .auth-card { width: min(100%, 440px); padding: var(--zwei-card-padding); border: 1px solid var(--auth-card-border); border-radius: var(--zwei-radius-card); background: var(--auth-card-surface); box-shadow: var(--zwei-shadow-card); box-sizing: border-box; }
 :host-context(.dark-theme) .auth-page .auth-card { background: var(--login-card-surface); }
 .auth-intro { margin-bottom: 28px; }
+.auth-card > .auth-request-error { margin-block: 0 20px; }
 .eyebrow { color: #9a4937; font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
 h1 { margin: 8px 0 10px; color: var(--auth-title); font: 700 30px/1.08 'DM Sans', sans-serif; letter-spacing: -.05em; }
 .auth-intro p { margin: 0; color: var(--auth-muted); font-size: 14px; line-height: 1.5; }
@@ -15,10 +16,15 @@ h1 { margin: 8px 0 10px; color: var(--auth-title); font: 700 30px/1.08 'DM Sans'
 .auth-form ::ng-deep input::placeholder { color: var(--login-muted) !important; opacity: 0; }
 .auth-form ::ng-deep input:focus::placeholder { opacity: 1; }
 .auth-form ::ng-deep .mdc-notched-outline > * { border-color: var(--login-field-border) !important; }
+.auth-form ::ng-deep .mat-mdc-form-field.mat-focused:not(.mat-form-field-invalid) .mdc-notched-outline > * { border-color: var(--login-accent) !important; }
+.auth-form ::ng-deep .mat-mdc-form-field.mat-form-field-invalid .mdc-notched-outline > * { border-color: var(--login-error) !important; }
+.auth-form ::ng-deep .mdc-notched-outline__notch { border-left-color: transparent !important; }
+.auth-form ::ng-deep .mat-mdc-form-field.mat-focused:not(.mat-form-field-invalid) .mdc-notched-outline__notch,
+.auth-form ::ng-deep .mat-mdc-form-field.mat-form-field-invalid .mdc-notched-outline__notch { border-left-color: transparent !important; }
 .auth-form ::ng-deep mat-error { color: var(--login-error) !important; }
 .auth-form ::ng-deep zwei-icon { margin-right: 8px; color: var(--login-icon) !important; }
 .submit-button.mat-mdc-unelevated-button { min-height: 48px; margin-top: 4px; border-radius: 12px; background-color: var(--auth-submit) !important; color: var(--auth-submit-text) !important; font-weight: 700; }
-.submit-button:disabled { opacity: 1; background-color: var(--auth-submit-disabled) !important; color: #fff !important; }
+.submit-button:disabled { --mdc-filled-button-disabled-container-color: var(--auth-submit-disabled); --mdc-filled-button-disabled-label-text-color: #fff; opacity: 1; background-color: var(--auth-submit-disabled) !important; color: #fff !important; }
 .auth-switch { margin: 26px 0 0; color: var(--auth-muted); font-size: 13px; text-align: center; }
 .auth-switch a { font-weight: 800; text-decoration: none; }
 .auth-switch a:hover { text-decoration: underline; }

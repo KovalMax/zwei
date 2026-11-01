@@ -4,12 +4,12 @@
             <a #backLink class="back-link" [routerLink]="backRoute"><zwei-icon name="arrow_back"></zwei-icon>{{ backLabel }}</a>
             <button type="button" class="profile-refresh" [disabled]="refreshing || alertSaving || mediaSaving || pushSaving" (click)="refreshProfile()">{{ refreshing ? 'Refreshing…' : 'Refresh profile' }}</button>
         </div>
-        <p *ngIf="refreshError" class="profile-error" role="alert">Could not refresh your profile. Your current settings are unchanged. <button type="button" (click)="refreshProfile()">Retry</button></p>
+        <app-notice *ngIf="refreshError" kind="error" message="Could not refresh your profile. Your current settings are unchanged." actionLabel="Retry" (action)="refreshProfile()"></app-notice>
         <span class="eyebrow">Your account</span>
         <h1 id="profile-title">Profile</h1>
         <p class="profile-description">Your identity and message-retention preference for this private space.</p>
         <div class="profile-loading" *ngIf="!profile && !error">Loading profile…</div>
-        <p class="profile-error" *ngIf="error">We could not load your profile. Refresh and try again.</p>
+        <app-notice *ngIf="error" kind="error" message="We could not load your profile. Refresh and try again." actionLabel="Refresh profile" (action)="refreshProfile()"></app-notice>
         <dl *ngIf="profile as loadedProfile" class="profile-details">
             <div><dt>Display name</dt><dd>{{ loadedProfile.display_name }}</dd></div>
             <div><dt>Email address</dt><dd>{{ loadedProfile.email }}</dd></div>
@@ -24,20 +24,20 @@
                 <button type="button" role="radio" [disabled]="alertSaving || refreshing" [attr.aria-checked]="alertMode === 'notifications'" [class.selected]="alertMode === 'notifications'" (click)="setAlertMode('notifications')"><span class="radio-dot"></span><span><strong>Notifications and sounds</strong><small>{{ notifications.notificationPermission === 'denied' ? 'Browser notifications are blocked on this browser; your account preference remains saved.' : !notifications.notificationsSupported ? 'Browser notifications are unsupported here; your account preference remains saved.' : 'Show alerts when browser permission is granted.' }}</small></span></button>
             </div>
             <p *ngIf="alertSaving" role="status">Saving alert preference…</p>
-            <p *ngIf="alertSaveError" class="profile-error" role="alert">Could not save your alert preference. Your previous preference is still selected.</p>
+            <app-notice *ngIf="alertSaveError" kind="error" message="Could not save your alert preference. Your previous preference is still selected."></app-notice>
         </section>
         <section *ngIf="profile && alertMode === 'notifications'" class="alert-settings" aria-labelledby="push-settings-title">
             <h2 id="push-settings-title">This browser</h2>
-            <p *ngIf="push?.state === 'unsupported'" role="status">Web Push is not supported by this browser. Your account alert preference is unchanged.</p>
-            <p *ngIf="push?.state === 'denied'" role="status">Notifications are blocked. Allow them in this browser’s site settings, then re-enable here.</p>
-            <p *ngIf="push?.state === 'permission-required'" role="status">Enable browser notifications to receive alerts when Zwei is closed.</p>
-            <p *ngIf="push?.state === 'not-enrolled'" role="status">This browser is not currently registered to receive push notifications.</p>
-            <p *ngIf="push?.state === 'unverified'" role="status">Push registration for this account could not be confirmed. Enable it again or retry disabling it.</p>
+            <app-notice *ngIf="push?.state === 'unsupported'" kind="info" message="Web Push is not supported by this browser. Your account alert preference is unchanged."></app-notice>
+            <app-notice *ngIf="push?.state === 'denied'" kind="warning" message="Notifications are blocked. Allow them in this browser’s site settings, then re-enable here."></app-notice>
+            <app-notice *ngIf="push?.state === 'permission-required'" kind="info" message="Enable browser notifications to receive alerts when Zwei is closed."></app-notice>
+            <app-notice *ngIf="push?.state === 'not-enrolled'" kind="info" message="This browser is not currently registered to receive push notifications."></app-notice>
+            <app-notice *ngIf="push?.state === 'unverified'" kind="warning" message="Push registration for this account could not be confirmed. Enable it again or retry disabling it."></app-notice>
             <label class="media-preference"><input type="checkbox" [checked]="push?.state === 'enabled'" [indeterminate]="push?.state === 'unverified'" [disabled]="refreshing || pushSaving || push?.state === 'unsupported' || push?.state === 'denied'" (change)="changePush($event)"> Enable push notifications on this browser</label>
             <button *ngIf="push?.state === 'unverified'" type="button" [disabled]="refreshing || pushSaving" (click)="setPushEnabled(false)">Disable push for this account</button>
-            <p *ngIf="push?.state === 'enabled'" role="status">Push notifications are enabled on this browser.</p>
+            <app-notice *ngIf="push?.state === 'enabled'" kind="success" message="Push notifications are enabled on this browser."></app-notice>
             <p *ngIf="pushSaving" role="status">Updating this browser…</p>
-            <p *ngIf="pushError" class="profile-error" role="alert">{{ pushError }}</p>
+            <app-notice *ngIf="pushError" kind="error" [message]="pushError"></app-notice>
         </section>
         <section *ngIf="profile" class="alert-settings" aria-labelledby="media-settings-title">
             <h2 id="media-settings-title">Inline media</h2>
@@ -47,7 +47,7 @@
             </div>
             <label class="media-preference"><input type="checkbox" [checked]="profile.auto_load_approved_media" [disabled]="refreshing || mediaSaving" (change)="setMediaAutoLoad(readChecked($event))"> Automatically load approved GIPHY images and GIFs</label>
             <p *ngIf="mediaSaving" role="status">Saving media preference…</p>
-            <p *ngIf="mediaSaveError" class="profile-error" role="alert">Could not save this preference. Your previous setting was restored.</p>
+            <app-notice *ngIf="mediaSaveError" kind="error" message="Could not save this preference. Your previous setting was restored."></app-notice>
         </section>
     </section>
 </main>

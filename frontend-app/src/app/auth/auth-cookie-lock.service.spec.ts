@@ -13,6 +13,16 @@ describe('AuthCookieLockService', () => {
         expect(failure).toEqual(expect.objectContaining({name: 'AuthCookieLockUnavailableError'}));
     });
 
+    it('reports Web Lock acquisition failures as a recoverable lock error', async () => {
+        vi.stubGlobal('navigator', {locks: {request: () => Promise.reject(new Error('lock unavailable'))}});
+        const request = vi.fn(() => new Subject<void>());
+        let failure: unknown;
+        new AuthCookieLockService().run(request).subscribe({error: error => failure = error});
+        await Promise.resolve();
+        expect(request).not.toHaveBeenCalled();
+        expect(failure).toEqual(expect.objectContaining({name: 'AuthCookieLockUnavailableError'}));
+    });
+
     it('does not start a queued request after unsubscription', async () => {
         let grant: (() => Promise<unknown>) | undefined;
         vi.stubGlobal('navigator', {locks: {request: (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
@@ -34,4 +44,5 @@ describe('AuthCookieLockService', () => {
         await Promise.resolve();
         expect(cancelled).toBe(true);
     });
+
 });

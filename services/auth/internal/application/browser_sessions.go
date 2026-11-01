@@ -23,6 +23,12 @@ type BrowserSessionRepository interface {
 	LogoutBrowserSession(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int64) error
 }
 
+// PasswordSetupSessionRepository atomically consumes a setup token, updates the
+// account, and creates its first browser session/head before issuing access.
+type PasswordSetupSessionRepository interface {
+	CompletePasswordSetup(context.Context, []byte, string, string, string, uuid.UUID, uuid.UUID, []byte, time.Time, time.Time, func(user.Session) error) error
+}
+
 // BrowserSessions is deliberately unwired. Callers must authenticate the target
 // account and device before create or replace; selectors are not credentials.
 type BrowserSessions struct {
@@ -145,6 +151,33 @@ func (s *BrowserSessions) Create(ctx context.Context, cmd CreateBrowserSessionCo
 	var access string
 	t := cmd.Target
 	err = s.repository.CreateBrowserSession(ctx, browser, generation, t.UserID, t.DeviceID, hash[:], t.SessionVersion, s.clock().Add(s.refreshLifetime), func(session user.Session) error { return s.issue(session, browser, generation, &access) })
+	if err != nil {
+		return BrowserSessionResult{}, err
+	}
+	return s.result(browser, generation, refresh, access), nil
+}
+
+func (s *BrowserSessions) CompletePasswordSetup(ctx context.Context, repository PasswordSetupSessionRepository, tokenHash []byte, passwordHash, clientDeviceID, deviceName string) (BrowserSessionResult, error) {
+	if len(tokenHash) != 32 || passwordHash == "" || len(clientDeviceID) < 8 || len(clientDeviceID) > 128 || repository == nil {
+		return BrowserSessionResult{}, ErrInvalidInput
+	}
+	browser, err := uuid.NewRandom()
+	if err != nil {
+		return BrowserSessionResult{}, err
+	}
+	generation, err := uuid.NewRandom()
+	if err != nil {
+		return BrowserSessionResult{}, err
+	}
+	refresh, refreshHash, err := browserRefresh()
+	if err != nil {
+		return BrowserSessionResult{}, err
+	}
+	var access string
+	now := s.clock()
+	err = repository.CompletePasswordSetup(ctx, tokenHash, passwordHash, clientDeviceID, deviceName, browser, generation, refreshHash[:], now.Add(s.refreshLifetime), now, func(session user.Session) error {
+		return s.issue(session, browser, generation, &access)
+	})
 	if err != nil {
 		return BrowserSessionResult{}, err
 	}

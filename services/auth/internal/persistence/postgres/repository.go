@@ -386,17 +386,6 @@ func (r *Repository) VerifyActivation(ctx context.Context, tokenHash []byte, now
 	return nil
 }
 
-func (r *Repository) SetPasswordFromSetup(ctx context.Context, tokenHash []byte, passwordHash string, now time.Time) error {
-	result, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $1, email_verified_at = $2, activation_token_hash = NULL, activation_expires_at = NULL, activation_token_purpose = NULL, updated_at = $2 WHERE activation_token_hash = $3 AND activation_token_purpose = 'setup' AND activation_expires_at > $2 AND password_hash IS NULL AND kyc_status IN ($4, $5)`, passwordHash, now, tokenHash, user.KYCPending, user.KYCActive)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return application.ErrPasswordSetupInvalid
-	}
-	return nil
-}
-
 func (r *Repository) CreateInvitation(ctx context.Context, email string, codeHash []byte, createdBy uuid.UUID, expiresAt time.Time) (user.Invitation, error) {
 	var invitation user.Invitation
 	err := r.db.QueryRow(ctx, `INSERT INTO invitation_codes (email, code_hash, created_by, expires_at) VALUES ($1, $2, $3, $4) RETURNING id, email, expires_at, redeemed_at, revoked_at, created_at`, email, codeHash, createdBy, expiresAt).Scan(&invitation.ID, &invitation.Email, &invitation.ExpiresAt, &invitation.RedeemedAt, &invitation.RevokedAt, &invitation.CreatedAt)

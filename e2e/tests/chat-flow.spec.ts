@@ -5512,13 +5512,13 @@ test('Home people search clears results, distinguishes empty and failed states, 
 
     await search.fill(malformedQuery);
     await expect(resultOptions).toHaveCount(0);
-    const malformedAlert = page.locator('.conversation-rail .group-search-status[role="alert"]');
-    await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
+    const malformedAlert = page.locator('.conversation-rail app-notice .app-notice');
+    await expect(malformedAlert).toContainText('Could not search for people. Try again.');
     await expect(searchStatus).toHaveCount(0);
 
     await search.fill(errorQuery);
     await expect(resultOptions).toHaveCount(0);
-    await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
+    await expect(malformedAlert).toContainText('Could not search for people. Try again.');
     await expect(searchStatus).toHaveCount(0);
 
     // The stale request is deliberately held while a newer query completes. Releasing it
@@ -5548,7 +5548,7 @@ test('Home people search clears results, distinguishes empty and failed states, 
 
         await search.fill(errorQuery);
         await expect(resultOptions).toHaveCount(0);
-        await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
+        await expect(malformedAlert).toContainText('Could not search for people. Try again.');
         await page.screenshot({path: testInfo.outputPath(`home-people-search-error-${theme}-${viewport.width}.png`), fullPage: false});
       }
     }
@@ -5676,20 +5676,50 @@ test('replies survive delivery and reload and jump to the original', async ({bro
     await expect(alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote')).toContainText(original);
     for (const theme of ['light', 'dark'] as const) {
       await setTheme(alice, theme);
+      await setTheme(bob, theme);
       for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
         await alice.setViewportSize(viewport);
+        await bob.setViewportSize(viewport);
         const quote = alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote');
+        const originalBubble = bob.locator('.message-bubble').filter({hasText: original}).filter({hasNot: bob.locator('.reply-quote')});
+        const action = originalBubble.getByRole('button', {name: 'Reply to message'});
+        const timestamp = originalBubble.locator('time');
+        const sender = originalBubble.locator('.message-sender');
+        await action.scrollIntoViewIfNeeded();
+        await action.hover();
+        await expect(action).toBeInViewport();
+        await expect(sender).toBeVisible();
+        const actionLayout = await originalBubble.evaluate(element => {
+          const action = element.querySelector<HTMLElement>('.reply-action');
+          const sender = element.querySelector<HTMLElement>('.message-sender');
+          const bubble = element.getBoundingClientRect();
+          const actionRect = action?.getBoundingClientRect();
+          const senderRect = sender?.getBoundingClientRect();
+          return actionRect && senderRect ? {
+            action: {left: actionRect.left, right: actionRect.right, top: actionRect.top, bottom: actionRect.bottom, width: actionRect.width, height: actionRect.height},
+            sender: {left: senderRect.left, right: senderRect.right, top: senderRect.top, bottom: senderRect.bottom},
+            bubble: {left: bubble.left, right: bubble.right, top: bubble.top, bottom: bubble.bottom},
+          } : null;
+        });
+        if (!actionLayout) throw new Error('Reply action and sender metadata must both be rendered');
+        expect(actionLayout.action.width, `${theme}/${viewport.width}px reply target width`).toBeGreaterThanOrEqual(44);
+        expect(actionLayout.action.height, `${theme}/${viewport.width}px reply target height`).toBeGreaterThanOrEqual(44);
+        const replyInsetLeft = actionLayout.action.left - actionLayout.bubble.left;
+        const replyInsetTop = actionLayout.action.top - actionLayout.bubble.top;
+        expect(replyInsetLeft, `${theme}/${viewport.width}px reply action must have a compact left inset`).toBeGreaterThanOrEqual(0);
+        expect(replyInsetLeft, `${theme}/${viewport.width}px reply action must have a compact left inset`).toBeLessThanOrEqual(12);
+        expect(replyInsetTop, `${theme}/${viewport.width}px reply action must have a compact top inset`).toBeGreaterThanOrEqual(0);
+        expect(replyInsetTop, `${theme}/${viewport.width}px reply action must have a compact top inset`).toBeLessThanOrEqual(12);
+        expect(actionLayout.action.right, `${theme}/${viewport.width}px reply action must be on the sender's left`).toBeLessThanOrEqual(actionLayout.sender.left + 1);
+        expect(Math.abs((actionLayout.action.top + actionLayout.action.bottom) / 2 - (actionLayout.sender.top + actionLayout.sender.bottom) / 2), `${theme}/${viewport.width}px reply action must align alongside sender metadata`).toBeLessThanOrEqual(2);
+        const actionOverlapsSender = actionLayout.action.left < actionLayout.sender.right && actionLayout.action.right > actionLayout.sender.left && actionLayout.action.top < actionLayout.sender.bottom && actionLayout.action.bottom > actionLayout.sender.top;
+        expect(actionOverlapsSender, `${theme}/${viewport.width}px reply action must not overlap sender metadata`).toBeFalsy();
         if (viewport.width === 390) {
-          const originalBubble = alice.locator('.message-bubble').filter({hasText: original}).filter({hasNot: alice.locator('.reply-quote')});
-          const action = originalBubble.getByRole('button', {name: 'Reply to message'});
-          const timestamp = originalBubble.locator('time');
-          await action.scrollIntoViewIfNeeded();
-          await expect(action).toBeInViewport();
           await expect(timestamp).toBeInViewport();
           const dimensions = await originalBubble.evaluate(element => ({height: element.clientHeight, scrollHeight: element.scrollHeight}));
           expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.height + 1);
-          await alice.screenshot({path: testInfo.outputPath(`reply-original-${theme}-390.png`)});
         }
+        await bob.screenshot({path: testInfo.outputPath(`reply-original-${theme}-${viewport.width}.png`)});
         await expect(quote).toBeVisible();
         const geometry = await quote.evaluate(element => {
           const rect = element.getBoundingClientRect();
@@ -6427,7 +6457,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     expect((pendingRect?.x ?? 390) + (pendingRect?.width ?? 390)).toBeLessThanOrEqual(391);
     await member.screenshot({path: testInfo.outputPath('departure-quarantine-pending-light-390.png'), fullPage: false});
     releaseProjection();
-    const alert = member.locator('.group-settings-error[role="alert"]').filter({hasText: 'The group is hidden until access is verified'});
+    const alert = member.getByRole('alert').filter({hasText: 'The group is hidden until access is verified'});
     await expect(alert).toContainText('hidden until access is verified', {timeout: 10_000});
     for (const theme of ['light', 'dark'] as const) {
       for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
@@ -6482,7 +6512,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     await member.getByRole('button', {name: 'Back to chats'}).click();
     await expect(member.locator('.conversation-rail')).toBeVisible();
     await expect(member.locator('.chat-panel')).toBeHidden();
-    const railAlert = member.locator('.conversation-rail > .group-settings-error[role="alert"]');
+    const railAlert = member.locator('aside.conversation-rail app-notice .app-notice[role="alert"]');
     await expect(railAlert).toContainText('hidden until access is verified');
     await expect(railAlert.getByRole('button', {name: 'Refresh chats'})).toBeVisible();
     await member.screenshot({path: testInfo.outputPath('departure-quarantine-rail-retry-dark-390.png'), fullPage: false});
@@ -6820,8 +6850,8 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await expect(searchStatus).toHaveText('Searching people…');
     await expect(owner.getByRole('option')).toHaveCount(0);
     releaseErrorResponse();
-    const searchAlert = owner.locator('.group-search-status[role="alert"]');
-    await expect(searchAlert).toHaveText('Could not search for people. Try again.');
+    const searchAlert = owner.locator('.group-manager app-notice .app-notice');
+    await expect(searchAlert).toContainText('Could not search for people. Try again.');
     await expect(owner.getByRole('option')).toHaveCount(0);
     await owner.screenshot({path: testInfo.outputPath('group-member-search-error-dark-desktop.png'), fullPage: false});
     await owner.unroute('**/api/chat/users/search?*');
@@ -6917,7 +6947,7 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
       data: {role: 'member'},
     });
     expect(membershipRecovery.status()).toBe(200);
-    await expect(owner.locator('.group-settings-error[role="alert"]')).toContainText('Could not refresh group membership', {timeout: 10_000});
+    await expect(owner.getByRole('alert')).toContainText('Could not refresh group membership', {timeout: 10_000});
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toHaveCount(0);
     await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group'})).toHaveCount(0);
     await expect(owner.locator('.message-history')).toHaveCount(0);
@@ -6925,12 +6955,12 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await expect(owner.locator('.group-manager, .group-members, .member-actions')).toHaveCount(0);
     await expect(owner.getByRole('button', {name: 'Join or start group audio call'})).toHaveCount(0);
     await expect(owner.locator('.composer textarea')).toBeDisabled();
-    const retryGroupProjection = owner.locator('.group-settings-error[role="alert"]').getByRole('button', {name: 'Refresh chats'});
+    const retryGroupProjection = owner.getByRole('alert').getByRole('button', {name: 'Refresh chats'});
     await expect(retryGroupProjection).toBeVisible();
     await owner.screenshot({path: testInfo.outputPath('group-projection-transient-error-dark.png'), fullPage: false, timeout: 15_000});
     await owner.unroute(`**/api/chat/groups/${groupID}`);
     await retryGroupProjection.click();
-    await expect(owner.locator('.group-settings-error')).toHaveCount(0, {timeout: 10_000});
+    await expect(owner.locator('app-notice.app-notice-error')).toHaveCount(0, {timeout: 10_000});
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toBeVisible();
     await expect(owner.getByText(firstGroupMessage, {exact: true})).toBeVisible({timeout: 10_000});
     await owner.getByRole('button', {name: 'Manage group'}).click();
@@ -8638,6 +8668,85 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     await expect.poll(async () => owner.locator('audio[groupRemoteAudio]').evaluateAll(audios => audios.length === 1 && audios.every(audio => !audio.paused)), {timeout: 10_000}).toBeTruthy();
     await owner.screenshot({path: testInfo.outputPath('group-call-restored-dark.png'), fullPage: false, timeout: 15_000});
 
+    // Exercise the existing call transition on the chats rail without changing media ownership.
+    await owner.getByRole('button', {name: 'Minimize group call'}).click();
+    await expect(owner.locator('.call-minimized-banner')).toBeVisible();
+    await owner.locator('.back-button').evaluate(button => (button as HTMLButtonElement).click());
+    const railGroupCall = owner.locator('.conversation-rail .call-minimized-banner-rail');
+    await expect(railGroupCall).toBeVisible();
+    await expect(owner.locator('.group-call-panel')).toHaveCount(0);
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of [{width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        await expect(railGroupCall).toBeVisible();
+        await expect(railGroupCall).toContainText('Deterministic media group');
+        await expect(railGroupCall).toContainText('participants in the group call');
+        await expect(railGroupCall.getByRole('button', {name: 'Return to group call'})).toBeVisible();
+        const railGeometry = await railGroupCall.evaluate(banner => {
+          const bounds = banner.getBoundingClientRect();
+          const rail = banner.closest('.conversation-rail')?.getBoundingClientRect();
+          const controls = Array.from(banner.querySelectorAll<HTMLElement>('button')).map(control => control.getBoundingClientRect());
+          return {bounds: bounds.toJSON(), rail: rail?.toJSON(), scrollWidth: banner.scrollWidth, clientWidth: banner.clientWidth,
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+            controls: controls.map(control => control.toJSON())};
+        });
+        expect(railGeometry.rail, `${theme}/${viewport.width}px minimized rail container`).toBeDefined();
+        expect(railGeometry.bounds.left).toBeGreaterThanOrEqual((railGeometry.rail?.left ?? 0) - 1);
+        expect(railGeometry.bounds.right).toBeLessThanOrEqual((railGeometry.rail?.right ?? viewport.width) + 1);
+        expect(railGeometry.scrollWidth).toBeLessThanOrEqual(railGeometry.clientWidth + 1);
+        expect(railGeometry.documentWidth).toBeLessThanOrEqual(railGeometry.viewportWidth + 1);
+        for (let index = 0; index < railGeometry.controls.length; index++) {
+          const control = railGeometry.controls[index];
+          expect(control.left).toBeGreaterThanOrEqual(railGeometry.bounds.left - 1);
+          expect(control.right).toBeLessThanOrEqual(railGeometry.bounds.right + 1);
+          for (const other of railGeometry.controls.slice(index + 1)) {
+            const overlaps = control.left < other.right && control.right > other.left && control.top < other.bottom && control.bottom > other.top;
+            expect(overlaps, `${theme}/${viewport.width}px minimized rail controls overlap`).toBe(false);
+          }
+        }
+        await owner.screenshot({path: testInfo.outputPath(`group-call-minimized-chats-rail-${theme}-${viewport.width}.png`), fullPage: false, timeout: 15_000});
+      }
+    }
+    await owner.getByRole('button', {name: 'Return to group call'}).click();
+    await expect(owner.locator('.group-call-panel')).toBeVisible();
+    await expect(owner.locator('.call-minimized-banner-rail')).toHaveCount(0);
+    await expect(owner.locator('.person-option').filter({hasText: 'Deterministic media group'})).toHaveClass(/selected/);
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        await expect(owner.locator('.group-call-panel')).toBeVisible();
+        await expect(owner.locator('.call-minimized-banner')).toHaveCount(0);
+        const restoredGeometry = await owner.locator('.group-call-panel').evaluate(panel => {
+          const bounds = panel.getBoundingClientRect();
+          const chat = panel.closest('.chat-panel')?.getBoundingClientRect();
+          const actions = Array.from(panel.querySelectorAll<HTMLElement>('button')).map(button => button.getBoundingClientRect());
+          return {bounds: bounds.toJSON(), chat: chat?.toJSON(), actions: actions.map(action => action.toJSON()),
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth};
+        });
+        expect(restoredGeometry.bounds.left).toBeGreaterThanOrEqual(0);
+        expect(restoredGeometry.bounds.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(restoredGeometry.bounds.bottom).toBeLessThanOrEqual(viewport.height + 1);
+        expect(restoredGeometry.bounds.left).toBeGreaterThanOrEqual((restoredGeometry.chat?.left ?? 0) - 1);
+        expect(restoredGeometry.bounds.right).toBeLessThanOrEqual((restoredGeometry.chat?.right ?? viewport.width) + 1);
+        expect(restoredGeometry.documentWidth).toBeLessThanOrEqual(restoredGeometry.viewportWidth + 1);
+        for (const action of restoredGeometry.actions) {
+          expect(action.left).toBeGreaterThanOrEqual(0);
+          expect(action.right).toBeLessThanOrEqual(viewport.width + 1);
+          expect(action.bottom).toBeLessThanOrEqual(viewport.height + 1);
+        }
+        for (let index = 0; index < restoredGeometry.actions.length; index++) {
+          for (const other of restoredGeometry.actions.slice(index + 1)) {
+            const action = restoredGeometry.actions[index];
+            const overlaps = action.left < other.right && action.right > other.left && action.top < other.bottom && action.bottom > other.top;
+            expect(overlaps, `${theme}/${viewport.width}px restored call controls overlap`).toBe(false);
+          }
+        }
+        await owner.screenshot({path: testInfo.outputPath(`group-call-restored-selected-${theme}-${viewport.width}.png`), fullPage: false, timeout: 15_000});
+      }
+    }
+
     const dark = await assertGroupCallLayout(owner, testInfo, 'dark', {width: 1440, height: 900});
     const light = await assertGroupCallLayout(owner, testInfo, 'light', {width: 1440, height: 900});
     await assertGroupCallLayout(owner, testInfo, 'dark', {width: 2560, height: 1440});
@@ -8776,10 +8885,30 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     dropObserverTerminal = true;
     await setTheme(owner, 'light');
     await setTheme(observer, 'dark');
-    await Promise.all([owner, observer].map(page => page.setViewportSize({width: 1440, height: 900})));
+    await owner.setViewportSize({width: 390, height: 844});
+    await observer.setViewportSize({width: 1440, height: 900});
     await owner.getByRole('button', {name: 'Minimize group call'}).click();
-    await expect(owner.locator('.call-minimized-banner:not(.call-minimized-banner-rail):not(.call-minimized-banner-chat)')).toBeVisible();
+    await expect(owner.locator('.call-minimized-banner')).toBeVisible();
+    await owner.getByRole('button', {name: 'Back to chats'}).click();
+    const mobileCallBanner = owner.locator('.call-minimized-banner-rail');
+    const restoreGroupCall = owner.getByRole('button', {name: 'Return to group call'});
+    const endMinimizedGroupCall = owner.getByRole('button', {name: 'End group call for everyone'});
+    await expect(mobileCallBanner).toBeVisible();
+    await expect(restoreGroupCall).toBeVisible();
+    await expect(endMinimizedGroupCall).toBeEnabled();
+    await owner.screenshot({path: testInfo.outputPath('group-call-mobile-back-to-chats-banner.png'), fullPage: false, timeout: 15_000});
+    await restoreGroupCall.click();
+    await expect(owner.locator('.group-call-panel')).toBeVisible();
+    await expect(mobileCallBanner).toHaveCount(0);
+    await owner.screenshot({path: testInfo.outputPath('group-call-mobile-restored.png'), fullPage: false, timeout: 15_000});
+    await expect(owner.getByRole('button', {name: 'Back to chats'})).toBeVisible();
+    await owner.getByRole('button', {name: 'Back to chats'}).click();
+    await expect(mobileCallBanner).toBeVisible();
+    await expect(owner.getByRole('button', {name: 'Return to group call'})).toBeVisible();
     await owner.getByRole('button', {name: 'End group call for everyone'}).click();
+    await expect(owner.getByRole('button', {name: 'Return to group call'})).toHaveCount(0);
+    await expect(owner.locator('.call-minimized-banner-rail')).toHaveCount(0);
+    await owner.setViewportSize({width: 1440, height: 900});
     const ownerTerminal = owner.locator('app-call-terminal-notice .group-call-terminal');
     await expect(ownerTerminal).toBeVisible({timeout: 5_000});
     await expect(ownerTerminal).toContainText('Group call ended.');
@@ -8805,6 +8934,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     await assertTerminalCapture(owner, 'light', {width: 390, height: 844});
     await owner.screenshot({path: testInfo.outputPath('group-call-terminal-owner-light-390-immediate.png'), fullPage: false, timeout: 15_000});
     await owner.setViewportSize({width: 1440, height: 900});
+    await owner.getByRole('button', {name: 'Deterministic media group', exact: true}).click();
     await expect.poll(() => observer.evaluate(() => (window as Window & {__groupSyncRequests?: string[]}).__groupSyncRequests?.length ?? 0), {timeout: 20_000}).toBeGreaterThan(observerSyncsBeforeTerminal);
     await expect(observer.locator('.group-call-terminal')).toContainText('Group call ended.', {timeout: 30_000});
     await expect(observer.locator('.group-call-devices')).not.toBeVisible();

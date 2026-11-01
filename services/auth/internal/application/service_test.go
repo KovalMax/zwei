@@ -286,22 +286,50 @@ func TestBrowserInvitationRegistrationStillRequiresPassword(t *testing.T) {
 	}
 }
 
-func TestSetPasswordFromSetupHashesAndConsumesToken(t *testing.T) {
+func TestCompletePasswordSetupHashesTokenAndIssuesIndependentBrowserSession(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+	sessions := NewBrowserSessions(&browserRepo{}, fakeTokens{}, time.Minute, time.Hour)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	service.clock = func() time.Time { return now }
+	sessions.clock = func() time.Time { return now }
+	result, err := service.CompletePasswordSetup(context.Background(), sessions, strings.Repeat("t", 43), "newpassword", "browser-device", "New browser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := sha256.Sum256([]byte(strings.Repeat("t", 43)))
+	if !bytes.Equal(expected[:], repository.setupHash) || repository.setupPasswordHash != "hash" || !repository.setupNow.Equal(now) || result.BrowserID == uuid.Nil || result.Generation == uuid.Nil || result.Tokens.AccessToken == "" || result.Tokens.RefreshToken == "" || repository.setupDeviceID != "browser-device" || repository.setupDeviceName != "New browser" {
+		t.Fatalf("setup mutation = hash:%x password:%q now:%v", repository.setupHash, repository.setupPasswordHash, repository.setupNow)
+	}
+	for _, password := range []string{"short", strings.Repeat("x", 65)} {
+		if _, err := service.CompletePasswordSetup(context.Background(), sessions, strings.Repeat("t", 43), password, "browser-device", "New browser"); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("password length %d error = %v", len(password), err)
+		}
+	}
+}
+
+func TestLegacyPasswordSetupPreservesCachedClientContractWithoutIssuingSession(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	service.clock = func() time.Time { return now }
-	if err := service.SetPasswordFromSetup(context.Background(), strings.Repeat("t", 43), "newpassword"); err != nil {
+	token := strings.Repeat("l", 43)
+	if err := service.SetPasswordFromSetup(context.Background(), token, "newpassword"); err != nil {
 		t.Fatal(err)
 	}
-	expected := sha256.Sum256([]byte(strings.Repeat("t", 43)))
-	if !bytes.Equal(expected[:], repository.setupHash) || repository.setupPasswordHash != "hash" || !repository.setupNow.Equal(now) {
-		t.Fatalf("setup mutation = hash:%x password:%q now:%v", repository.setupHash, repository.setupPasswordHash, repository.setupNow)
+	expected := sha256.Sum256([]byte(token))
+	if !bytes.Equal(repository.legacySetupHash, expected[:]) || repository.legacySetupPasswordHash != "hash" || !repository.legacySetupNow.Equal(now) || repository.legacySetupCalls != 1 {
+		t.Fatalf("legacy setup mutation: calls=%d hash=%x password=%q now=%v", repository.legacySetupCalls, repository.legacySetupHash, repository.legacySetupPasswordHash, repository.legacySetupNow)
 	}
-	for _, password := range []string{"short", strings.Repeat("x", 65)} {
-		if err := service.SetPasswordFromSetup(context.Background(), strings.Repeat("t", 43), password); !errors.Is(err, ErrInvalidInput) {
-			t.Errorf("password length %d error = %v", len(password), err)
+	for _, test := range []struct{ token, password string }{
+		{"short", "newpassword"}, {token, "short"},
+	} {
+		if err := service.SetPasswordFromSetup(context.Background(), test.token, test.password); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("legacy setup error = %v", err)
 		}
+	}
+	if repository.legacySetupCalls != 1 {
+		t.Fatalf("invalid legacy requests reached repository: calls=%d", repository.legacySetupCalls)
 	}
 }
 
@@ -440,37 +468,43 @@ func TestCreateInvitationSendsAccountCreationEmail(t *testing.T) {
 }
 
 type fakeRepository struct {
-	profile              user.Profile
-	updatedAutoLoad      *bool
-	giphyEnabled         bool
-	giphyPersistedResult *bool
-	profileDisplayName   *string
-	profileRetention     *string
-	profileAlertMode     *string
-	account              user.User
-	deviceID             uuid.UUID
-	userID               uuid.UUID
-	params               CreateUserParams
-	isAdmin              bool
-	prepareEmail         string
-	prepareDisplayName   string
-	prepareVerified      bool
-	prepareNeedsSetup    bool
-	setupHash            []byte
-	setupPasswordHash    string
-	setupNow             time.Time
-	resendEmail          string
-	resendDisplayName    string
-	resendNeedsSetup     bool
-	resendHash           []byte
-	resendExpiresAt      time.Time
-	invitation           user.Invitation
-	pushUserID           uuid.UUID
-	pushBrowserID        uuid.UUID
-	pushGeneration       uuid.UUID
-	pushDeviceID         uuid.UUID
-	pushSessionVersion   int64
-	pushSubscription     PushSubscription
+	profile                 user.Profile
+	updatedAutoLoad         *bool
+	giphyEnabled            bool
+	giphyPersistedResult    *bool
+	profileDisplayName      *string
+	profileRetention        *string
+	profileAlertMode        *string
+	account                 user.User
+	deviceID                uuid.UUID
+	userID                  uuid.UUID
+	params                  CreateUserParams
+	isAdmin                 bool
+	prepareEmail            string
+	prepareDisplayName      string
+	prepareVerified         bool
+	prepareNeedsSetup       bool
+	setupHash               []byte
+	setupPasswordHash       string
+	setupNow                time.Time
+	setupDeviceID           string
+	setupDeviceName         string
+	legacySetupHash         []byte
+	legacySetupPasswordHash string
+	legacySetupNow          time.Time
+	legacySetupCalls        int
+	resendEmail             string
+	resendDisplayName       string
+	resendNeedsSetup        bool
+	resendHash              []byte
+	resendExpiresAt         time.Time
+	invitation              user.Invitation
+	pushUserID              uuid.UUID
+	pushBrowserID           uuid.UUID
+	pushGeneration          uuid.UUID
+	pushDeviceID            uuid.UUID
+	pushSessionVersion      int64
+	pushSubscription        PushSubscription
 }
 
 func (f *fakeRepository) CreateUserWithDevice(_ context.Context, params CreateUserParams) (uuid.UUID, uuid.UUID, error) {
@@ -536,9 +570,15 @@ func (f *fakeRepository) PrepareActivationEmail(_ context.Context, _ uuid.UUID, 
 }
 func (f *fakeRepository) VerifyActivation(context.Context, []byte, time.Time) error { return nil }
 func (f *fakeRepository) SetPasswordFromSetup(_ context.Context, tokenHash []byte, passwordHash string, now time.Time) error {
-	f.setupHash = append([]byte(nil), tokenHash...)
-	f.setupPasswordHash, f.setupNow = passwordHash, now
+	f.legacySetupHash = append([]byte(nil), tokenHash...)
+	f.legacySetupPasswordHash, f.legacySetupNow = passwordHash, now
+	f.legacySetupCalls++
 	return nil
+}
+func (f *fakeRepository) CompletePasswordSetup(_ context.Context, tokenHash []byte, passwordHash, deviceID, deviceName string, _ uuid.UUID, _ uuid.UUID, _ []byte, _ time.Time, now time.Time, issue func(user.Session) error) error {
+	f.setupHash = append([]byte(nil), tokenHash...)
+	f.setupPasswordHash, f.setupNow, f.setupDeviceID, f.setupDeviceName = passwordHash, now, deviceID, deviceName
+	return issue(user.Session{UserID: uuid.New(), DeviceID: uuid.New(), SessionVersion: 1})
 }
 func (f *fakeRepository) CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error) {
 	return f.invitation, nil

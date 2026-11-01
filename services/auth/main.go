@@ -83,6 +83,7 @@ func main() {
 func registerBrowserV2(mux *http.ServeMux, cfg config.Config, handler *httptransport.Handler, authService *application.Service, repository *postgres.Repository, issuer *token.JWTIssuer, validator *sharedauth.SessionValidator, senders ...application.EmailSender) {
 	browserSessions := application.NewBrowserSessions(repository, issuer, cfg.AccessLifetime, cfg.RefreshLifetime)
 	browser := httptransport.NewBrowserV2Handler(handler, authService, repository, browserSessions, validator)
+	browser.SetPasswordSetup(application.NewPasswordSetupService(authService, browserSessions))
 	registration := application.NewBrowserRegistration(authService, browserSessions, repository)
 	if len(senders) > 0 {
 		registration.SetPasswordSetupEmail(senders[0], cfg.ActivationURL)

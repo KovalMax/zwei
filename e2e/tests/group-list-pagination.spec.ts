@@ -208,7 +208,7 @@ async function expectGroupPageErrorAppearance(page: Page, width: number): Promis
       const bounds = element.getBoundingClientRect();
       return {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height};
     };
-    const contrast = (foreground: string, background: string): number => {
+      const contrast = (foreground: string, background: string): number => {
       const channel = (value: number) => {
         const normalized = value / 255;
         return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
@@ -224,16 +224,32 @@ async function expectGroupPageErrorAppearance(page: Page, width: number): Promis
       };
       const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
       return (lighter + 0.05) / (darker + 0.05);
-    };
-    return {
+      };
+      const colorChannels = (value: string): [number, number, number, number] => {
+        const channels = value.match(/[\d.]+/g)?.map(Number);
+        if (!channels || channels.length < 3) throw new Error(`Could not parse computed color ${value}`);
+        return [channels[0], channels[1], channels[2], channels[3] ?? 1];
+      };
+      const composite = (foreground: string, background: string): string => {
+        const top = colorChannels(foreground);
+        const bottom = colorChannels(background);
+        const alpha = top[3] + bottom[3] * (1 - top[3]);
+        const channels = [0, 1, 2].map(index => alpha === 0 ? 0 : (top[index] * top[3] + bottom[index] * bottom[3] * (1 - top[3])) / alpha);
+        return `rgb(${channels.map(channel => Math.round(channel)).join(', ')})`;
+      };
+      const controlEffectiveBackground = colorChannels(controlStyle.backgroundColor)[3] < 1
+        ? composite(controlStyle.backgroundColor, style.backgroundColor)
+        : controlStyle.backgroundColor;
+      return {
       alert: rect(alert),
       control: rect(control),
       alertBackground: style.backgroundColor,
       alertBorder: style.borderTopColor,
       alertBorderStyle: style.borderTopStyle,
-      alertTextContrast: contrast(style.color, style.backgroundColor),
-      controlBackground: controlStyle.backgroundColor,
-      controlTextContrast: contrast(controlStyle.color, controlStyle.backgroundColor),
+        alertTextContrast: contrast(style.color, style.backgroundColor),
+        controlBackground: controlStyle.backgroundColor,
+        controlEffectiveBackground,
+        controlTextContrast: contrast(controlStyle.color, controlEffectiveBackground),
       controlHeight: control.getBoundingClientRect().height,
       controlOutlineStyle: controlStyle.outlineStyle,
       controlOutlineWidth: controlStyle.outlineWidth,

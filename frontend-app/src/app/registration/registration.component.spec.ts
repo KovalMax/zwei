@@ -1,11 +1,12 @@
 import {ComponentFixture, TestBed} from '@angular/core/testing';
+import {NgZone} from '@angular/core';
 
 import {RegistrationComponent} from './registration.component';
 import {AppModule} from '../app.module';
 import {RegistrationService} from './registration.service';
 import {AuthService} from '../auth/auth.service';
 import {Router} from '@angular/router';
-import {of} from 'rxjs';
+import {of, Subject, throwError} from 'rxjs';
 
 describe('RegistrationComponent', () => {
     let component: RegistrationComponent;
@@ -61,5 +62,49 @@ describe('RegistrationComponent', () => {
         component.onSubmit();
         expect(accept).toHaveBeenCalledWith(session);
         expect(navigate).toHaveBeenCalledWith(['home']);
+    });
+
+    it('keeps registration failures visible as an accessible persistent notice', () => {
+        component.errorMessage = 'An account with this email already exists. Try signing in instead.';
+        fixture.detectChanges();
+        const notice = fixture.nativeElement.querySelector('app-notice [role="alert"]') as HTMLElement;
+        expect(notice.textContent).toContain('Try signing in instead.');
+    });
+
+    it('clears loading and reports duplicate and invitation errors from failed submissions', () => {
+        const service = TestBed.inject(RegistrationService);
+        const registrationForm = {email: 'user@example.test', password: 'password123', confirmPassword: 'password123', firstName: 'First', lastName: 'Last', nickName: 'User'};
+        component.registrationForm.setValue(registrationForm);
+        const registration = vi.spyOn(service, 'registration').mockReturnValue(throwError(() => ({status: 409, invalidParams: []})));
+
+        component.onSubmit();
+
+        expect(component.isLoading).toBe(false);
+        expect(component.errorMessage).toBe('An account with this email already exists. Try signing in instead.');
+        component.registrationForm.setValue(registrationForm);
+        registration.mockReturnValue(throwError(() => ({status: 400, invalidParams: [], error: {error: 'invalid invitation code'}})));
+
+        component.onSubmit();
+
+        expect(component.isLoading).toBe(false);
+        expect(component.errorMessage).toBe('invalid invitation code');
+        fixture.detectChanges();
+        const notice = fixture.nativeElement.querySelector('app-notice [role="alert"]') as HTMLElement;
+        expect(notice.textContent).toContain('invalid invitation code');
+    });
+
+    it('renders a failed registration delivered outside Angular without manual change detection', async () => {
+        const service = TestBed.inject(RegistrationService);
+        const failedRequest = new Subject<never>();
+        vi.spyOn(service, 'registration').mockReturnValue(failedRequest);
+        component.registrationForm.setValue({email: 'user@example.test', password: 'password123', confirmPassword: 'password123', firstName: 'First', lastName: 'Last', nickName: 'User'});
+        component.onSubmit();
+        fixture.detectChanges();
+
+        TestBed.inject(NgZone).runOutsideAngular(() => failedRequest.error({status: 409, invalidParams: []}));
+        await fixture.whenStable();
+
+        const notice = fixture.nativeElement.querySelector('app-notice [role="alert"]') as HTMLElement;
+        expect(notice.textContent).toContain('An account with this email already exists. Try signing in instead.');
     });
 });
