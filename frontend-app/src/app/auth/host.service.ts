@@ -11,6 +11,7 @@ export class HostService {
         const origin = this.isAdminHost() ? backends.admin : backends.auth;
         return `${origin}/api/auth/v2/${kind}`;
     }
+    public activationSetupEndpoint(): string { return `${backends.auth}/api/auth/activate/setup`; }
     public isAdminHost(): boolean {
         return window.location.hostname === 'kyc.chat.false.tel' || window.location.hostname === 'kyc.localhost';
     }

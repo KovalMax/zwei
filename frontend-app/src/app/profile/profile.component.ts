@@ -16,6 +16,8 @@ import {PushEnrollmentService} from '../pwa/push-enrollment.service';
 export class ProfileComponent implements OnInit {
     public profile?: Profile;
     public error = false;
+    public refreshing = false;
+    public refreshError = false;
     public mediaSaving = false;
     public mediaSaveError = false;
     public alertMode?: AlertMode;
@@ -33,7 +35,7 @@ export class ProfileComponent implements OnInit {
     }
 
     public async enablePush(): Promise<void> {
-        if (this.pushSaving || this.alertMode !== 'notifications' || !this.push) return;
+        if (this.refreshing || this.pushSaving || this.alertMode !== 'notifications' || !this.push) return;
         this.pushSaving = true;
         this.pushError = '';
         this.pushSuccess = false;
@@ -59,7 +61,7 @@ export class ProfileComponent implements OnInit {
 
     public async setPushEnabled(enabled: boolean): Promise<void> {
         if (enabled) return this.enablePush();
-        if (this.pushSaving || !this.push) return;
+        if (this.refreshing || this.pushSaving || !this.push) return;
         this.pushSaving = true;
         this.pushError = '';
         this.pushSuccess = false;
@@ -82,7 +84,7 @@ export class ProfileComponent implements OnInit {
     }
 
     public async setAlertMode(mode: AlertMode): Promise<void> {
-        if (this.alertSaving || mode === this.alertMode) return;
+        if (this.refreshing || this.alertSaving || mode === this.alertMode) return;
         this.alertSaving = true;
         this.alertSaveError = false;
         this.changeDetector.markForCheck();
@@ -105,7 +107,7 @@ export class ProfileComponent implements OnInit {
     }
 
     public setMediaAutoLoad(enabled: boolean): void {
-        if (!this.profile || this.mediaSaving) return;
+        if (!this.profile || this.refreshing || this.mediaSaving) return;
         const previous = this.profile.auto_load_approved_media;
         this.profile = {...this.profile, auto_load_approved_media: enabled};
         this.mediaSaving = true;
@@ -120,20 +122,30 @@ export class ProfileComponent implements OnInit {
         return event.target instanceof HTMLInputElement && event.target.checked;
     }
 
-    public ngOnInit(): void {
+    public refreshProfile(): void {
+        if (this.refreshing || this.alertSaving || this.mediaSaving || this.pushSaving) return;
+        this.refreshing = true;
+        this.refreshError = false;
         this.authService.profile().subscribe({
             next: profile => {
                 this.profile = profile;
-                const alertMode = profile.alert_mode ?? 'off';
-                this.alertMode = alertMode;
-                this.notifications.setMode(alertMode);
+                this.error = false;
+                this.alertMode = profile.alert_mode ?? 'off';
+                this.notifications.setMode(this.alertMode);
+                this.refreshing = false;
                 this.changeDetector.markForCheck();
-                void this.push?.reconcile().finally(() => this.changeDetector.markForCheck());
             },
             error: () => {
-                this.error = true;
+                if (!this.profile) this.error = true;
+                else this.refreshError = true;
+                this.refreshing = false;
                 this.changeDetector.markForCheck();
             },
         });
+    }
+
+    public ngOnInit(): void {
+        this.refreshProfile();
+        void this.push?.reconcile().finally(() => this.changeDetector.markForCheck());
     }
 }

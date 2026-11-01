@@ -18,6 +18,7 @@ import {AuthCookieLockUnavailableError} from '../auth/auth-cookie-lock.service';
 })
 export class RegistrationComponent {
     public isLoading = false;
+    public readonly isInvitation: boolean;
     public registrationForm: FormGroup<ControlsOf<RegistrationForm>>;
 
     constructor(
@@ -27,7 +28,8 @@ export class RegistrationComponent {
         private route: ActivatedRoute,
         private snackBar: MatSnackBar,
     ) {
-        this.registrationForm = service.buildForm();
+        this.isInvitation = route.snapshot.queryParamMap.get('invite') === '1';
+        this.registrationForm = service.buildForm(this.isInvitation);
     }
 
     public onSubmit(): void {
@@ -39,7 +41,7 @@ export class RegistrationComponent {
 
         let model: RegistrationModel;
         try {
-            const invitationCode = this.route.snapshot.queryParamMap.get('invite') === '1'
+            const invitationCode = this.isInvitation
                 ? this.route.snapshot.queryParamMap.get('code') || undefined
                 : undefined;
             model = RegistrationModel.createFrom(this.registrationForm.getRawValue(), invitationCode) as RegistrationModel;

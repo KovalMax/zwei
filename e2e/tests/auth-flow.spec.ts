@@ -781,7 +781,7 @@ test('shows every registration and login validation state', async ({page}) => {
   page.on('request', request => {
     if (request.url().includes('fonts.googleapis.com') || request.url().includes('fonts.gstatic.com')) thirdPartyAssetRequests.push(request.url());
   });
-  await page.goto('/sign-up');
+  await page.goto('/sign-up?invite=1&code=validation-case');
   await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
   await expect(page.getByRole('button', {name: 'Account menu'})).toHaveCount(0);
   await expect(page.locator('zwei-icon').first().locator('svg')).toBeVisible();
@@ -830,9 +830,10 @@ test('shows every registration and login validation state', async ({page}) => {
   await expect(page).toHaveURL(/\/login$/);
   await page.getByRole('link', {name: 'Create one'}).click();
   await expect(page).toHaveURL(/\/sign-up$/);
-  for (const fieldName of ['email', 'firstName', 'lastName', 'nickName', 'password', 'confirmPassword']) {
+  for (const fieldName of ['email', 'firstName', 'lastName', 'nickName']) {
     await expect(page.locator(`[formControlName="${fieldName}"]`)).toHaveValue('');
   }
+  await expect(page.locator('[formControlName="password"]')).toHaveCount(0);
   await page.getByRole('link', {name: 'Sign in'}).click();
   await expect(page.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
   await expect(page.getByRole('button', {name: 'Sign in'})).toBeDisabled();
@@ -1096,7 +1097,7 @@ test('registration fields preserve readable empty, filled, failure, and keyboard
       const context = await browser.newContext({viewport});
       const page = await context.newPage();
       await page.addInitScript(selectedTheme => localStorage.setItem('zwei_theme', selectedTheme), theme);
-      await page.goto('/sign-up');
+      await page.goto('/sign-up?invite=1&code=visual-case');
       await expect(page.getByRole('heading', {name: 'Create your account'})).toBeVisible();
       await expect(page.locator('html')).toHaveClass(new RegExp(`${theme}-theme`));
       const fields = page.locator('.auth-form input');
@@ -1263,8 +1264,6 @@ test('registers, rejects duplicate and invalid login, then exposes profile and s
   await input(page, 'firstName').fill('Test');
   await input(page, 'lastName').fill('User');
   await input(page, 'nickName').fill('Account User');
-  await input(page, 'password').fill(password);
-  await input(page, 'confirmPassword').fill(password);
   await page.getByRole('button', {name: 'Create account'}).click();
   await expect(page.getByText('An account with this email already exists. Try signing in instead.')).toBeVisible();
 

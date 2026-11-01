@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net/mail"
@@ -17,6 +19,7 @@ import (
 
 var (
 	ErrInvalidInput          = errors.New("invalid input")
+	ErrPasswordSetupInvalid  = errors.New("invalid or expired password setup token")
 	ErrCredentials           = errors.New("invalid credentials")
 	ErrRefreshToken          = errors.New("invalid refresh token")
 	ErrAccountInactive       = errors.New("account is not active")
@@ -30,10 +33,11 @@ type Service struct {
 	repository Repository
 	passwords  PasswordHasher
 	tokens     TokenIssuer
+	clock      func() time.Time
 }
 
 func NewService(repository Repository, passwords PasswordHasher, tokens TokenIssuer, accessLifetime, refreshLifetime time.Duration) *Service {
-	return &Service{repository: repository, passwords: passwords, tokens: tokens}
+	return &Service{repository: repository, passwords: passwords, tokens: tokens, clock: time.Now}
 }
 
 type Credentials struct {
@@ -47,23 +51,48 @@ type Tokens struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-func (s *Service) registerPending(ctx context.Context, input Credentials) error {
-	if !validCredentials(input.Email, input.Password, input.DisplayName, input.DeviceID) {
-		return ErrInvalidInput
+func (s *Service) registerPending(ctx context.Context, input Credentials) (string, error) {
+	if !validRegistrationIdentity(input.Email, input.DisplayName, input.DeviceID) {
+		return "", ErrInvalidInput
 	}
-	hash, err := s.passwords.Hash(input.Password)
-	if err != nil {
-		return err
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", err
 	}
-	_, _, err = s.repository.CreateUserWithDevice(ctx, CreateUserParams{
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	tokenHash := sha256.Sum256([]byte(token))
+	_, _, err := s.repository.CreateUserWithDevice(ctx, CreateUserParams{
 		Email:          normalizeEmail(input.Email),
-		PasswordHash:   hash,
 		DisplayName:    strings.TrimSpace(input.DisplayName),
 		ClientDeviceID: input.DeviceID,
 		DeviceName:     input.DeviceName,
 		KYCStatus:      user.KYCPending,
+		SetupTokenHash: tokenHash[:],
+		SetupExpiresAt: s.clock().Add(72 * time.Hour),
 	})
-	return err
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// SetPasswordFromSetup consumes a one-time setup token without creating a session.
+func (s *Service) SetPasswordFromSetup(ctx context.Context, token, password string) error {
+	if len(token) < 32 || len(token) > 128 || !validPassword(password) {
+		return ErrInvalidInput
+	}
+	hash, err := s.passwords.Hash(password)
+	if err != nil {
+		return err
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	if err := s.repository.SetPasswordFromSetup(ctx, tokenHash[:], hash, s.clock()); err != nil {
+		if errors.Is(err, ErrPasswordSetupInvalid) {
+			return ErrPasswordSetupInvalid
+		}
+		return err
+	}
+	return nil
 }
 
 // AuthenticateBrowserLogin validates credentials and resolves the account's device
@@ -194,11 +223,15 @@ func (s *Service) WebSocketTicket(identity sharedauth.Identity) (string, error) 
 }
 
 func validCredentials(email, password, displayName, deviceID string) bool {
-	return validEmail(email) && len(password) >= 8 && strings.TrimSpace(displayName) != "" && len(strings.TrimSpace(deviceID)) >= 8
+	return validRegistrationIdentity(email, displayName, deviceID) && len(password) >= 8
+}
+func validRegistrationIdentity(email, displayName, deviceID string) bool {
+	return validEmail(email) && strings.TrimSpace(displayName) != "" && len(strings.TrimSpace(deviceID)) >= 8
 }
 func validLogin(email, password, deviceID string) bool {
 	return validEmail(email) && len(password) >= 8 && len(strings.TrimSpace(deviceID)) >= 8
 }
+func validPassword(password string) bool { return len(password) >= 8 && len(password) <= 64 }
 func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
 
 func validEmail(value string) bool {

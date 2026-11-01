@@ -53,10 +53,10 @@ func (r *ReconciliationRepository) Reconcile(ctx context.Context, userID, conver
 		)
 		SELECT authorized.high_watermark, authorized.own_read_sequence, authorized.peer_read_sequence, authorized.peer_read_cursors,
 			message.id, message.sender_id, message.client_message_id, message.sequence,
-			message.ciphertext, message.nonce, message.created_at, message.kind, message.content_type, message.mentions_ciphertext, message.mentions_nonce
+			message.ciphertext, message.nonce, message.created_at, message.kind, message.content_type, message.mentions_ciphertext, message.mentions_nonce, message.reply_to_message_id
 		FROM authorized
 		LEFT JOIN LATERAL (
-			SELECT id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, kind, content_type, mentions_ciphertext, mentions_nonce
+			SELECT id, sender_id, client_message_id, sequence, ciphertext, nonce, created_at, kind, content_type, mentions_ciphertext, mentions_nonce, reply_to_message_id
 			FROM messages
 			WHERE conversation_id = $2
 				AND sequence > GREATEST($3, authorized.visible_from_sequence - 1)
@@ -80,7 +80,7 @@ func (r *ReconciliationRepository) Reconcile(ctx context.Context, userID, conver
 		var createdAt pgtype.Timestamptz
 		var message messaging.Message
 		var ciphertext, nonce, mentionsCiphertext, mentionsNonce []byte
-		if err := rows.Scan(&highWatermark, &ownReadSequence, &peerReadSequence, &peerReadCursors, &messageID, &senderID, &clientMessageID, &sequence, &ciphertext, &nonce, &createdAt, &kind, &contentType, &mentionsCiphertext, &mentionsNonce); err != nil {
+		if err := rows.Scan(&highWatermark, &ownReadSequence, &peerReadSequence, &peerReadCursors, &messageID, &senderID, &clientMessageID, &sequence, &ciphertext, &nonce, &createdAt, &kind, &contentType, &mentionsCiphertext, &mentionsNonce, &message.ReplyToMessageID); err != nil {
 			return application.Reconciliation{}, err
 		}
 		authorized = true

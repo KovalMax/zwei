@@ -7,6 +7,7 @@ export interface Message {
     body: string;
     contentType?: 'text' | 'sticker';
     mentions?: MessageMention[];
+    replyToMessageId?: string;
     createdAt: string;
     kind?: 'user' | 'system';
     pending?: boolean;

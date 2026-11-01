@@ -31,6 +31,7 @@ description: Use when writing, refactoring, testing, or reviewing Go code in Zwe
 - Keep JSON tags and wire event names stable. Treat protocol changes as compatibility-sensitive.
 - Account lifecycle controls must revoke session versions when blocking users. Admin IP allowlists must fail closed, parse CIDRs with `net/netip`, and only trust forwarded client addresses behind a private, controlled proxy. CLI password prompts must avoid process arguments and hide terminal input when possible.
 - Bearer activation/invitation values must be generated with `crypto/rand`, stored only as hashes, consumed atomically in PostgreSQL, and excluded from logs/errors. External email delivery belongs behind an application port with bounded context cancellation and an infrastructure adapter.
+- Registration password-setup credentials must be purpose-distinct from legacy admin-verification credentials. Setup atomically stores the password and verifies email but leaves KYC status unchanged and issues no session; invitation registration remains its separate immediate-session path.
 - Activation resend is an auth application use case: rotate the hash and expiry in one repository update only for an active, unverified account, send the fresh raw token through `EmailSender`, and return no token from the HTTP handler. Test that the old token no longer verifies and the injected-clock expiry is renewed.
 
 ## Tests

@@ -26,6 +26,23 @@ describe('AuthService', () => {
 
     afterEach(() => { http.verify(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+    it('sets a password through the setup JSON endpoint while preserving legacy activation transport', () => {
+        const token = 'A'.repeat(43);
+        let setupStatus = '';
+        service.setupPassword(token, 'password123').subscribe(response => setupStatus = response.status);
+        const setup = http.expectOne(`${backends.auth}/api/auth/activate/setup`);
+        expect(setup.request.method).toBe('POST');
+        expect(setup.request.body).toEqual({token, password: 'password123'});
+        setup.flush({status: 'password_set'});
+        expect(setupStatus).toBe('password_set');
+
+        service.activate(token).subscribe();
+        const legacy = http.expectOne(request => request.url === backends.activation && request.params.get('token') === token);
+        expect(legacy.request.method).toBe('POST');
+        expect(legacy.request.body).toEqual({});
+        legacy.flush({status: 'activated'});
+    });
+
     it('signals accepted sessions, cross-tab invalidation and local logout', () => {
         let changes = 0;
         const subscription = service.sessionChanges.subscribe(() => changes++);

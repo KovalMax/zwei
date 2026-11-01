@@ -24,7 +24,7 @@ export class RegistrationService {
         const endpoint = this.host.browserSessionEndpoint('register');
         return this.cookieLock.run(() => this.auth.pendingLogout
             ? throwError(() => new HttpErrorResponse({error: {error: 'Complete the pending sign out first'}}))
-            : this.client.post<unknown>(endpoint, model, {withCredentials: true}))
+            : this.client.post<unknown>(endpoint, this.registrationPayload(model), {withCredentials: true}))
             .pipe(
                 map(response => this.parseV2Response(response, !!model.invitation_code?.trim())),
                 catchError((err: HttpErrorResponse | AuthCookieLockUnavailableError) => err instanceof AuthCookieLockUnavailableError ? throwError(() => err) : throwError(() => ({
@@ -33,6 +33,12 @@ export class RegistrationService {
                     error: err.error,
                 })))
             );
+    }
+
+    private registrationPayload(model: RegistrationModel): RegistrationModel | Omit<RegistrationModel, 'password'> {
+        if (model.invitation_code?.trim()) return model;
+        const {password: _password, ...ordinaryRegistration} = model;
+        return ordinaryRegistration;
     }
 
     private parseV2Response(response: unknown, invited: boolean): RegistrationResponse {
@@ -48,16 +54,17 @@ export class RegistrationService {
         return {browser_id: response.browser_id, generation: response.generation, access_token: response.access_token, token_type: response.token_type, expires_in: response.expires_in};
     }
 
-    public buildForm(): FormGroup<ControlsOf<RegistrationForm>> {
+    public buildForm(invitation = true): FormGroup<ControlsOf<RegistrationForm>> {
+        const passwordValidators = invitation ? [Validators.required, Validators.minLength(8), Validators.maxLength(64)] : [];
         return new FormGroup<ControlsOf<RegistrationForm>>({
             email: new FormControl('', {validators: [Validators.required, Validators.email, Validators.maxLength(180)], nonNullable: true}),
-            password: new FormControl('', {validators: [Validators.required, Validators.minLength(8), Validators.maxLength(64)], nonNullable: true}),
-            confirmPassword: new FormControl('', {validators: [Validators.required, Validators.minLength(8), Validators.maxLength(64)], nonNullable: true}),
+            password: new FormControl('', {validators: passwordValidators, nonNullable: true}),
+            confirmPassword: new FormControl('', {validators: passwordValidators, nonNullable: true}),
             firstName: new FormControl('', {validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)], nonNullable: true}),
             lastName: new FormControl('', {validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)], nonNullable: true}),
             nickName: new FormControl('', {validators: [Validators.required, Validators.minLength(2), Validators.maxLength(60)], nonNullable: true}),
         }, {
-            validators: ApplicationValidators.valuesAreEqual('password', 'confirmPassword'),
+            validators: invitation ? ApplicationValidators.valuesAreEqual('password', 'confirmPassword') : [],
         });
     }
 }

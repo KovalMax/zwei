@@ -1,6 +1,10 @@
-<main class="profile-page" aria-labelledby="profile-title">
+<main class="profile-page" aria-labelledby="profile-title" [zweiSwipeBack]="true" (swipeBack)="backLink.click()" [zweiPullToRefresh]="true" [pullToRefreshBusy]="refreshing || alertSaving || mediaSaving || pushSaving" (pullToRefresh)="refreshProfile()">
     <section class="profile-card">
-        <a class="back-link" [routerLink]="backRoute"><zwei-icon name="arrow_back"></zwei-icon>{{ backLabel }}</a>
+        <div class="profile-navigation">
+            <a #backLink class="back-link" [routerLink]="backRoute"><zwei-icon name="arrow_back"></zwei-icon>{{ backLabel }}</a>
+            <button type="button" class="profile-refresh" [disabled]="refreshing || alertSaving || mediaSaving || pushSaving" (click)="refreshProfile()">{{ refreshing ? 'Refreshing…' : 'Refresh profile' }}</button>
+        </div>
+        <p *ngIf="refreshError" class="profile-error" role="alert">Could not refresh your profile. Your current settings are unchanged. <button type="button" (click)="refreshProfile()">Retry</button></p>
         <span class="eyebrow">Your account</span>
         <h1 id="profile-title">Profile</h1>
         <p class="profile-description">Your identity and message-retention preference for this private space.</p>
@@ -14,10 +18,10 @@
         <section *ngIf="profile" class="alert-settings" aria-labelledby="alert-settings-title">
             <h2 id="alert-settings-title">Alerts</h2>
             <p>Choose your account-wide alert preference. Browser permission and sound unlock apply only to this browser.</p>
-            <div class="alert-options" role="radiogroup" aria-label="Alert preference" [attr.aria-busy]="alertSaving">
-                <button type="button" role="radio" [disabled]="alertSaving" [attr.aria-checked]="alertMode === 'off'" [class.selected]="alertMode === 'off'" (click)="setAlertMode('off')"><span class="radio-dot"></span><span><strong>Off</strong><small>No notification or sound alerts.</small></span></button>
-                <button type="button" role="radio" [disabled]="alertSaving" [attr.aria-checked]="alertMode === 'sounds'" [class.selected]="alertMode === 'sounds'" (click)="setAlertMode('sounds')"><span class="radio-dot"></span><span><strong>Sounds only</strong><small>Play call and message sounds.</small></span></button>
-                <button type="button" role="radio" [disabled]="alertSaving" [attr.aria-checked]="alertMode === 'notifications'" [class.selected]="alertMode === 'notifications'" (click)="setAlertMode('notifications')"><span class="radio-dot"></span><span><strong>Notifications and sounds</strong><small>{{ notifications.notificationPermission === 'denied' ? 'Browser notifications are blocked on this browser; your account preference remains saved.' : !notifications.notificationsSupported ? 'Browser notifications are unsupported here; your account preference remains saved.' : 'Show alerts when browser permission is granted.' }}</small></span></button>
+            <div class="alert-options" role="radiogroup" aria-label="Alert preference" [attr.aria-busy]="alertSaving || refreshing">
+                <button type="button" role="radio" [disabled]="alertSaving || refreshing" [attr.aria-checked]="alertMode === 'off'" [class.selected]="alertMode === 'off'" (click)="setAlertMode('off')"><span class="radio-dot"></span><span><strong>Off</strong><small>No notification or sound alerts.</small></span></button>
+                <button type="button" role="radio" [disabled]="alertSaving || refreshing" [attr.aria-checked]="alertMode === 'sounds'" [class.selected]="alertMode === 'sounds'" (click)="setAlertMode('sounds')"><span class="radio-dot"></span><span><strong>Sounds only</strong><small>Play call and message sounds.</small></span></button>
+                <button type="button" role="radio" [disabled]="alertSaving || refreshing" [attr.aria-checked]="alertMode === 'notifications'" [class.selected]="alertMode === 'notifications'" (click)="setAlertMode('notifications')"><span class="radio-dot"></span><span><strong>Notifications and sounds</strong><small>{{ notifications.notificationPermission === 'denied' ? 'Browser notifications are blocked on this browser; your account preference remains saved.' : !notifications.notificationsSupported ? 'Browser notifications are unsupported here; your account preference remains saved.' : 'Show alerts when browser permission is granted.' }}</small></span></button>
             </div>
             <p *ngIf="alertSaving" role="status">Saving alert preference…</p>
             <p *ngIf="alertSaveError" class="profile-error" role="alert">Could not save your alert preference. Your previous preference is still selected.</p>
@@ -29,8 +33,8 @@
             <p *ngIf="push?.state === 'permission-required'" role="status">Enable browser notifications to receive alerts when Zwei is closed.</p>
             <p *ngIf="push?.state === 'not-enrolled'" role="status">This browser is not currently registered to receive push notifications.</p>
             <p *ngIf="push?.state === 'unverified'" role="status">Push registration for this account could not be confirmed. Enable it again or retry disabling it.</p>
-            <label class="media-preference"><input type="checkbox" [checked]="push?.state === 'enabled'" [indeterminate]="push?.state === 'unverified'" [disabled]="pushSaving || push?.state === 'unsupported' || push?.state === 'denied'" (change)="changePush($event)"> Enable push notifications on this browser</label>
-            <button *ngIf="push?.state === 'unverified'" type="button" [disabled]="pushSaving" (click)="setPushEnabled(false)">Disable push for this account</button>
+            <label class="media-preference"><input type="checkbox" [checked]="push?.state === 'enabled'" [indeterminate]="push?.state === 'unverified'" [disabled]="refreshing || pushSaving || push?.state === 'unsupported' || push?.state === 'denied'" (change)="changePush($event)"> Enable push notifications on this browser</label>
+            <button *ngIf="push?.state === 'unverified'" type="button" [disabled]="refreshing || pushSaving" (click)="setPushEnabled(false)">Disable push for this account</button>
             <p *ngIf="push?.state === 'enabled'" role="status">Push notifications are enabled on this browser.</p>
             <p *ngIf="pushSaving" role="status">Updating this browser…</p>
             <p *ngIf="pushError" class="profile-error" role="alert">{{ pushError }}</p>
@@ -41,7 +45,7 @@
                 <p>Choose whether approved GIPHY media loads automatically in messages.</p>
                 <button class="media-info-button" type="button" aria-label="GIPHY loading privacy details" matTooltip="When enabled, approved GIPHY images and GIFs in messages load automatically. Your browser contacts GIPHY, which may receive your IP address and request timing. Share-page links still require you to open GIPHY." matTooltipClass="profile-media-disclosure-tooltip" matTooltipPosition="above"><span aria-hidden="true">i</span></button>
             </div>
-            <label class="media-preference"><input type="checkbox" [checked]="profile.auto_load_approved_media" [disabled]="mediaSaving" (change)="setMediaAutoLoad(readChecked($event))"> Automatically load approved GIPHY images and GIFs</label>
+            <label class="media-preference"><input type="checkbox" [checked]="profile.auto_load_approved_media" [disabled]="refreshing || mediaSaving" (change)="setMediaAutoLoad(readChecked($event))"> Automatically load approved GIPHY images and GIFs</label>
             <p *ngIf="mediaSaving" role="status">Saving media preference…</p>
             <p *ngIf="mediaSaveError" class="profile-error" role="alert">Could not save this preference. Your previous setting was restored.</p>
         </section>

@@ -25,9 +25,10 @@ type Repository interface {
 	IsAdmin(context.Context, uuid.UUID) (bool, error)
 	ListAdminUsers(context.Context) ([]user.AdminUser, error)
 	SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus) error
-	PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error)
-	PrepareActivationEmail(context.Context, uuid.UUID, []byte, time.Time) (string, string, error)
+	PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, bool, error)
+	PrepareActivationEmail(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error)
 	VerifyActivation(context.Context, []byte, time.Time) error
+	SetPasswordFromSetup(context.Context, []byte, string, time.Time) error
 	CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error)
 	ListInvitations(context.Context) ([]user.Invitation, error)
 	RevokeInvitation(context.Context, uuid.UUID) error
@@ -49,10 +50,13 @@ type CreateUserParams struct {
 	KYCStatus      user.KYCStatus
 	EmailVerified  bool
 	InvitationCode []byte
+	SetupTokenHash []byte
+	SetupExpiresAt time.Time
 }
 
 type EmailSender interface {
 	SendActivation(context.Context, string, string, string) error
+	SendPasswordSetup(context.Context, string, string, string) error
 	SendInvitation(context.Context, string, string) error
 }
 

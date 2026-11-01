@@ -150,6 +150,10 @@ type historyQueryStore struct {
 	limit  int
 }
 
+func (s *historyQueryStore) Get(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Message, error) {
+	return conversation.Message{}, errors.New("not implemented")
+}
+
 func (s *historyQueryStore) List(_ context.Context, _, _ uuid.UUID, before int64, limit int) ([]conversation.Message, string, error) {
 	s.calls++
 	s.before, s.limit = before, limit

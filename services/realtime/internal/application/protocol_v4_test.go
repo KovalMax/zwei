@@ -11,8 +11,27 @@ import (
 	"testing"
 )
 
-func TestProtocolV3GroupCandidateWhitespacePatterns(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", "v3.json"))
+func TestProtocolContractStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		file, status string
+		version      int
+	}{{"v3.json", "historical", 3}, {"v4.json", "current", 4}} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", tc.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var contract struct {
+			Version int    `json:"version"`
+			Status  string `json:"status"`
+		}
+		if err := json.Unmarshal(data, &contract); err != nil || contract.Version != tc.version || contract.Status != tc.status {
+			t.Fatalf("%s: contract = %+v, error = %v", tc.file, contract, err)
+		}
+	}
+}
+
+func TestProtocolV4GroupCandidateWhitespacePatterns(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", "v4.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +89,8 @@ func TestProtocolV3GroupCandidateWhitespacePatterns(t *testing.T) {
 
 // This checks the actual shared contract, not a copy of runtime validation.
 // Exact schemas prevent both references and individual constraints drifting.
-func TestProtocolV3CallSignalSchemas(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", "v3.json"))
+func TestProtocolV4CallSignalSchemas(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", "v4.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +138,7 @@ func TestProtocolV3CallSignalSchemas(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("%s schema does not match the v3 signal contract", name)
+			t.Errorf("%s schema does not match the v4 signal contract", name)
 		}
 	}
 	const groupCandidate = `{
@@ -142,16 +161,16 @@ func TestProtocolV3CallSignalSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(candidateGot, candidateWant) {
-		t.Error("group ICE candidate schema does not match the v3 contract")
+		t.Error("group ICE candidate schema does not match the v4 contract")
 	}
 }
 
-func TestProtocolV3RejectsOlderCommands(t *testing.T) {
-	if ProtocolVersion != 3 {
-		t.Fatalf("protocol version = %d, want 3", ProtocolVersion)
+func TestProtocolV4RejectsOlderCommands(t *testing.T) {
+	if ProtocolVersion != 4 {
+		t.Fatalf("protocol version = %d, want 4", ProtocolVersion)
 	}
 	hub := NewHub(nil, nil, nil, nil, nil, nil, nil)
-	if err := hub.HandleVersion(context.Background(), testClient{}, 3, []byte(`{"version":2,"type":"presence.refresh"}`)); err == nil {
-		t.Fatal("v2 command accepted on v3")
+	if err := hub.HandleVersion(context.Background(), testClient{}, 4, []byte(`{"version":3,"type":"presence.refresh"}`)); err == nil {
+		t.Fatal("v3 command accepted on v4")
 	}
 }

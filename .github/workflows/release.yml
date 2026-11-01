@@ -116,6 +116,9 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.DEPLOY_USER }}
@@ -157,20 +160,16 @@ jobs:
               "umask 077 && cat > '$DEPLOY_PATH/.deploy.env'"
 
       - name: Pull, migrate, and start services
+        id: deploy
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
             "set -eu
-            cd '$DEPLOY_PATH'
+             cd '$DEPLOY_PATH'
              set -a
              . ./.env
              . ./.deploy.env
              set +a
-             test -f \"\$KYC_BASIC_AUTH_FILE\" && test -s \"\$KYC_BASIC_AUTH_FILE\"
-             docker compose --profile migration pull
-             docker compose up -d --wait --wait-timeout 120 database redis
-             docker compose run --rm migrate
-             docker compose up -d --force-recreate --wait --wait-timeout 120 coturn traefik frontend auth chat realtime
-             docker compose exec -T traefik sh -c 'test -f /run/secrets/kyc.htpasswd && test -s /run/secrets/kyc.htpasswd'"
+             sh ./release-deploy.sh"
 
       - name: Verify public HTTPS endpoints
         run: |
@@ -208,3 +207,9 @@ jobs:
             echo 'The deployed CSP still permits the removed Google Fonts origin.' >&2
             exit 1
           fi
+
+      - name: Close edge after deployment or verification failure
+        if: ${{ (failure() || cancelled()) && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != '' }}
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; docker compose stop traefik coturn"

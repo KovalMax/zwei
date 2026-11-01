@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -191,25 +192,116 @@ func TestTokensUseAPIFieldNames(t *testing.T) {
 func TestRegisterCreatesPendingAccountWithoutSession(t *testing.T) {
 	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
 	service := NewService(repository, fakePasswords{}, fakeTokens{}, 15*time.Minute, time.Hour)
-	err := service.registerPending(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DisplayName: "Pending", DeviceID: "browser-device"})
+	_, err := service.registerPending(context.Background(), Credentials{Email: "pending@example.test", DisplayName: "Pending", DeviceID: "browser-device"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if repository.params.KYCStatus != user.KYCPending || repository.params.EmailVerified {
 		t.Fatalf("create params = %#v", repository.params)
 	}
+	if repository.params.PasswordHash != "" || len(repository.params.SetupTokenHash) != sha256.Size || repository.params.SetupExpiresAt.IsZero() {
+		t.Fatalf("password setup params = %#v", repository.params)
+	}
 }
 
 func TestBrowserRegistrationCreatesPendingAccount(t *testing.T) {
 	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
 	auth := NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	auth.clock = func() time.Time { return now }
 	registration := NewBrowserRegistration(auth, nil, nil)
-	pending, result, err := registration.Register(context.Background(), Credentials{Email: "pending@example.test", Password: "password", DisplayName: "Pending", DeviceID: "browser-device"}, nil)
+	email := &fakeEmailSender{}
+	registration.SetPasswordSetupEmail(email, "https://chat.localhost/activate")
+	pending, result, err := registration.Register(context.Background(), Credentials{Email: "pending@example.test", DisplayName: "Pending", DeviceID: "browser-device"}, nil)
 	if err != nil || !pending || result.Tokens.AccessToken != "" || result.Tokens.RefreshToken != "" {
 		t.Fatalf("pending registration: pending=%v result=%#v err=%v", pending, result, err)
 	}
 	if repository.params.KYCStatus != user.KYCPending || repository.params.EmailVerified {
 		t.Fatalf("create params = %#v", repository.params)
+	}
+	if repository.params.PasswordHash != "" || len(repository.params.SetupTokenHash) != sha256.Size || email.setupCalls != 1 {
+		t.Fatalf("pending registration setup state: params=%#v emails=%#v", repository.params, email)
+	}
+	fragment, err := url.Parse(email.setupLink)
+	if err != nil || fragment.RawQuery != "" || !strings.HasPrefix(fragment.Fragment, "setup=") {
+		t.Fatalf("setup link exposes token outside fragment: %q err=%v", email.setupLink, err)
+	}
+	tokenHash := sha256.Sum256([]byte(strings.TrimPrefix(fragment.Fragment, "setup=")))
+	if !bytes.Equal(tokenHash[:], repository.params.SetupTokenHash) || !repository.params.SetupExpiresAt.Equal(now.Add(72*time.Hour)) {
+		t.Fatalf("stored setup credential does not match emailed link or expiry: %x %v", repository.params.SetupTokenHash, repository.params.SetupExpiresAt)
+	}
+}
+
+func TestBrowserRegistrationReturnsEmailDeliveryFailureAfterPersistingSetupCredential(t *testing.T) {
+	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
+	registration := NewBrowserRegistration(NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour), nil, nil)
+	email := &fakeEmailSender{setupErr: errors.New("mail unavailable")}
+	registration.SetPasswordSetupEmail(email, "https://chat.localhost/activate")
+	_, _, err := registration.Register(context.Background(), Credentials{Email: "pending@example.test", DisplayName: "Pending", DeviceID: "browser-device"}, nil)
+	if !errors.Is(err, email.setupErr) {
+		t.Fatalf("delivery error = %v", err)
+	}
+	if repository.params.PasswordHash != "" || len(repository.params.SetupTokenHash) != sha256.Size || email.setupCalls != 1 {
+		t.Fatalf("registration after delivery failure: params=%#v email=%#v", repository.params, email)
+	}
+}
+
+func TestBrowserRegistrationRejectsMissingPasswordSetupDeliveryBeforePersistence(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		email    EmailSender
+		setupURL string
+	}{
+		{name: "missing sender", setupURL: "https://chat.localhost/activate"},
+		{name: "missing URL", email: &fakeEmailSender{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
+			registration := NewBrowserRegistration(NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour), nil, nil)
+			if test.email != nil || test.setupURL != "" {
+				registration.SetPasswordSetupEmail(test.email, test.setupURL)
+			}
+			_, _, err := registration.Register(context.Background(), Credentials{Email: "pending@example.test", DisplayName: "Pending", DeviceID: "browser-device"}, nil)
+			if err == nil || err.Error() != "password setup email unavailable" {
+				t.Fatalf("registration error = %v, want password setup email unavailable", err)
+			}
+			if repository.params.Email != "" {
+				t.Fatalf("account was persisted despite missing password setup delivery: %#v", repository.params)
+			}
+		})
+	}
+}
+
+func TestBrowserInvitationRegistrationStillRequiresPassword(t *testing.T) {
+	repository := &fakeRepository{userID: uuid.New(), deviceID: uuid.New()}
+	registration := NewBrowserRegistration(NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour), nil, nil)
+	_, _, err := registration.Register(context.Background(), Credentials{
+		Email: "invite@example.test", DisplayName: "Invite", DeviceID: "browser-device", InvitationCode: "invitation",
+	}, nil)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("invitation registration error = %v, want ErrInvalidInput for missing password", err)
+	}
+	if repository.params.Email != "" {
+		t.Fatalf("account was persisted without invitation password: %#v", repository.params)
+	}
+}
+
+func TestSetPasswordFromSetupHashesAndConsumesToken(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakePasswords{}, fakeTokens{}, time.Minute, time.Hour)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	service.clock = func() time.Time { return now }
+	if err := service.SetPasswordFromSetup(context.Background(), strings.Repeat("t", 43), "newpassword"); err != nil {
+		t.Fatal(err)
+	}
+	expected := sha256.Sum256([]byte(strings.Repeat("t", 43)))
+	if !bytes.Equal(expected[:], repository.setupHash) || repository.setupPasswordHash != "hash" || !repository.setupNow.Equal(now) {
+		t.Fatalf("setup mutation = hash:%x password:%q now:%v", repository.setupHash, repository.setupPasswordHash, repository.setupNow)
+	}
+	for _, password := range []string{"short", strings.Repeat("x", 65)} {
+		if err := service.SetPasswordFromSetup(context.Background(), strings.Repeat("t", 43), password); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("password length %d error = %v", len(password), err)
+		}
 	}
 }
 
@@ -250,6 +342,18 @@ func TestActivateUnverifiedAccountSendsActivationEmail(t *testing.T) {
 	}
 }
 
+func TestActivateAccountWithoutPasswordSendsFragmentSetupLink(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, prepareEmail: "user@example.test", prepareDisplayName: "User", prepareNeedsSetup: true}
+	email := &fakeEmailSender{}
+	service := NewAdminService(repository, nil, email, "https://chat.localhost/activate", "https://chat.localhost/sign-up")
+	if err := service.ActivateUser(context.Background(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if email.setupCalls != 1 || email.calls != 0 || !strings.HasPrefix(email.setupLink, "https://chat.localhost/activate#setup=") {
+		t.Fatalf("password setup delivery = %#v", email)
+	}
+}
+
 func TestResendActivationRotatesTokenAndExpiry(t *testing.T) {
 	repository := &fakeRepository{isAdmin: true, resendEmail: "user@example.test", resendDisplayName: "User"}
 	email := &fakeEmailSender{}
@@ -286,6 +390,18 @@ func TestResendActivationRotatesTokenAndExpiry(t *testing.T) {
 	secondTokenHash := sha256.Sum256([]byte(mustActivationToken(t, email.activationLinks[1])))
 	if !bytes.Equal(secondTokenHash[:], repository.resendHash) {
 		t.Fatal("rotated activation hash does not match the new emailed token")
+	}
+}
+
+func TestResendActivationUsesPasswordSetupForAccountsWithoutPassword(t *testing.T) {
+	repository := &fakeRepository{isAdmin: true, resendEmail: "user@example.test", resendDisplayName: "User", resendNeedsSetup: true}
+	email := &fakeEmailSender{}
+	service := NewAdminService(repository, nil, email, "https://chat.localhost/activate", "https://chat.localhost/sign-up")
+	if err := service.ResendActivation(context.Background(), uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if email.setupCalls != 1 || email.calls != 0 || !strings.HasPrefix(email.setupLink, "https://chat.localhost/activate#setup=") {
+		t.Fatalf("resend delivery = %#v", email)
 	}
 }
 
@@ -339,8 +455,13 @@ type fakeRepository struct {
 	prepareEmail         string
 	prepareDisplayName   string
 	prepareVerified      bool
+	prepareNeedsSetup    bool
+	setupHash            []byte
+	setupPasswordHash    string
+	setupNow             time.Time
 	resendEmail          string
 	resendDisplayName    string
+	resendNeedsSetup     bool
 	resendHash           []byte
 	resendExpiresAt      time.Time
 	invitation           user.Invitation
@@ -405,15 +526,20 @@ func (f *fakeRepository) SetGiphyEnabled(_ context.Context, enabled bool) (bool,
 func (f *fakeRepository) IsAdmin(context.Context, uuid.UUID) (bool, error)              { return f.isAdmin, nil }
 func (f *fakeRepository) ListAdminUsers(context.Context) ([]user.AdminUser, error)      { return nil, nil }
 func (f *fakeRepository) SetKYCStatus(context.Context, uuid.UUID, user.KYCStatus) error { return nil }
-func (f *fakeRepository) PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, error) {
-	return f.prepareEmail, f.prepareDisplayName, f.prepareVerified, nil
+func (f *fakeRepository) PrepareActivation(context.Context, uuid.UUID, []byte, time.Time) (string, string, bool, bool, error) {
+	return f.prepareEmail, f.prepareDisplayName, f.prepareVerified, f.prepareNeedsSetup, nil
 }
-func (f *fakeRepository) PrepareActivationEmail(_ context.Context, _ uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, error) {
+func (f *fakeRepository) PrepareActivationEmail(_ context.Context, _ uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, bool, error) {
 	f.resendHash = append([]byte(nil), tokenHash...)
 	f.resendExpiresAt = expiresAt
-	return f.resendEmail, f.resendDisplayName, nil
+	return f.resendEmail, f.resendDisplayName, f.resendNeedsSetup, nil
 }
 func (f *fakeRepository) VerifyActivation(context.Context, []byte, time.Time) error { return nil }
+func (f *fakeRepository) SetPasswordFromSetup(_ context.Context, tokenHash []byte, passwordHash string, now time.Time) error {
+	f.setupHash = append([]byte(nil), tokenHash...)
+	f.setupPasswordHash, f.setupNow = passwordHash, now
+	return nil
+}
 func (f *fakeRepository) CreateInvitation(context.Context, string, []byte, uuid.UUID, time.Time) (user.Invitation, error) {
 	return f.invitation, nil
 }
@@ -430,6 +556,9 @@ type fakeEmailSender struct {
 	name            string
 	link            string
 	activationLinks []string
+	setupCalls      int
+	setupLink       string
+	setupErr        error
 }
 
 func (f *fakeEmailSender) SendActivation(_ context.Context, to, name, link string) error {
@@ -438,6 +567,12 @@ func (f *fakeEmailSender) SendActivation(_ context.Context, to, name, link strin
 	f.name = name
 	f.activationLinks = append(f.activationLinks, link)
 	return nil
+}
+
+func (f *fakeEmailSender) SendPasswordSetup(_ context.Context, to, name, link string) error {
+	f.setupCalls++
+	f.to, f.name, f.setupLink = to, name, link
+	return f.setupErr
 }
 
 func (f *fakeEmailSender) SendInvitation(_ context.Context, to, link string) error {

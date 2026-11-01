@@ -89,7 +89,7 @@ func (r *Repository) CreateUserWithDevice(ctx context.Context, params applicatio
 			return uuid.Nil, uuid.Nil, application.ErrInvitationInvalid
 		}
 	}
-	if err = tx.QueryRow(ctx, `INSERT INTO users (email, password_hash, display_name, kyc_status, email_verified_at) VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() ELSE NULL END) RETURNING id`, params.Email, params.PasswordHash, params.DisplayName, params.KYCStatus, params.EmailVerified).Scan(&userID); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO users (email, password_hash, display_name, kyc_status, email_verified_at, activation_token_hash, activation_expires_at, activation_token_purpose) VALUES ($1, NULLIF($2, ''), $3, $4, CASE WHEN $5 THEN now() ELSE NULL END, $6, $7, CASE WHEN $8 THEN 'setup' ELSE NULL END) RETURNING id`, params.Email, params.PasswordHash, params.DisplayName, params.KYCStatus, params.EmailVerified, params.SetupTokenHash, nullableSetupExpiry(params.SetupExpiresAt), len(params.SetupTokenHash) > 0).Scan(&userID); err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
 	deviceID, err := ensureDevice(ctx, tx, userID, params.ClientDeviceID, params.DeviceName)
@@ -107,9 +107,16 @@ func (r *Repository) CreateUserWithDevice(ctx context.Context, params applicatio
 	return userID, deviceID, nil
 }
 
+func nullableSetupExpiry(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
 func (r *Repository) FindUserByEmail(ctx context.Context, email string) (user.User, error) {
 	var result user.User
-	err := r.db.QueryRow(ctx, `SELECT id, password_hash, session_version, kyc_status, is_admin, email_verified_at IS NOT NULL FROM users WHERE email = $1`, email).Scan(&result.ID, &result.PasswordHash, &result.SessionVersion, &result.KYCStatus, &result.IsAdmin, &result.EmailVerified)
+	err := r.db.QueryRow(ctx, `SELECT id, COALESCE(password_hash, ''), session_version, kyc_status, is_admin, email_verified_at IS NOT NULL FROM users WHERE email = $1`, email).Scan(&result.ID, &result.PasswordHash, &result.SessionVersion, &result.KYCStatus, &result.IsAdmin, &result.EmailVerified)
 	return result, err
 }
 
@@ -344,7 +351,7 @@ func (r *Repository) SetKYCStatus(ctx context.Context, userID uuid.UUID, status 
 	if !status.Valid() {
 		return application.ErrInvalidInput
 	}
-	result, err := r.db.Exec(ctx, `UPDATE users SET kyc_status = $1, session_version = session_version + 1, activation_token_hash = NULL, activation_expires_at = NULL, updated_at = now() WHERE id = $2`, status, userID)
+	result, err := r.db.Exec(ctx, `UPDATE users SET kyc_status = $1, session_version = session_version + 1, activation_token_hash = NULL, activation_expires_at = NULL, activation_token_purpose = NULL, updated_at = now() WHERE id = $2`, status, userID)
 	if err != nil {
 		return err
 	}
@@ -354,26 +361,38 @@ func (r *Repository) SetKYCStatus(ctx context.Context, userID uuid.UUID, status 
 	return nil
 }
 
-func (r *Repository) PrepareActivation(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, bool, error) {
+func (r *Repository) PrepareActivation(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, bool, bool, error) {
 	var email, displayName string
-	var verified bool
-	err := r.db.QueryRow(ctx, `UPDATE users SET kyc_status = $1, session_version = session_version + 1, activation_token_hash = CASE WHEN email_verified_at IS NULL THEN $2::bytea ELSE NULL END, activation_expires_at = CASE WHEN email_verified_at IS NULL THEN $3::timestamptz ELSE NULL END, updated_at = now() WHERE id = $4 RETURNING email, display_name, email_verified_at IS NOT NULL`, user.KYCActive, tokenHash, expiresAt, userID).Scan(&email, &displayName, &verified)
-	return email, displayName, verified, err
+	var verified, needsSetup bool
+	err := r.db.QueryRow(ctx, `UPDATE users SET kyc_status = $1, session_version = session_version + 1, activation_token_hash = CASE WHEN email_verified_at IS NULL THEN $2::bytea ELSE NULL END, activation_expires_at = CASE WHEN email_verified_at IS NULL THEN $3::timestamptz ELSE NULL END, activation_token_purpose = CASE WHEN email_verified_at IS NULL AND password_hash IS NULL THEN 'setup' WHEN email_verified_at IS NULL THEN 'admin' ELSE NULL END, updated_at = now() WHERE id = $4 RETURNING email, display_name, email_verified_at IS NOT NULL, password_hash IS NULL`, user.KYCActive, tokenHash, expiresAt, userID).Scan(&email, &displayName, &verified, &needsSetup)
+	return email, displayName, verified, needsSetup, err
 }
 
-func (r *Repository) PrepareActivationEmail(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, error) {
+func (r *Repository) PrepareActivationEmail(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) (string, string, bool, error) {
 	var email, displayName string
-	err := r.db.QueryRow(ctx, `UPDATE users SET activation_token_hash = $1, activation_expires_at = $2, updated_at = now() WHERE id = $3 AND kyc_status = $4 AND email_verified_at IS NULL RETURNING email, display_name`, tokenHash, expiresAt, userID, user.KYCActive).Scan(&email, &displayName)
-	return email, displayName, err
+	var needsSetup bool
+	err := r.db.QueryRow(ctx, `UPDATE users SET activation_token_hash = $1, activation_expires_at = $2, activation_token_purpose = CASE WHEN password_hash IS NULL THEN 'setup' ELSE 'admin' END, updated_at = now() WHERE id = $3 AND kyc_status = $4 AND email_verified_at IS NULL RETURNING email, display_name, password_hash IS NULL`, tokenHash, expiresAt, userID, user.KYCActive).Scan(&email, &displayName, &needsSetup)
+	return email, displayName, needsSetup, err
 }
 
 func (r *Repository) VerifyActivation(ctx context.Context, tokenHash []byte, now time.Time) error {
-	result, err := r.db.Exec(ctx, `UPDATE users SET email_verified_at = $1, activation_token_hash = NULL, activation_expires_at = NULL, updated_at = $1 WHERE activation_token_hash = $2 AND activation_expires_at > $1 AND kyc_status = $3`, now, tokenHash, user.KYCActive)
+	result, err := r.db.Exec(ctx, `UPDATE users SET email_verified_at = $1, activation_token_hash = NULL, activation_expires_at = NULL, activation_token_purpose = NULL, updated_at = $1 WHERE activation_token_hash = $2 AND activation_expires_at > $1 AND kyc_status = $3 AND COALESCE(activation_token_purpose, 'admin') = 'admin'`, now, tokenHash, user.KYCActive)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() != 1 {
 		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) SetPasswordFromSetup(ctx context.Context, tokenHash []byte, passwordHash string, now time.Time) error {
+	result, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $1, email_verified_at = $2, activation_token_hash = NULL, activation_expires_at = NULL, activation_token_purpose = NULL, updated_at = $2 WHERE activation_token_hash = $3 AND activation_token_purpose = 'setup' AND activation_expires_at > $2 AND password_hash IS NULL AND kyc_status IN ($4, $5)`, passwordHash, now, tokenHash, user.KYCPending, user.KYCActive)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return application.ErrPasswordSetupInvalid
 	}
 	return nil
 }

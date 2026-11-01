@@ -27,7 +27,9 @@
             <button type="button" [class.active]="archiveMode === 'archived'" [attr.aria-pressed]="archiveMode === 'archived'" (click)="setArchiveMode('archived')">Archived</button>
         </div>
         <p class="archive-action-error" *ngIf="archiveActionError" role="alert">{{ archiveActionError }}</p>
-        <div class="people-list" [class.has-conversations]="items.length > 0" *ngIf="!conversationsError && (conversations | async) as items">
+        <div class="people-list" [class.has-conversations]="items.length > 0" *ngIf="!conversationsError && (conversations | async) as items" [zweiPullToRefresh]="!searchQuery.trim()" [pullToRefreshBusy]="pullRefreshing || groupSnapshotLoading || isLoading" (pullToRefresh)="refreshChats()">
+            <button *ngIf="!searchQuery.trim()" class="pull-refresh-control" type="button" [disabled]="pullRefreshing || groupSnapshotLoading" (click)="refreshChats()">{{ pullRefreshing ? 'Refreshing chats…' : 'Refresh chats' }}</button>
+            <p class="pull-refresh-error" *ngIf="pullRefreshError" role="alert">Could not refresh chats. Your current list is unchanged. <button type="button" (click)="refreshChats()">Retry</button></p>
             <div class="conversation-row" *ngFor="let conversation of items; trackBy: trackConversation">
             <button class="person-option" type="button" [attr.data-conversation-id]="conversation.id" [class.selected]="selectedConversation?.id === conversation.id" [attr.aria-label]="conversationName(conversation)" (click)="selectConversation(conversation)">
                 <span class="person-avatar" aria-hidden="true">{{ conversation.kind === 'group' && conversation.accessNeedsVerification ? '?' : initials(conversation) }}</span>
@@ -44,7 +46,7 @@
         <div class="empty-rail conversation-list-error" *ngIf="conversationsError" role="alert"><span>Could not load {{ archiveMode === 'active' ? 'chats' : 'archived chats' }}.</span><button type="button" (click)="retryConversationList()">Retry</button></div>
     </aside>
 
-    <main class="chat-panel">
+    <main class="chat-panel" [zweiSwipeBack]="!!selectedConversation && !isCreatingGroup && !showGroupManager && !emojiPickerOpen && !giphyPickerOpen && !shouldRenderDirectCallSurface(call.state.phase) && !groupCall?.isOngoing && groupCall?.state.phase !== 'requesting'" (swipeBack)="closeConversation()">
         <header class="chat-header" *ngIf="!isCreatingGroup">
             <div class="chat-identity">
                 <button class="back-button" mat-icon-button aria-label="Back to chats" (click)="closeConversation()"><zwei-icon name="arrow_back"></zwei-icon></button>
@@ -120,18 +122,28 @@
             <div class="empty-orbit"><zwei-icon name="forum"></zwei-icon></div>
             <span class="eyebrow">Private by design</span><h3>Your messages, your space</h3><p>Search for someone to start a secure one-to-one conversation.</p>
         </div>
-        <section #messageHistory class="message-history" *ngIf="selectedConversation && !(selectedConversation.kind === 'group' && selectedConversation.accessNeedsVerification) && !isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" aria-label="Message history">
+        <section #messageHistory class="message-history" *ngIf="selectedConversation && !(selectedConversation.kind === 'group' && selectedConversation.accessNeedsVerification) && !isCreatingGroup" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" aria-label="Message history" [zweiPullToRefresh]="!isCallSurfaceVisible() && !(groupCall?.isOngoing && !groupCallMinimized)" [pullToRefreshBusy]="historyPullRefreshing || isHistoryLoading" (pullToRefresh)="refreshSelectedHistory()">
+            <button class="pull-refresh-control" type="button" [disabled]="historyPullRefreshing || isHistoryLoading" (click)="refreshSelectedHistory()">{{ historyPullRefreshing ? 'Refreshing messages…' : 'Refresh messages' }}</button>
+            <p class="pull-refresh-error" *ngIf="historyPullError" role="alert">Could not refresh messages. Your current history is unchanged. <button type="button" (click)="refreshSelectedHistory()">Retry</button></p>
             <button class="load-older" *ngIf="historyCursor" mat-stroked-button (click)="loadOlderMessages()" [disabled]="isHistoryLoading">
                 <zwei-icon *ngIf="isHistoryLoading" name="hourglass_top"></zwei-icon>{{ isHistoryLoading ? 'Loading…' : 'Load older messages' }}
             </button>
             <div class="message-list" *ngIf="visibleMessages.length; else emptyMessages">
                 <article class="message-bubble" *ngFor="let message of visibleMessages; trackBy: trackMessage" [id]="'message-' + message.id" [class.message-highlight]="highlightedMessageID === message.id" [class.message-own]="message.kind !== 'system' && isOwnMessage(message)" [class.message-system]="message.kind === 'system'" [class.message-giphy]="isGiphyMessage(message)" [class.message-pending]="message.pending">
                     <span class="message-sender" *ngIf="message.kind !== 'system'">{{ senderName(message) }}</span>
+                    <ng-container *ngIf="message.replyToMessageId as targetID">
+                        <button type="button" class="reply-quote" *ngIf="replyQuotes.get(targetID) as quote" [disabled]="quote.state !== 'available' && quote.state !== 'error'" (click)="quote.state === 'error' ? retryReplyQuote(targetID) : jumpToReply(targetID)">
+                            <strong>{{ quote.state === 'available' && quote.message ? senderName(quote.message) : 'Reply' }}</strong>
+                            <span>{{ quote.state === 'loading' ? 'Loading message…' : quote.state === 'unavailable' ? 'Message unavailable' : quote.state === 'error' ? 'Could not load message. Try again.' : quote.message?.body }}</span>
+                        </button>
+                    </ng-container>
                     <app-inline-giphy *ngIf="isGiphyMessage(message); else ordinaryMessage" [originalURL]="message.body" [enabled]="giphyEnabled" [autoLoad]="shouldAutoLoadGiphy(message)"></app-inline-giphy><ng-template #ordinaryMessage><p [class.message-single-emoji]="isSingleEmojiMessage(message)"><ng-container *ngFor="let segment of messageDisplaySegments(message); trackBy: trackSegment"><span [class.message-mention]="segment.mentioned" [class.message-emoji]="segment.emoji">{{ segment.text }}</span></ng-container></p></ng-template><div class="message-meta"><time [attr.datetime]="message.createdAt" [attr.title]="messageDateTimeLabel(message)">{{ messageDateLabel(message) }} · {{ message.createdAt | date:'shortTime' }}</time><span class="message-read" *ngIf="isLatestReadMessage(message)" role="img" [attr.aria-label]="readReceiptLabel(message)"><zwei-icon name="done_all"></zwei-icon></span></div><span class="message-pending-label" *ngIf="message.pending">Sending…</span><span class="message-pending-label" *ngIf="!message.pending && message.uncertain">Delivery uncertain</span>
+                    <button type="button" class="reply-action" *ngIf="message.kind !== 'system' && !message.pending && !message.uncertain && message.sequence > 0" aria-label="Reply to message" title="Reply" (click)="startReply(message)">↩</button>
                 </article>
             </div>
             <ng-template #emptyMessages><div class="empty-messages"><zwei-icon name="mark_chat_unread"></zwei-icon><p>{{ onlyLegacyStickersHidden ? 'Sticker messages are no longer shown.' : 'No messages yet.' }}</p></div></ng-template>
         </section>
+        <div class="reply-composer-preview" *ngIf="replyTarget && selectedConversation && !isCreatingGroup && !isCallSurfaceVisible() && !(groupCall?.isOngoing && !groupCallMinimized)" role="status"><span><strong>Replying to {{ senderName(replyTarget) }}</strong><span>{{ replyTarget.body }}</span></span><button type="button" aria-label="Cancel reply" (click)="replyTarget = undefined">×</button></div>
         <form class="composer" *ngIf="!isCreatingGroup && !(selectedConversation?.kind === 'group' && selectedConversation.accessNeedsVerification)" [class.call-surface-hidden]="isCallSurfaceVisible() || (groupCall?.isOngoing && !groupCallMinimized)" [class.composer-disabled]="!selectedConversation" (ngSubmit)="sendMessage($event)" [attr.aria-label]="selectedConversation ? 'Message composer' : 'Message composer disabled until a conversation is selected'">
             <mat-form-field appearance="outline">
                 <textarea #messageDraft matInput [(ngModel)]="draft" name="message" rows="1" maxlength="4096" aria-label="Message" [attr.aria-haspopup]="mentionSuggestions.length ? 'listbox' : null" [attr.aria-autocomplete]="mentionSuggestions.length ? 'list' : null" [attr.aria-controls]="mentionSuggestions.length ? 'mention-picker' : null" [attr.aria-expanded]="mentionSuggestions.length > 0" [attr.aria-activedescendant]="mentionSuggestions.length ? mentionOptionID(activeMentionIndex) : null" [placeholder]="!selectedConversation ? 'Choose a chat to start messaging' : (socketReady ? 'Write a message…' : 'Connecting…')" [disabled]="!selectedConversation || !socketReady" (input)="onDraftChange()" (keydown)="handleMentionKeydown($event)" (keydown.enter)="onComposerEnter($event)"></textarea>

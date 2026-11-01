@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrInvalidMessage          = errors.New("invalid message")
 	ErrInvalidMention          = errors.New("invalid mention metadata")
+	ErrInvalidReply            = errors.New("invalid reply target")
 	ErrConversationNotFound    = errors.New("conversation not found")
 	ErrClientMessageIDConflict = errors.New("client message id belongs to another conversation")
 	ErrMessageExpired          = errors.New("message has expired")

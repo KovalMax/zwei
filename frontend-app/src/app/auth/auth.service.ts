@@ -354,6 +354,10 @@ export class AuthService implements OnDestroy {
         return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});
     }
 
+    public setupPassword(token: string, password: string): Observable<{status: 'password_set'}> {
+        return this.http.post<{status: 'password_set'}>(this.host.activationSetupEndpoint(), {token, password});
+    }
+
     public defaultAuthenticatedRoute(): string {
         return this.host.defaultAuthenticatedRoute();
     }

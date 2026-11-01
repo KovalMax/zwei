@@ -2,10 +2,10 @@ import {Injectable} from '@angular/core';
 import {HttpClient, HttpErrorResponse} from '@angular/common/http';
 import {Observable, catchError, forkJoin, map, throwError} from 'rxjs';
 import {Conversation, GroupConversation, GroupRole} from './conversation.model';
-import {MessageHistory} from './message.model';
+import {Message, MessageHistory} from './message.model';
 import {UserSearchResult} from './user.model';
 import {backends} from '../../environments/environment';
-import {ConversationWire, GroupPage, GroupWire, MessageHistoryWire, toConversation, toConversationList, toGroup, toGroupPage, toMessageHistory} from './wire.mapper';
+import {ConversationWire, GroupPage, GroupWire, MessageHistoryWire, MessageWire, toConversation, toConversationList, toGroup, toGroupPage, toMessage, toMessageHistory} from './wire.mapper';
 
 export class InvalidGroupProjectionError extends Error {
     constructor() { super('invalid group projection'); }
@@ -61,6 +61,14 @@ export class ConversationService {
     public history(id: string, before?: string): Observable<MessageHistory> {
         const query = before ? `?before=${encodeURIComponent(before)}` : '';
         return this.http.get<MessageHistoryWire>(`${backends.chat}/api/chat/conversations/${id}/messages${query}`).pipe(map(toMessageHistory));
+    }
+
+    public message(conversationID: string, messageID: string): Observable<Message> {
+        return this.http.get<MessageWire>(`${backends.chat}/api/chat/conversations/${encodeURIComponent(conversationID)}/messages/${encodeURIComponent(messageID)}`).pipe(map(wire => {
+            const message = toMessage(wire);
+            if (!message || message.id !== messageID || message.conversationId !== conversationID) throw new Error('invalid message projection');
+            return message;
+        }));
     }
 
     public searchUsers(query: string): Observable<UserSearchResult[]> {

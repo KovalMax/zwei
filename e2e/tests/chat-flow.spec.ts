@@ -4996,6 +4996,9 @@ test('register, create conversation, and deliver a message', async ({ browser },
   expect(shortMessageBox?.width).toBeGreaterThanOrEqual(180);
   expect(shortMessageBox?.height).toBeGreaterThanOrEqual(64);
   expect(Date.now() - started).toBeLessThan(5_000);
+  // This constraint is the desktop message-bubble contract; mobile intentionally
+  // lets bubbles grow naturally so the inner scroll region is not unusable.
+  await alice.setViewportSize(desktop.viewport);
   const longMessage = `long-message-${'x'.repeat(4_000)}`;
   await alice.getByPlaceholder('Write a message…').fill(longMessage);
   await alice.getByRole('button', { name: 'Send message' }).click();
@@ -5614,6 +5617,198 @@ test('plays a background message sound without duplicating the visible message o
   }
 });
 
+test('replies survive delivery and reload and jump to the original', async ({browser}, testInfo) => {
+  // Reply states (composer preview, received quote, jump): light/dark × 2560, 1440, 1024, 390px.
+  const aliceEmail = uniqueEmail('reply-alice');
+  const bobEmail = uniqueEmail('reply-bob');
+  const aliceContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const alice = await aliceContext.newPage();
+  const bob = await bobContext.newPage();
+  try {
+    await register(alice, aliceEmail, 'Alice');
+    await register(bob, bobEmail, 'Bob');
+    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob)]);
+    await alice.getByPlaceholder('Name or email').fill(bobEmail);
+    await alice.getByText(bobEmail).click();
+    await bob.getByPlaceholder('Name or email').fill(aliceEmail);
+    await bob.locator('.search-result').filter({hasText: aliceEmail}).click();
+    const original = `original-${Date.now()}-${'long-quote-'.repeat(30)}`;
+    const answer = `answer-${Date.now()}`;
+    await alice.getByPlaceholder('Write a message…').fill(original);
+    await alice.getByRole('button', {name: 'Send message'}).click();
+    const source = bob.locator('.message-bubble').filter({hasText: original});
+    await source.getByRole('button', {name: 'Reply to message'}).click();
+    await expect(bob.locator('.reply-composer-preview')).toContainText(original);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(bob, theme);
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await bob.setViewportSize(viewport);
+        const preview = bob.locator('.reply-composer-preview');
+        const composer = bob.locator('.composer');
+        const previewBox = await preview.boundingBox();
+        const composerBox = await composer.boundingBox();
+        expect(previewBox && composerBox).toBeTruthy();
+        expect(previewBox!.x).toBeGreaterThanOrEqual(0);
+        expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(viewport.width);
+        expect(previewBox!.y + previewBox!.height).toBeLessThanOrEqual(composerBox!.y + 1);
+        await bob.screenshot({path: testInfo.outputPath(`reply-preview-${theme}-${viewport.width}.png`)});
+      }
+    }
+    await bob.getByRole('button', {name: 'Cancel reply'}).click();
+    await expect(bob.locator('.reply-composer-preview')).toHaveCount(0);
+    await source.getByRole('button', {name: 'Reply to message'}).click();
+    let rateLimited = false;
+    await alice.route('**/api/chat/conversations/*/messages/*', async route => {
+      if (!rateLimited) {
+        rateLimited = true;
+        await route.fulfill({status: 429, headers: {'Retry-After': '1', 'Access-Control-Allow-Origin': 'https://chat.localhost', 'Access-Control-Expose-Headers': 'Retry-After'}, contentType: 'application/json', body: '{"error":"rate limited"}'});
+      } else await route.continue();
+    });
+    await bob.getByPlaceholder('Write a message…').fill(answer);
+    await bob.getByRole('button', {name: 'Send message'}).click();
+    const received = alice.locator('.message-bubble').filter({hasText: answer});
+    await expect(received.locator('.reply-quote')).toContainText('Try again');
+    await received.getByRole('button', {name: /Try again/}).click();
+    await expect(received.locator('.reply-quote')).toContainText(original);
+    await alice.unroute('**/api/chat/conversations/*/messages/*');
+    await reloadSession(alice);
+    await expect(alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote')).toContainText(original);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(alice, theme);
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await alice.setViewportSize(viewport);
+        const quote = alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote');
+        if (viewport.width === 390) {
+          const originalBubble = alice.locator('.message-bubble').filter({hasText: original}).filter({hasNot: alice.locator('.reply-quote')});
+          const action = originalBubble.getByRole('button', {name: 'Reply to message'});
+          const timestamp = originalBubble.locator('time');
+          await action.scrollIntoViewIfNeeded();
+          await expect(action).toBeInViewport();
+          await expect(timestamp).toBeInViewport();
+          const dimensions = await originalBubble.evaluate(element => ({height: element.clientHeight, scrollHeight: element.scrollHeight}));
+          expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.height + 1);
+          await alice.screenshot({path: testInfo.outputPath(`reply-original-${theme}-390.png`)});
+        }
+        await expect(quote).toBeVisible();
+        const geometry = await quote.evaluate(element => {
+          const rect = element.getBoundingClientRect();
+          return {left: rect.left, right: rect.right, width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth};
+        });
+        expect(geometry.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.right).toBeLessThanOrEqual(geometry.width);
+        expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
+        const quoteBounds = await quote.boundingBox();
+        const bubbleBounds = await quote.locator('..').boundingBox();
+        expect(quoteBounds && bubbleBounds).toBeTruthy();
+        expect(quoteBounds!.x + quoteBounds!.width).toBeLessThanOrEqual(bubbleBounds!.x + bubbleBounds!.width + 1);
+        if (theme === 'light') expect((await measureRenderedTextContrast(alice.locator('.message-bubble').filter({hasText: answer}).locator('time'))).ratio).toBeGreaterThanOrEqual(4.5);
+        await quote.focus();
+        await alice.keyboard.press('Tab');
+        await alice.keyboard.press('Shift+Tab');
+        await expect(quote).toBeFocused();
+        const focus = await quote.evaluate(element => ({style: getComputedStyle(element).outlineStyle, width: parseFloat(getComputedStyle(element).outlineWidth)}));
+        expect(focus.style).not.toBe('none');
+        expect(focus.width).toBeGreaterThanOrEqual(2);
+        await alice.screenshot({path: testInfo.outputPath(`reply-${theme}-${viewport.width}.png`)});
+      }
+    }
+    await alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote').click();
+    await expect(alice.locator('.message-bubble.message-highlight').filter({hasText: original})).toBeVisible();
+  } finally {
+    await aliceContext.close();
+    await bobContext.close();
+  }
+});
+
+test('pull refresh reloads the active Home view and Profile without reloading or losing the draft', async ({browser}, testInfo) => {
+  test.setTimeout(150_000);
+  const aliceEmail = uniqueEmail('refresh-alice');
+  const bobEmail = uniqueEmail('refresh-bob');
+  const context = await browser.newContext({viewport: {width: 390, height: 844}});
+  const bobContext = await browser.newContext();
+  const alice = await context.newPage();
+  const bob = await bobContext.newPage();
+  const refreshViewports = [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}];
+  const captureRefreshLayout = async (theme: 'light' | 'dark', state: string, viewport: {width: number; height: number}, controlSelector: string): Promise<void> => {
+    await alice.setViewportSize(viewport);
+    await setTheme(alice, theme);
+    const geometry = await alice.evaluate(selector => {
+      const control = document.querySelector(selector);
+      if (!control) throw new Error(`Refresh control not found: ${selector}`);
+      const rect = control.getBoundingClientRect();
+      return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth, top: rect.top, bottom: rect.bottom, height: window.innerHeight};
+    }, controlSelector);
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    expect(geometry.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
+    await alice.screenshot({path: testInfo.outputPath(`refresh-${state}-${theme}-${viewport.width}.png`)});
+  };
+  try {
+    await register(alice, aliceEmail, 'Refresh Alice');
+    await register(bob, bobEmail, 'Refresh Bob');
+    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob)]);
+    const initialURL = alice.url();
+    await alice.getByPlaceholder('Name or email').fill(bobEmail);
+    const bobResult = alice.locator('.search-result').filter({hasText: bobEmail});
+    await expect(bobResult).toBeVisible();
+    await bobResult.click();
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    await alice.getByRole('button', {name: 'Back to chats'}).click();
+    const conversationRow = alice.locator('.person-option').filter({hasText: 'Refresh Bob'});
+    await expect(conversationRow).toBeVisible();
+    const listRequest = alice.waitForRequest(request => request.method() === 'GET' && request.url().includes('/api/chat/conversations'));
+    await conversationRow.locator('span').first().evaluate(row => {
+      const touch = (type: string, y: number) => {
+        const point = new Touch({identifier: 1, target: row, clientX: 100, clientY: y});
+        row.dispatchEvent(new TouchEvent(type, {bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [point], changedTouches: [point]}));
+      };
+      touch('touchstart', 20); touch('touchmove', 112); touch('touchend', 112);
+    });
+    await listRequest;
+    expect(alice.url()).toBe(initialURL);
+    await expect(alice.getByRole('button', {name: /Refresh(ing)? chats/})).toBeEnabled({timeout: 10_000});
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of refreshViewports) await captureRefreshLayout(theme, 'home', viewport, '.people-list .pull-refresh-control');
+    }
+    await conversationRow.click();
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    const draft = `kept-draft-${Date.now()}`;
+    await alice.getByPlaceholder('Write a message…').fill(draft);
+    const historyRequest = alice.waitForRequest(request => request.method() === 'GET' && /\/api\/chat\/conversations\/[^/]+\/messages(?:\?|$)/.test(request.url()));
+    await alice.evaluate(() => {
+      const surface = document.querySelector('.message-history');
+      if (!surface) throw new Error('Message history scroll surface missing');
+      const touch = (type: string, y: number) => {
+        const point = new Touch({identifier: 2, target: surface, clientX: 100, clientY: y});
+        surface.dispatchEvent(new TouchEvent(type, {bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [point], changedTouches: [point]}));
+      };
+      touch('touchstart', 20); touch('touchmove', 112); touch('touchend', 112);
+    });
+    await historyRequest;
+    await expect(alice.getByPlaceholder('Write a message…')).toHaveValue(draft);
+    expect(alice.url()).toBe(initialURL);
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of refreshViewports) await captureRefreshLayout(theme, 'history', viewport, '.message-history .pull-refresh-control');
+    }
+
+    await alice.getByRole('button', {name: 'Back to chats'}).click();
+    await alice.getByRole('button', {name: 'Account menu'}).click();
+    await alice.getByRole('menuitem', {name: 'Profile'}).click();
+    await expect(alice.getByRole('heading', {name: 'Profile'})).toBeVisible();
+    const profileRequest = alice.waitForRequest(request => request.method() === 'GET' && request.url().includes('/api/auth/me'));
+    await alice.getByRole('button', {name: 'Refresh profile'}).click();
+    await profileRequest;
+    expect(alice.url()).toContain('/profile');
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of refreshViewports) await captureRefreshLayout(theme, 'profile', viewport, '.profile-refresh');
+    }
+  } finally {
+    await context.close();
+    await bobContext.close();
+  }
+});
+
 test('replays a message sent while the recipient is offline', async ({ browser }) => {
   const aliceEmail = uniqueEmail('offline-alice');
   const bobEmail = uniqueEmail('offline-bob');
@@ -6075,7 +6270,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     await Promise.all([installDeterministicGroupMedia(owner, '#b84a3a'), installDeterministicGroupMedia(member, '#2563eb')]);
     // Delay only the removal notification: the real server and all other frames remain live.
     // A removal frame may precede the HTTP response, so the test must not depend on that ordering.
-    await member.routeWebSocket('**/ws/v3?ticket=*', socket => {
+    await member.routeWebSocket('**/ws/v4?ticket=*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (typeof message === 'string') {
@@ -6730,10 +6925,11 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await expect(owner.locator('.group-manager, .group-members, .member-actions')).toHaveCount(0);
     await expect(owner.getByRole('button', {name: 'Join or start group audio call'})).toHaveCount(0);
     await expect(owner.locator('.composer textarea')).toBeDisabled();
-    await expect(owner.getByRole('button', {name: 'Refresh chats'})).toBeVisible();
+    const retryGroupProjection = owner.locator('.group-settings-error[role="alert"]').getByRole('button', {name: 'Refresh chats'});
+    await expect(retryGroupProjection).toBeVisible();
     await owner.screenshot({path: testInfo.outputPath('group-projection-transient-error-dark.png'), fullPage: false, timeout: 15_000});
     await owner.unroute(`**/api/chat/groups/${groupID}`);
-    await owner.getByRole('button', {name: 'Refresh chats'}).click();
+    await retryGroupProjection.click();
     await expect(owner.locator('.group-settings-error')).toHaveCount(0, {timeout: 10_000});
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toBeVisible();
     await expect(owner.getByText(firstGroupMessage, {exact: true})).toBeVisible({timeout: 10_000});
@@ -7393,7 +7589,7 @@ test('removing a member from an active group call stops only that member media a
       installDeterministicGroupMedia(removed, '#2563eb'),
       installDeterministicGroupMedia(remaining, '#15803d'),
     ]);
-    await removed.routeWebSocket('**/ws/v3*', socket => {
+    await removed.routeWebSocket('**/ws/v4*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (typeof message === 'string') {
@@ -7649,7 +7845,7 @@ test('group invitation expires without ending and solo starter can stay or end',
   const member = await memberContext.newPage();
   const commands: string[] = [];
   try {
-    await owner.routeWebSocket('**/ws/v3*', socket => {
+    await owner.routeWebSocket('**/ws/v4*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => socket.send(message));
       socket.onMessage(message => {
@@ -7790,7 +7986,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
   let dropObserverTerminal = false;
 
   try {
-    await observer.routeWebSocket('**/ws/v3*', socket => {
+    await observer.routeWebSocket('**/ws/v4*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (dropObserverTerminal && typeof message === 'string') {

@@ -81,12 +81,15 @@ func (s *AdminService) ActivateUser(ctx context.Context, adminID, targetID uuid.
 	if err != nil {
 		return err
 	}
-	email, displayName, verified, err := s.repository.PrepareActivation(ctx, targetID, tokenHash, s.clock().Add(s.activationLife))
+	email, displayName, verified, needsSetup, err := s.repository.PrepareActivation(ctx, targetID, tokenHash, s.clock().Add(s.activationLife))
 	if err != nil {
 		return err
 	}
 	if verified {
 		return nil
+	}
+	if needsSetup {
+		return s.sendPasswordSetupEmail(ctx, email, displayName, token)
 	}
 	return s.sendActivationEmail(ctx, email, displayName, token)
 }
@@ -102,9 +105,12 @@ func (s *AdminService) ResendActivation(ctx context.Context, adminID, targetID u
 	if err != nil {
 		return err
 	}
-	email, displayName, err := s.repository.PrepareActivationEmail(ctx, targetID, tokenHash, s.clock().Add(s.activationLife))
+	email, displayName, needsSetup, err := s.repository.PrepareActivationEmail(ctx, targetID, tokenHash, s.clock().Add(s.activationLife))
 	if err != nil {
 		return err
+	}
+	if needsSetup {
+		return s.sendPasswordSetupEmail(ctx, email, displayName, token)
 	}
 	return s.sendActivationEmail(ctx, email, displayName, token)
 }
@@ -193,6 +199,10 @@ func (s *AdminService) requireAdmin(ctx context.Context, userID uuid.UUID) error
 
 func (s *AdminService) sendActivationEmail(ctx context.Context, email, displayName, token string) error {
 	return s.email.SendActivation(ctx, email, displayName, s.activationURL+"?token="+token)
+}
+
+func (s *AdminService) sendPasswordSetupEmail(ctx context.Context, email, displayName, token string) error {
+	return s.email.SendPasswordSetup(ctx, email, displayName, s.activationURL+"#setup="+token)
 }
 
 func activationToken() (string, []byte, error) {

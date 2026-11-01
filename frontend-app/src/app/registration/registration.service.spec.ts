@@ -72,6 +72,20 @@ describe('RegistrationService', () => {
         await vi.waitFor(() => expect(received).toHaveBeenCalledWith({status: 'pending'}));
     });
 
+    it('omits passwords from ordinary registration while preserving invitation credentials', async () => {
+        const ordinary = new RegistrationModel('user@example.test', '', 'User', 'device');
+        service.registration(ordinary).subscribe();
+        const ordinaryRequest = await vi.waitFor(() => http.expectOne(`${backends.auth}/api/auth/v2/register`));
+        expect(ordinaryRequest.request.body).not.toHaveProperty('password');
+        ordinaryRequest.flush({status: 'pending'}, {status: 202, statusText: 'Accepted'});
+
+        const invitation = new RegistrationModel('invite@example.test', 'password123', 'Invitee', 'device', 'invite-code');
+        service.registration(invitation).subscribe();
+        const invitationRequest = await vi.waitFor(() => http.expectOne(`${backends.auth}/api/auth/v2/register`));
+        expect(invitationRequest.request.body).toHaveProperty('password', 'password123');
+        invitationRequest.flush({browser_id: 'browser', generation: 'one', token_type: 'Bearer', access_token: 'access', expires_in: 300});
+    });
+
     it('accepts only a complete v2 invitation session and strips unexpected fields', async () => {
         const host = TestBed.inject(HostService);
         vi.spyOn(host, 'browserSessionEndpoint').mockReturnValue('/api/auth/v2/register');

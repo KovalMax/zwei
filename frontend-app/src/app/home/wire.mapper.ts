@@ -1,5 +1,6 @@
 import {Conversation, DirectConversation, GroupConversation, GroupMember, GroupPeerReadCursor, GroupRole} from './conversation.model';
 import {isValidMessageMentions, Message, MessageHistory, MessageMention} from './message.model';
+import type {MessageReplySendEvent, MessageSendEvent} from './data-provider.service';
 
 export interface ConversationWire {
     kind?: 'direct';
@@ -90,6 +91,7 @@ export interface MessageWire {
     body: string;
     content_type?: 'text' | 'sticker';
     mentions?: MessageMentionWire[];
+    reply_to_message_id?: string | null;
     created_at: string;
     kind?: 'user' | 'system';
 }
@@ -98,6 +100,12 @@ export interface MessageMentionWire { user_id: string; start: number; end: numbe
 
 export function toMessageMentionWires(mentions: readonly MessageMention[]): MessageMentionWire[] {
     return mentions.map(({userId, start, end}) => ({user_id: userId, start, end}));
+}
+
+export function toMessageSendEvent(requestID: string, conversationID: string, clientMessageID: string, body: string, mentions: readonly MessageMention[], replyToMessageId?: string): MessageSendEvent | MessageReplySendEvent {
+    const wireMentions = toMessageMentionWires(mentions);
+    const payload = {conversation_id: conversationID, client_message_id: clientMessageID, body, content_type: 'text' as const, ...(wireMentions.length ? {mentions: wireMentions} : {})};
+    return replyToMessageId ? {type: 'message.reply.send', request_id: requestID, payload: {...payload, reply_to_message_id: replyToMessageId}} : {type: 'message.send', request_id: requestID, payload};
 }
 
 export function isValidMessageMentionWire(value: unknown, body: string): value is MessageMentionWire[] {
@@ -183,6 +191,7 @@ export function toGroup(value: unknown): GroupConversation | null {
 }
 
 export function toMessage(item: MessageWire): Message | null {
+    if (item?.reply_to_message_id != null && (typeof item.reply_to_message_id !== 'string' || !CANONICAL_UUID.test(item.reply_to_message_id))) return null;
     if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim() || typeof item.conversation_id !== 'string' || !item.conversation_id.trim() || typeof item.sender_id !== 'string' || !item.sender_id.trim() || typeof item.client_message_id !== 'string' || !item.client_message_id.trim() || !Number.isSafeInteger(item.sequence) || item.sequence < 1 || typeof item.body !== 'string' || typeof item.created_at !== 'string' || !item.created_at.trim() || (item.kind !== undefined && item.kind !== 'user' && item.kind !== 'system') || (item.content_type !== undefined && item.content_type !== 'text' && item.content_type !== 'sticker') || (item.mentions !== undefined && !isValidMessageMentionWire(item.mentions, item.body))) return null;
     return {
         id: item.id,
@@ -194,6 +203,7 @@ export function toMessage(item: MessageWire): Message | null {
         contentType: item.content_type ?? 'text',
         createdAt: item.created_at,
         kind: item.kind === 'system' ? 'system' : 'user',
+        ...(item.reply_to_message_id == null ? {} : {replyToMessageId: item.reply_to_message_id}),
         ...(item.mentions === undefined ? {} : {mentions: item.mentions.map(mention => ({userId: mention.user_id, start: mention.start, end: mention.end}))}),
     };
 }
