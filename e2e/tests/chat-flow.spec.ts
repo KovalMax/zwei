@@ -1088,7 +1088,14 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   await actionButtons[2].button.scrollIntoViewIfNeeded();
   await waitForFocusScroll();
   await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
-  await page.mouse.move(1, viewport.height / 2);
+  // Let the component's bounded 250 ms post-scroll hide transition settle;
+  // recovery still requires an explicit fresh pointer movement below.
+  await page.waitForTimeout(275);
+  // Re-arm hover with a real, distinct pointer movement after the scroll.
+  // Repeating the previous neutral coordinate may be a no-op when scrolling
+  // has already moved the pointer away from its original hit target.
+  await page.mouse.move(viewport.width / 2, 8);
+  await expect(removeTooltip, `${theme} ${viewport.width}px cooldown and neutral pointer movement must not resurrect the tooltip`).not.toBeVisible();
   await actionButtons[2].button.hover();
   await assertTooltipGeometry(actionButtons[2]);
   await expect(removeTooltip).toBeVisible();
