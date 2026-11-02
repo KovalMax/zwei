@@ -1,6 +1,8 @@
 services:
   e2e:
     environment:
+      E2E_ADMIN_EMAIL: e2e-admin@example.test
+      E2E_ADMIN_PASSWORD: Password123!
       E2E_FIXTURE_DATABASE: messenger_test
       E2E_FIXTURE_DB_USER: ${APP_DB_USER:-messenger_user}
       E2E_FIXTURE_DB_PASSWORD: ${APP_DB_PASSWORD:-user-password}

@@ -184,6 +184,8 @@
 :host-context(.light-theme) .group-access-status.group-settings-loading { border-color: #cfd9e8; background: #e8f1fb; color: #172033; }
 .chat-panel > .group-settings-error { width: min(calc(100% - 32px), 960px); box-sizing: border-box; align-self: center; margin: 10px 16px 0; padding: 12px 14px; border: 1px solid var(--chat-danger-text); border-radius: var(--zwei-radius-control); background: var(--chat-danger-surface); color: var(--chat-danger-text); }
 :host-context(.light-theme) .chat-panel > .group-settings-error { border-color: #cf817c; background: #fae9e7; color: #6b2525; }
+.history-loading-state { display: flex; flex: 1; align-items: center; justify-content: center; gap: 8px; margin: 0; color: var(--chat-muted); text-align: center; }
+.history-loading-state zwei-icon { width: 20px; height: 20px; flex: 0 0 20px; }
 
 @media (max-width: 760px) {
     .chat-panel > .group-manager .group-settings-section .group-field-action { flex-direction: row; }

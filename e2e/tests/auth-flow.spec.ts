@@ -203,7 +203,8 @@ test('same-device tabs serialize push enable before account-scoped disable and r
     await expect(first.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser.'})).toBeVisible();
     const second = await context.newPage();
     await restoreSession(second, () => second.goto(`${base}/profile`), 'profile', await first.evaluate(() => localStorage.getItem('zwei.intended-session')));
-    await expect(checkbox(second)).toHaveJSProperty('indeterminate', true);
+    await expect(checkbox(second)).toBeChecked();
+    await expect(checkbox(second)).toHaveJSProperty('indeterminate', false);
     await checkbox(second).check();
     await expect(second.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser.'})).toBeVisible();
 

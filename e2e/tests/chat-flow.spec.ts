@@ -3834,7 +3834,83 @@ test('register, create conversation, and deliver a message', async ({ browser },
    await alice.setViewportSize(desktop.viewport);
    await setTheme(alice, 'dark');
    await expect(alice.getByText(bobEmail)).toBeVisible();
+   let initialHistoryFailures = 0;
+   const initialHistoryStarted = createDeferred();
+   const completeInitialHistory = createDeferred();
+   await alice.route('**/api/chat/conversations/*/messages*', async route => {
+     if (initialHistoryFailures++ === 0) {
+       initialHistoryStarted.resolve();
+       await completeInitialHistory.promise;
+       await route.fulfill({status: 500, contentType: 'application/json', body: JSON.stringify({error: 'could not load history'})});
+       return;
+     }
+     await route.continue();
+   });
    await alice.getByText(bobEmail).click();
+   await initialHistoryStarted.promise;
+   await expect(alice.locator('.empty-messages')).toHaveCount(0);
+   const initialHistoryLoading = alice.getByRole('status').filter({hasText: 'Loading messages…'});
+   await expect(initialHistoryLoading).toBeVisible();
+   // Initial-history loading acceptance matrix: light/dark × 2560, 1440, 1024, and 390x844.
+   for (const theme of ['light', 'dark'] as const) {
+     await setTheme(alice, theme);
+     for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+       await alice.setViewportSize(viewport);
+       await expect(initialHistoryLoading).toBeVisible();
+       await expect(alice.getByText('No messages yet.', {exact: true})).toHaveCount(0);
+       const geometry = await alice.evaluate(() => {
+         const loading = document.querySelector<HTMLElement>('.message-history .history-loading-state[role="status"]');
+         const history = document.querySelector<HTMLElement>('.message-history');
+         if (!loading || !history) throw new Error('Initial history loading status is missing');
+         const rect = (element: HTMLElement) => element.getBoundingClientRect().toJSON();
+         return {loading: rect(loading), history: rect(history), documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth};
+       });
+       const context = `${theme}/${viewport.width}x${viewport.height} initial history loading: ${JSON.stringify(geometry)}`;
+       expect(geometry.documentWidth, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+       expect(geometry.loading.left, context).toBeGreaterThanOrEqual(geometry.history.left - 1);
+       expect(geometry.loading.right, context).toBeLessThanOrEqual(geometry.history.right + 1);
+       expect(geometry.loading.top, context).toBeGreaterThanOrEqual(geometry.history.top - 1);
+       expect(geometry.loading.bottom, context).toBeLessThanOrEqual(geometry.history.bottom + 1);
+       const contrast = await measureRenderedTextContrastAtSurface(alice.locator('.message-history .history-loading-state'));
+       expect(contrast.ratio, `${context} text contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
+       await alice.screenshot({path: testInfo.outputPath(`initial-history-loading-${theme}-${viewport.width}.png`), fullPage: false});
+     }
+   }
+   await alice.setViewportSize(desktop.viewport);
+   await setTheme(alice, 'dark');
+   completeInitialHistory.resolve();
+   const initialHistoryNotice = alice.getByRole('alert').filter({hasText: 'Could not load messages. Try again.'});
+   await expect(initialHistoryNotice).toBeVisible();
+   await expect(alice.locator('.empty-messages')).toHaveCount(0);
+   // Initial-history failure acceptance matrix: light/dark × 2560, 1440, 1024, and 390x844.
+   for (const theme of ['light', 'dark'] as const) {
+     await setTheme(alice, theme);
+     for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+       await alice.setViewportSize(viewport);
+       await expect(initialHistoryNotice).toBeVisible();
+       await expect(alice.locator('.empty-messages')).toHaveCount(0);
+       const geometry = await alice.evaluate(() => {
+         const notice = document.querySelector<HTMLElement>('.message-history app-notice section[role="alert"]');
+         const retry = notice?.querySelector<HTMLElement>('button');
+         const history = document.querySelector<HTMLElement>('.message-history');
+         if (!notice || !retry || !history) throw new Error('Initial history failure notice is incomplete');
+         const rect = (element: HTMLElement) => element.getBoundingClientRect().toJSON();
+         return {notice: rect(notice), retry: rect(retry), history: rect(history), documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth};
+       });
+       const context = `${theme}/${viewport.width}x${viewport.height} initial history error: ${JSON.stringify(geometry)}`;
+       expect(geometry.documentWidth, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+       expect(geometry.notice.left, context).toBeGreaterThanOrEqual(geometry.history.left - 1);
+       expect(geometry.notice.right, context).toBeLessThanOrEqual(geometry.history.right + 1);
+       expect(geometry.retry.left, context).toBeGreaterThanOrEqual(geometry.notice.left - 1);
+       expect(geometry.retry.right, context).toBeLessThanOrEqual(geometry.notice.right + 1);
+       await alice.screenshot({path: testInfo.outputPath(`initial-history-error-${theme}-${viewport.width}.png`), fullPage: false});
+     }
+   }
+   await alice.setViewportSize(desktop.viewport);
+   await setTheme(alice, 'dark');
+   await initialHistoryNotice.getByRole('button', {name: 'Retry'}).click();
+   await expect(alice.getByText('No messages yet.', {exact: true})).toBeVisible();
+   await alice.unroute('**/api/chat/conversations/*/messages*');
    await expect(alice.getByText('No messages yet.', {exact: true})).toBeVisible();
    // Acceptance matrix: rendered empty-message copy in light/dark at 2560, 1440, 1024, and 390px.
    for (const theme of ['light', 'dark'] as const) {

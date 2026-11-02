@@ -353,6 +353,48 @@ describe('HomeComponent', () => {
         home.ngOnDestroy();
     });
 
+    it('shows a retry notice instead of an empty state when initial history loading fails', () => {
+        fixture.detectChanges();
+        const history = vi.spyOn(TestBed.inject(ConversationService), 'history')
+            .mockReturnValueOnce(throwError(() => new Error('server error')))
+            .mockReturnValueOnce(of({messages: []}));
+
+        component.selectConversation(conversation('initial-history-failure'));
+        fixture.detectChanges();
+
+        const notice = fixture.nativeElement.querySelector('app-notice section[role="alert"]') as HTMLElement | null;
+        expect(notice?.textContent).toContain('Could not load messages. Try again.');
+        expect(notice?.querySelector('button')?.textContent).toContain('Retry');
+        expect(fixture.nativeElement.querySelector('.empty-messages')).toBeNull();
+
+        (notice?.querySelector('button') as HTMLButtonElement).click();
+        fixture.detectChanges();
+
+        expect(history).toHaveBeenCalledTimes(2);
+        expect(fixture.nativeElement.querySelector('app-notice section[role="alert"]')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.empty-messages p')?.textContent).toContain('No messages yet.');
+    });
+
+    it('announces initial history loading until the first page succeeds', () => {
+        const pendingHistory = new Subject<MessageHistory>();
+        vi.spyOn(TestBed.inject(ConversationService), 'history').mockReturnValue(pendingHistory);
+        fixture.detectChanges();
+
+        component.selectConversation(conversation('initial-history-pending'));
+        fixture.detectChanges();
+
+        const loading = fixture.nativeElement.querySelector('.message-history .history-loading-state[role="status"]') as HTMLElement | null;
+        expect(loading?.textContent).toContain('Loading messages…');
+        expect(fixture.nativeElement.querySelector('.empty-messages')).toBeNull();
+
+        pendingHistory.next({messages: []});
+        pendingHistory.complete();
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('.message-history .history-loading-state')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.empty-messages p')?.textContent).toContain('No messages yet.');
+    });
+
     it('keeps the loaded conversation list and reports retry when refresh fails', fakeAsync(async () => {
         const snapshot = conversation('refresh-list');
         const service = {listHomeSnapshot: vi.fn().mockReturnValue(throwError(() => new Error('offline')))} as unknown as ConversationService;

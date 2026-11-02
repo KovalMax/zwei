@@ -68,6 +68,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public messages: Message[] = [];
     public historyCursor?: string;
     public isHistoryLoading = false;
+    public historyLoadError = false;
     public historyPullRefreshing = false;
     public historyPullError = false;
     public pullRefreshing = false;
@@ -1213,6 +1214,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (selectedConversation.kind === 'group') this.groupName = selectedConversation.name;
         this.selectedConversation = selectedConversation;
         this.preserveHistoryScroll = undefined;
+        this.historyLoadError = false;
         this.historyPullRefreshing = false;
         this.historyPullError = false;
         const eligibleMentionIDs = new Set(selectedConversation.kind === 'group'
@@ -1252,6 +1254,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.historyLoadID++;
         this.preserveHistoryScroll = undefined;
         this.historyPullRefreshing = false;
+        this.historyLoadError = false;
         this.historyPullError = false;
         this.selectedConversation = undefined;
         this.notifications?.setSelectedConversationID?.(undefined);
@@ -1513,8 +1516,15 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.selectedConversation || this.isHistoryLoading || (this.selectedConversation.kind === 'group' && this.selectedConversation.accessNeedsVerification)) return;
         const historyElement = this.messageHistory?.nativeElement;
         this.preserveHistoryScroll = historyElement ? {conversationID: this.selectedConversation.id, scrollTop: historyElement.scrollTop, scrollHeight: historyElement.scrollHeight} : undefined;
+        this.historyLoadError = false;
         this.historyPullRefreshing = true;
         this.historyPullError = false;
+        this.loadHistory();
+    }
+
+    public retrySelectedHistoryLoad(): void {
+        if (!this.selectedConversation || this.isHistoryLoading || (this.selectedConversation.kind === 'group' && this.selectedConversation.accessNeedsVerification)) return;
+        this.historyLoadError = false;
         this.loadHistory();
     }
 
@@ -2500,6 +2510,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.conversationService.history(conversationID, before).subscribe({
             next: history => {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
+                this.historyLoadError = false;
                 this.historyPullRefreshing = false;
                 this.historyPullError = false;
                 this.messages = this.mergeHistoryMessages([...history.messages].reverse());
@@ -2536,6 +2547,7 @@ export class HomeComponent implements OnInit, OnDestroy {
             error: () => {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
                 if (this.historyPullRefreshing) this.historyPullError = true;
+                else if (!before) this.historyLoadError = true;
                 this.historyPullRefreshing = false;
                 if (this.preserveHistoryScroll?.conversationID === conversationID) this.preserveHistoryScroll = undefined;
                 if (pendingPush && pendingPush.generation === this.pushIntentGeneration && this.pendingPushMessageID === pendingPush.messageID) {

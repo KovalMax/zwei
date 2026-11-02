@@ -34,6 +34,9 @@ services:
 
   e2e:
     image: ${E2E_RUNNER_IMAGE:?E2E_RUNNER_IMAGE is required}
+    environment:
+      KYC_BASIC_AUTH_USER: kyc-admin
+      KYC_BASIC_AUTH_PASSWORD: local-basic-auth-change-me
     extra_hosts: !override
       - "host.docker.internal:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
       - "chat.localhost:${E2E_TRAEFIK_IP:?E2E_TRAEFIK_IP is required}"
