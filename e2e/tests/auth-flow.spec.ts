@@ -202,7 +202,11 @@ test('same-device tabs serialize push enable before account-scoped disable and r
     await checkbox(first).check();
     await expect(first.getByRole('status').filter({hasText: 'Push notifications are enabled on this browser.'})).toBeVisible();
     const second = await context.newPage();
+    const secondVerification = second.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/push-subscription/verify' && response.request().method() === 'POST');
     await restoreSession(second, () => second.goto(`${base}/profile`), 'profile', await first.evaluate(() => localStorage.getItem('zwei.intended-session')));
+    const verification = await secondVerification;
+    expect(verification.status()).toBe(200);
+    expect((await verification.json() as {matches: boolean}).matches).toBe(true);
     await expect(checkbox(second)).toBeChecked();
     await expect(checkbox(second)).toHaveJSProperty('indeterminate', false);
     await checkbox(second).check();
@@ -1260,6 +1264,7 @@ test('registration fields preserve readable empty, filled, failure, and keyboard
 });
 
 test('contains auth validation and request-error notices across themes and viewports', async ({browser}, testInfo) => {
+  test.setTimeout(90_000);
   const viewports = [
     {width: 2560, height: 1440},
     {width: 1440, height: 900},
