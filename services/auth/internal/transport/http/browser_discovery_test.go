@@ -31,7 +31,7 @@ func TestBrowserDiscoveryRouteUnavailable(t *testing.T) {
 	h.SetBrowserDiscovery(repo)
 	mux := http.NewServeMux()
 	h.Register(mux)
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/v2/discovery", nil)
+	req := newAllowedAuthRequest(http.MethodPost, "/api/auth/v2/discovery", nil)
 	req.Header.Set("Origin", "https://chat.localhost")
 	req.Header.Set("Cookie", "zwei_refresh=proof-secret")
 	res := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestBrowserDiscoveryHTTP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &discoveryRepository{head: application.BrowserHead{BrowserID: browser, Generation: generation, RefreshHash: hash[:]}, err: tc.err}
 			h := &Handler{allowedOrigins: map[string]struct{}{"https://chat.localhost": {}}, browserDiscovery: repo}
-			req := httptest.NewRequest(http.MethodPost, "/api/auth/v2/discovery", strings.NewReader(tc.body))
+			req := newAllowedAuthRequest(http.MethodPost, "/api/auth/v2/discovery", strings.NewReader(tc.body))
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
 			}

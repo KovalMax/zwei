@@ -43,7 +43,7 @@ func TestV2RefreshAndLogout(t *testing.T) {
 		{"refresh", h.Refresh, body, 200}, {"stale", h.Refresh, `{"browser_id":"` + browser.String() + `","generation":"` + uuid.New().String() + `"}`, 401}, {"logout", h.Logout, body, 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
+			r := newAllowedAuthRequest("POST", "/", strings.NewReader(tc.body))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Cookie", "zwei_refresh=old-secret")
@@ -83,7 +83,7 @@ func TestV2LogoutUsesBoundBearerWithoutRotatingCookie(t *testing.T) {
 		generation uuid.UUID
 		status     int
 	}{{generation, 204}, {uuid.New(), 401}} {
-		r := httptest.NewRequest("POST", "/", strings.NewReader(`{"browser_id":"`+browser.String()+`","generation":"`+tc.generation.String()+`"}`))
+		r := newAllowedAuthRequest("POST", "/", strings.NewReader(`{"browser_id":"`+browser.String()+`","generation":"`+tc.generation.String()+`"}`))
 		r.Header.Set("Origin", "https://chat.localhost")
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -135,7 +135,7 @@ func v2Result() application.BrowserSessionResult {
 func TestV2LoginRecoversNoLiveHead(t *testing.T) {
 	s := &v2SessionsFake{}
 	h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), v2LoginFake{}, &discoveryRepository{err: application.ErrNoLiveBrowserHead}, s, nil)
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
+	r := newAllowedAuthRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", "zwei_refresh=unknown; "+uniqueRefreshCookieName("obsolete")+"=obsolete")
@@ -153,7 +153,7 @@ func TestV2LoginRecoversNoLiveHead(t *testing.T) {
 func TestV2LoginAmbiguousProofFailsClosed(t *testing.T) {
 	s := &v2SessionsFake{}
 	h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), v2LoginFake{}, &discoveryRepository{err: application.ErrRefreshToken}, s, nil)
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
+	r := newAllowedAuthRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", "zwei_refresh=unknown")
@@ -170,7 +170,7 @@ func TestV2LoginReplacesLiveHeadWithoutClearingLegacyName(t *testing.T) {
 	s := &v2SessionsFake{}
 	repo := &discoveryRepository{head: application.BrowserHead{BrowserID: uuid.New(), Generation: uuid.New(), RefreshHash: hash[:]}}
 	h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), v2LoginFake{}, repo, s, nil)
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
+	r := newAllowedAuthRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", "zwei_refresh="+proof)
@@ -195,7 +195,7 @@ func TestV2LoginRecoveryFailsWithoutAuthenticationOrDiscovery(t *testing.T) {
 			s := &v2SessionsFake{}
 			repo := &discoveryRepository{err: tc.discoveryErr}
 			h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), v2LoginFake{err: tc.loginErr}, repo, s, nil)
-			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
+			r := newAllowedAuthRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Cookie", uniqueRefreshCookieName("obsolete")+"=obsolete")
@@ -222,7 +222,7 @@ func TestV2LoginCreateAndBoundary(t *testing.T) {
 		{"unknown field", "https://chat.localhost", `{"refresh_token":"secret"}`, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
+			r := newAllowedAuthRequest("POST", "/", strings.NewReader(tc.body))
 			r.Header.Set("Origin", tc.origin)
 			r.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
@@ -239,7 +239,7 @@ func TestV2LoginCreateAndBoundary(t *testing.T) {
 	base.Register(mux)
 	for _, path := range []string{"/api/auth/v2/login", "/api/auth/v2/refresh", "/api/auth/v2/logout"} {
 		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, httptest.NewRequest("POST", path, nil))
+		mux.ServeHTTP(w, newAllowedAuthRequest("POST", path, nil))
 		if w.Code != 404 {
 			t.Fatalf("%s registered", path)
 		}

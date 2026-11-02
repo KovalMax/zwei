@@ -13,7 +13,7 @@ export interface RegistrationForm {
 
 export interface Registration {
     email: string;
-    password: string;
+    password?: string;
     display_name: string;
     device_id: string;
     device_name?: string;
@@ -29,7 +29,7 @@ export type RegistrationResponse = Token | ContinuedBrowserSession | PendingRegi
 export class RegistrationModel implements Registration {
     constructor(
         public email: string,
-        public password: string,
+        public password: string | undefined,
         public display_name: string,
         public device_id: string,
         public invitation_code?: string,
@@ -55,7 +55,7 @@ export class RegistrationModel implements Registration {
 
         return new RegistrationModel(
             values.email,
-            values.password,
+            invitationCode ? values.password : undefined,
             values.nickName,
             getDeviceID(),
             invitationCode,

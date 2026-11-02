@@ -30,7 +30,7 @@ func TestProfileHTTPUpdateDistinguishesFalseFromOmitted(t *testing.T) {
 		{name: "omitted update is empty", body: `{}`, status: http.StatusBadRequest, wantAuto: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPatch, "/api/auth/me", strings.NewReader(test.body))
+			request := newAllowedAuthRequest(http.MethodPatch, "/api/auth/me", strings.NewReader(test.body))
 			request.Header.Set("Authorization", "Bearer "+bearer)
 			response := httptest.NewRecorder()
 			handler.updateMe(response, request)
@@ -52,7 +52,7 @@ func TestProfileHTTPUpdateDistinguishesFalseFromOmitted(t *testing.T) {
 
 func TestAuthenticatedMediaPolicyRouteAndAdminSettingRoute(t *testing.T) {
 	_, repository, handler, bearer := authenticatedTestHandler(t, true)
-	request := httptest.NewRequest(http.MethodGet, "/api/auth/media-policy", nil)
+	request := newAllowedAuthRequest(http.MethodGet, "/api/auth/media-policy", nil)
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	response := httptest.NewRecorder()
 	handler.mediaPolicy(response, request)
@@ -65,7 +65,7 @@ func TestAuthenticatedMediaPolicyRouteAndAdminSettingRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler.adminIPs = allowlist
-	request = httptest.NewRequest(http.MethodPut, "/api/admin/media-sources/giphy", strings.NewReader(`{"enabled":false}`))
+	request = newAllowedAuthRequest(http.MethodPut, "/api/admin/media-sources/giphy", strings.NewReader(`{"enabled":false}`))
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.RemoteAddr = "172.20.0.4:4444"
 	request.Header.Set("X-Forwarded-For", "203.0.113.7")

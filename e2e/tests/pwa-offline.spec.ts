@@ -139,8 +139,8 @@ for (const outcome of ['success', 'unauthorized'] as const) {
           path === '/api/chat/groups' ? {items: [], next_cursor: null} : [];
         await route.fulfill({status: 200, headers: cors, json: body});
       });
-      await context.routeWebSocket('wss://ws.chat.false.tel/ws/v3**', socket => {
-        socket.send(JSON.stringify({version: 3, type: 'presence.snapshot', payload: {user_ids: []}}));
+      await context.routeWebSocket('wss://ws.chat.false.tel/ws/v4**', socket => {
+        socket.send(JSON.stringify({version: 4, type: 'presence.snapshot', payload: {user_ids: []}}));
       });
       await context.route('https://auth.chat.false.tel/api/auth/v2/refresh', async route => {
         if (route.request().method() === 'OPTIONS') {

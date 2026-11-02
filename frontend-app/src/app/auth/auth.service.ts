@@ -3,11 +3,12 @@ import {Login} from '../login/login';
 import {Token} from './token';
 import {Injectable, OnDestroy} from '@angular/core';
 import {Profile, ProfileUpdate} from './profile.model';
-import {BehaviorSubject, merge, Observable, of, Subject, throwError} from 'rxjs';
+import {BehaviorSubject, defer, merge, Observable, of, Subject, throwError} from 'rxjs';
 import {catchError, filter, finalize, map, pairwise, shareReplay, switchMap, tap} from 'rxjs/operators';
 import {HostService} from './host.service';
 import {AuthCookieLockService, AuthCookieLockUnavailableError} from './auth-cookie-lock.service';
 import type {BrowserSessionSelector, ContinuedBrowserSession} from './browser-session.client';
+import {getDeviceID} from '../login/login';
 
 export class LogoutCookieUnclearedError extends Error {
     override name = 'LogoutCookieUnclearedError';
@@ -354,6 +355,22 @@ export class AuthService implements OnDestroy {
         return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});
     }
 
+    public setupPassword(token: string, password: string): Observable<ActivationSetupSession | null> {
+        return defer(() => {
+            const request = {token, password, device_id: getDeviceID(), device_name: 'Browser'};
+            return this.cookieLock.run(() => this.http.post<unknown>(this.host.activationSetupEndpoint(), request, {withCredentials: true}).pipe(
+                map(parseActivationSetupSession),
+                catchError(error => {
+                    if (!(error instanceof HttpErrorResponse) || error.status !== 404) return throwError(() => error);
+                    return this.http.post<unknown>(this.host.legacyActivationSetupEndpoint(), {token, password}, {withCredentials: false}).pipe(
+                        map(parseLegacyPasswordSetup),
+                        map(() => null),
+                    );
+                }),
+            ));
+        });
+    }
+
     public defaultAuthenticatedRoute(): string {
         return this.host.defaultAuthenticatedRoute();
     }
@@ -426,4 +443,25 @@ export class AuthService implements OnDestroy {
             typeof token.generation !== 'string' || !token.generation) return undefined;
         return {browser_id: token.browser_id, generation: token.generation};
     }
+}
+
+export interface ActivationSetupSession extends ContinuedBrowserSession { status: 'password_set'; }
+
+function parseActivationSetupSession(value: unknown): ActivationSetupSession {
+    if (typeof value !== 'object' || value === null || !('status' in value) || value.status !== 'password_set' ||
+        !('browser_id' in value) || typeof value.browser_id !== 'string' || !value.browser_id.trim() ||
+        !('generation' in value) || typeof value.generation !== 'string' || !value.generation.trim() ||
+        !('access_token' in value) || typeof value.access_token !== 'string' || !value.access_token.trim() ||
+        !('token_type' in value) || typeof value.token_type !== 'string' || value.token_type !== 'Bearer' ||
+        !('expires_in' in value) || typeof value.expires_in !== 'number' || !Number.isFinite(value.expires_in) || value.expires_in <= 0) {
+        throw new Error('Invalid activation setup response');
+    }
+    return {status: 'password_set', browser_id: value.browser_id, generation: value.generation, access_token: value.access_token, token_type: value.token_type, expires_in: value.expires_in};
+}
+
+function parseLegacyPasswordSetup(value: unknown): {status: 'password_set'} {
+    if (typeof value !== 'object' || value === null || !('status' in value) || value.status !== 'password_set') {
+        throw new Error('Invalid legacy password setup response');
+    }
+    return {status: 'password_set'};
 }

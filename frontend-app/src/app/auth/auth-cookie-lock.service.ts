@@ -4,7 +4,7 @@ import {defer, Observable, Subscription, throwError} from 'rxjs';
 export const AUTH_LOCK_RECOVERY = 'This browser cannot safely manage sessions. Use an up-to-date browser with Web Locks enabled, then try again.';
 export class AuthCookieLockUnavailableError extends Error {
     override name = 'AuthCookieLockUnavailableError';
-    constructor() { super(AUTH_LOCK_RECOVERY); }
+    constructor(_cause?: unknown) { super(AUTH_LOCK_RECOVERY); }
 }
 
 /** Serializes cookie-mutating auth requests across same-origin tabs where supported. */
@@ -25,7 +25,7 @@ export class AuthCookieLockService {
                         error: error => { subscriber.error(error); resolve(); },
                         complete: () => { subscriber.complete(); resolve(); },
                     }));
-                })).catch(error => { if (!subscriber.closed) subscriber.error(error); });
+                })).catch(error => { if (!subscriber.closed) subscriber.error(new AuthCookieLockUnavailableError(error)); });
                 return () => {
                     abort.abort();
                     active.unsubscribe();

@@ -9,16 +9,51 @@ import {ProfileComponent} from './profile.component';
 import {AppModule} from '../app.module';
 import {PushEnrollmentService} from '../pwa/push-enrollment.service';
 
+describe('ProfileComponent swipe navigation', () => {
+    for (const [admin, route] of [[false, '/home'], [true, '/admin']] as const) {
+        it(`uses the existing ${route} back link on a mobile edge swipe`, async () => {
+            const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+            Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
+            try {
+                await TestBed.configureTestingModule({imports: [AppModule], providers: [
+                    {provide: HostService, useValue: {isAdminHost: () => admin}},
+                    {provide: AuthService, useValue: {profile: () => of({id: 'user', alert_mode: 'off'})}},
+                    {provide: BrowserNotificationService, useValue: {setMode: vi.fn()}},
+                    {provide: PushEnrollmentService, useValue: {reconcile: () => Promise.resolve()}},
+                ]}).compileComponents();
+                const fixture = TestBed.createComponent(ProfileComponent);
+                fixture.detectChanges();
+                const page = fixture.nativeElement.querySelector('.profile-page') as HTMLElement;
+                const link = fixture.nativeElement.querySelector('.back-link') as HTMLAnchorElement;
+                expect(link.getAttribute('href')).toBe(route);
+                const click = vi.spyOn(link, 'click').mockImplementation(() => {});
+                for (const [type, x] of [['touchstart', 25], ['touchmove', 100], ['touchend', 125]] as const) {
+                    const event = new Event(type, {bubbles: true});
+                    const point = {identifier: 1, clientX: x, clientY: 200};
+                    Object.defineProperties(event, {touches: {value: type === 'touchend' ? [] : [point]}, changedTouches: {value: [point]}});
+                    page.dispatchEvent(event);
+                }
+                expect(click).toHaveBeenCalledTimes(1);
+                fixture.destroy();
+            } finally {
+                if (width) Object.defineProperty(window, 'innerWidth', width);
+            }
+        });
+    }
+});
+
 describe('ProfileComponent media preference', () => {
     const profile: Profile = {id: 'user-1', email: 'user@example.test', display_name: 'User', retention_period: '30d', auto_load_approved_media: false};
     let component: ProfileComponent;
-    let auth: {updateProfile: ReturnType<typeof vi.fn>};
+    let auth: {profile: ReturnType<typeof vi.fn>; updateProfile: ReturnType<typeof vi.fn>};
+    let notifications: {setMode: ReturnType<typeof vi.fn>};
 
     beforeEach(async () => {
         await TestBed.configureTestingModule({imports: [AppModule]}).compileComponents();
-        auth = {updateProfile: vi.fn()};
+        auth = {profile: vi.fn(), updateProfile: vi.fn()};
+        notifications = {setMode: vi.fn()};
         component = new ProfileComponent(auth as unknown as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef,
-            {isAdminHost: () => false} as unknown as HostService, {} as BrowserNotificationService);
+            {isAdminHost: () => false} as unknown as HostService, notifications as unknown as BrowserNotificationService);
         component.profile = profile;
     });
 
@@ -37,6 +72,24 @@ describe('ProfileComponent media preference', () => {
         expect(component.profile?.auto_load_approved_media).toBe(false);
         expect(component.mediaSaving).toBe(false);
         expect(component.mediaSaveError).toBe(true);
+    });
+
+    it('refreshes server profile without triggering browser capabilities', () => {
+        auth.profile.mockReturnValue(of({...profile, display_name: 'Updated'}));
+        component.refreshProfile();
+        expect(component.profile?.display_name).toBe('Updated');
+        expect(component.refreshError).toBe(false);
+        expect(notifications.setMode).toHaveBeenCalledWith('off');
+    });
+
+    it('keeps current profile and reports retry when refresh fails or a save is active', () => {
+        auth.profile.mockReturnValue(throwError(() => new Error('offline')));
+        component.refreshProfile();
+        expect(component.profile).toBe(profile);
+        expect(component.refreshError).toBe(true);
+        component.mediaSaving = true;
+        component.refreshProfile();
+        expect(auth.profile).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -182,8 +235,8 @@ describe('ProfileComponent enabled push presentation', () => {
         await vi.waitFor(() => expect(fixture.componentInstance.pushError).toContain('push service did not respond'));
         fixture.detectChanges();
 
-        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('This browser’s push service did not respond');
-        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('Safari or Google Chrome');
+        expect(fixture.nativeElement.querySelector('app-notice [role="alert"]')?.textContent).toContain('This browser’s push service did not respond');
+        expect(fixture.nativeElement.querySelector('app-notice [role="alert"]')?.textContent).toContain('Safari or Google Chrome');
         const retry = fixture.nativeElement.querySelector('#push-settings-title ~ label input') as HTMLInputElement;
         expect(retry.disabled).toBe(false);
     });
@@ -193,7 +246,7 @@ describe('ProfileComponent enabled push presentation', () => {
         push.enrollFromUserGesture.mockRejectedValueOnce(new Error('subscription-key-mismatch'));
         await fixture.componentInstance.enablePush();
         fixture.detectChanges();
-        expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('different server key');
+        expect(fixture.nativeElement.querySelector('app-notice [role="alert"]')?.textContent).toContain('different server key');
         expect(fixture.componentInstance.pushError).toContain('other accounts');
         expect(push.disable).not.toHaveBeenCalled();
     });

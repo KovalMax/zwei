@@ -31,6 +31,7 @@ type Handler struct {
 
 type historyStore interface {
 	List(context.Context, uuid.UUID, uuid.UUID, int64, int) ([]conversation.Message, string, error)
+	Get(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (conversation.Message, error)
 }
 
 type archiveService interface {
@@ -53,6 +54,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/chat/v2/conversations/{id}/messages", h.sendMessage)
 	mux.HandleFunc("GET /api/chat/conversations/{id}/messages", h.historyMessages)
+	mux.HandleFunc("GET /api/chat/conversations/{id}/messages/{messageID}", h.getHistoryMessage)
 	mux.HandleFunc("POST /api/chat/groups", h.createGroup)
 	mux.HandleFunc("GET /api/chat/groups", h.listGroups)
 	mux.HandleFunc("GET /api/chat/groups/{id}", h.getGroup)
@@ -659,4 +661,34 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {
 }
 func errorJSON(w http.ResponseWriter, status int, message string) {
 	runtime.WriteJSON(w, status, map[string]string{"error": message})
+}
+
+func (h *Handler) getHistoryMessage(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.userID(w, r)
+	if !ok {
+		return
+	}
+	if !h.allow(w, r, userID, application.RateBucketHistory) {
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid conversation id")
+		return
+	}
+	messageID, err := uuid.Parse(r.PathValue("messageID"))
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid message id")
+		return
+	}
+	message, err := h.history.Get(r.Context(), userID, conversationID, messageID)
+	if errors.Is(err, postgres.ErrNotFound) {
+		errorJSON(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not load message")
+		return
+	}
+	runtime.WriteJSON(w, http.StatusOK, message)
 }

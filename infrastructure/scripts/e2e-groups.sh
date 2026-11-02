@@ -10,5 +10,6 @@ E2E_OTHER_SPECS=(
   tests/kyc-flow.spec.ts
   tests/legacy-message-fixture.spec.ts
   tests/pwa-offline.spec.ts
+  tests/swipe-back.spec.ts
   tests/visual-baseline.spec.ts
 )

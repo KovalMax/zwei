@@ -1,6 +1,5 @@
-import {Component} from '@angular/core';
+import {ChangeDetectorRef, Component} from '@angular/core';
 import {ActivatedRoute, Router} from '@angular/router';
-import {MatSnackBar} from '@angular/material/snack-bar';
 import {FormGroup} from '@angular/forms';
 import {RegistrationForm, RegistrationModel, PendingRegistrationResponse} from './registration.model';
 import {RegistrationService} from './registration.service';
@@ -18,16 +17,19 @@ import {AuthCookieLockUnavailableError} from '../auth/auth-cookie-lock.service';
 })
 export class RegistrationComponent {
     public isLoading = false;
+    public readonly isInvitation: boolean;
+    public errorMessage = '';
     public registrationForm: FormGroup<ControlsOf<RegistrationForm>>;
 
     constructor(
         private service: RegistrationService,
         private authService: AuthService,
         private router: Router,
+        private changeDetector: ChangeDetectorRef,
         private route: ActivatedRoute,
-        private snackBar: MatSnackBar,
     ) {
-        this.registrationForm = service.buildForm();
+        this.isInvitation = route.snapshot.queryParamMap.get('invite') === '1';
+        this.registrationForm = service.buildForm(this.isInvitation);
     }
 
     public onSubmit(): void {
@@ -37,9 +39,10 @@ export class RegistrationComponent {
             return;
         }
 
+        this.errorMessage = '';
         let model: RegistrationModel;
         try {
-            const invitationCode = this.route.snapshot.queryParamMap.get('invite') === '1'
+            const invitationCode = this.isInvitation
                 ? this.route.snapshot.queryParamMap.get('code') || undefined
                 : undefined;
             model = RegistrationModel.createFrom(this.registrationForm.getRawValue(), invitationCode) as RegistrationModel;
@@ -53,7 +56,7 @@ export class RegistrationComponent {
             .pipe(finalize(() => this.isLoading = false))
             .subscribe({
                  next: token => {
-                      this.snackBar.dismiss();
+                      this.errorMessage = '';
                       if (this.isPendingResponse(token)) {
                           void this.router.navigate(['pending']);
                           return;
@@ -110,11 +113,8 @@ export class RegistrationComponent {
 
     private showError(message: string): void {
         this.isLoading = false;
-        this.snackBar.open(message, 'Close', {
-            duration: 60 * 1000,
-            horizontalPosition: 'center',
-            verticalPosition: 'top',
-        });
+        this.errorMessage = message;
+        this.changeDetector.markForCheck();
     }
 
     private isPendingResponse(response: unknown): response is PendingRegistrationResponse {

@@ -1,1 +1,34 @@
-<main class="auth-page"><section class="auth-card" aria-labelledby="activation-title"><div class="auth-intro"><span class="eyebrow">Account activation</span><h1 id="activation-title">{{ isLoading ? 'Activating your account…' : activated ? 'Your account is active' : 'Activation link unavailable' }}</h1><p *ngIf="isLoading">Please wait while we confirm your activation link.</p><p *ngIf="activated">Your email is confirmed and your account is ready. You can now sign in.</p><p *ngIf="error">This link is invalid or expired. Please contact an administrator for a new activation email.</p></div><button *ngIf="activated" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Continue to sign in</button></section></main>
+<main class="auth-page">
+    <section class="auth-card" aria-labelledby="activation-title">
+        <div class="auth-intro">
+            <span class="eyebrow">{{ setupMode ? 'Email password setup' : 'Account activation' }}</span>
+            <h1 id="activation-title">{{ title }}</h1>
+            <p *ngIf="setupMode && !passwordSet && !error">Choose a password to finish activating your account.</p>
+            <app-notice *ngIf="legacySetupComplete" kind="info" message="Your password is set. An administrator must approve your account before you can sign in."></app-notice>
+            <app-notice *ngIf="sessionAcceptanceFailed" kind="warning" message="Your password is set, but we could not sign you in automatically. Please sign in with your new password."></app-notice>
+            <app-notice *ngIf="setupMode && error && lockUnavailable" kind="error" message="This browser cannot safely manage sign-in cookies. Use an up-to-date browser with Web Locks enabled, then try the setup link again."></app-notice>
+            <app-notice *ngIf="setupMode && error && !lockUnavailable" kind="error" message="We could not set your password. This link may be invalid, expired, or already used. Request a new setup link from an administrator."></app-notice>
+            <p *ngIf="!setupMode && isLoading">Please wait while we confirm your activation link.</p>
+            <app-notice *ngIf="!setupMode && activated" kind="success" message="Your email is confirmed and your account is ready. You can now sign in."></app-notice>
+            <app-notice *ngIf="!setupMode && error" kind="error" message="This link is invalid or expired. Please contact an administrator for a new activation email."></app-notice>
+        </div>
+        <form *ngIf="setupMode && !passwordSet && !error && !isLoading" [formGroup]="passwordForm" (ngSubmit)="submitPassword()" class="auth-form" aria-label="Set account password">
+            <mat-form-field appearance="outline">
+                <mat-label>Password</mat-label><input formControlName="password" matInput type="password" autocomplete="new-password">
+                <mat-error *ngIf="passwordForm.controls.password.errors?.['required']">Password is required.</mat-error>
+                <mat-error *ngIf="passwordForm.controls.password.errors?.['minlength']">Use at least 8 characters.</mat-error>
+                <mat-error *ngIf="passwordForm.controls.password.errors?.['maxlength']">Password is too long.</mat-error>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+                <mat-label>Confirm password</mat-label><input formControlName="confirmPassword" matInput type="password" autocomplete="new-password">
+                <mat-error *ngIf="passwordForm.controls.confirmPassword.errors?.['required']">Please confirm your password.</mat-error>
+            </mat-form-field>
+            <p class="form-error" *ngIf="passwordForm.controls.confirmPassword.dirty && !passwordsMatch">Passwords do not match.</p>
+            <button class="submit-button" mat-flat-button color="primary" type="submit" [disabled]="passwordForm.invalid || !passwordsMatch">Set password</button>
+        </form>
+        <div *ngIf="isLoading && setupMode" class="auth-loading" role="status" aria-live="polite">Saving your password…</div>
+        <button *ngIf="!setupMode && activated" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Continue to sign in</button>
+        <button *ngIf="legacySetupComplete" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Back to login</button>
+        <button *ngIf="sessionAcceptanceFailed" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Continue to sign in</button>
+    </section>
+</main>

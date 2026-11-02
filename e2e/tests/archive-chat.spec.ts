@@ -466,6 +466,13 @@ test('archive and explicitly restore direct and group chats per user; inbound me
           await action.hover();
           const tooltip = alice.locator('.mat-mdc-tooltip');
           await expect(tooltip).toHaveText(actionTooltip);
+          const tooltipStyle = await tooltip.locator('.mat-mdc-tooltip-surface').evaluate(element => {
+            const style = getComputedStyle(element);
+            return {color: style.color, background: style.backgroundColor, fontSize: Number.parseFloat(style.fontSize), lineHeight: Number.parseFloat(style.lineHeight), opacity: Number.parseFloat(style.opacity)};
+          });
+          expect(contrastRatio(tooltipStyle.color, tooltipStyle.background), `${state}: tooltip text contrast ${JSON.stringify(tooltipStyle)}`).toBeGreaterThanOrEqual(4.5);
+          expect(tooltipStyle.fontSize, `${state}: tooltip text size`).toBeGreaterThanOrEqual(12);
+          expect(tooltipStyle.opacity, `${state}: tooltip must not be faded`).toBe(1);
           const tooltipBounds = await tooltip.boundingBox();
           expect(tooltipBounds, `${state}: tooltip must be rendered`).toBeTruthy();
           const tooltipOverlap = await tooltip.evaluate(element => {

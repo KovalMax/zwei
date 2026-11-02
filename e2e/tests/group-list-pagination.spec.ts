@@ -118,7 +118,7 @@ function isFixtureCreationProjection(message: string | Buffer, revisions: Readon
   if (typeof message !== 'string') return false;
   try {
     const event: unknown = JSON.parse(message);
-    if (typeof event !== 'object' || event === null || !('version' in event) || event.version !== 3 || !('type' in event) || event.type !== 'group.membership.changed' || !('payload' in event)) return false;
+    if (typeof event !== 'object' || event === null || !('version' in event) || event.version !== 4 || !('type' in event) || event.type !== 'group.membership.changed' || !('payload' in event)) return false;
     const payload = event.payload;
     return typeof payload === 'object' && payload !== null && 'conversation_id' in payload && typeof payload.conversation_id === 'string'
       && 'membership_revision' in payload && revisions.has(payload.conversation_id) && revisions.get(payload.conversation_id) === payload.membership_revision
@@ -138,7 +138,7 @@ function forwardSocketExceptFixtureCreations(socket: WebSocketRoute, server: Pic
 test('pagination fixture filters only the known creation projections', () => {
   const revisions = new Map([['fixture-group', 1]]);
   const projection = (overrides: object = {}, payload: object = {}) => JSON.stringify({
-    version: 3, type: 'group.membership.changed', ...overrides,
+    version: 4, type: 'group.membership.changed', ...overrides,
     payload: {conversation_id: 'fixture-group', membership_revision: 1, deleted: false, ...payload},
   });
   expect(isFixtureCreationProjection(projection(), revisions)).toBe(true);
@@ -152,11 +152,11 @@ test('pagination fixture filters only the known creation projections', () => {
 
 test('pagination socket fixture filters retries and forwards other frames in both directions', async ({page}) => {
   const revisions = new Map([['fixture-group', 1]]);
-  const event = (id: string, revision: number) => JSON.stringify({version: 3, type: 'group.membership.changed', payload: {conversation_id: id, membership_revision: revision, deleted: false}});
+  const event = (id: string, revision: number) => JSON.stringify({version: 4, type: 'group.membership.changed', payload: {conversation_id: id, membership_revision: revision, deleted: false}});
   const matching = event('fixture-group', 1);
   const newer = event('fixture-group', 2);
   const unrelated = event('other-group', 1);
-  const sentinel = JSON.stringify({version: 3, type: 'presence.snapshot', payload: {user_ids: []}});
+  const sentinel = JSON.stringify({version: 4, type: 'presence.snapshot', payload: {user_ids: []}});
   const outbound: Array<string | Buffer> = [];
   await page.routeWebSocket('wss://fixture.invalid/ws', socket => {
     let receiveFromServer: ((message: string | Buffer) => void) | undefined;
@@ -179,7 +179,7 @@ test('pagination socket fixture filters retries and forwards other frames in bot
     socket.onerror = () => reject(new Error('Fixture WebSocket failed'));
     socket.onmessage = event => {
       frames.push(event.data);
-      if (event.data === JSON.stringify({version: 3, type: 'presence.snapshot', payload: {user_ids: []}})) {
+      if (event.data === JSON.stringify({version: 4, type: 'presence.snapshot', payload: {user_ids: []}})) {
         socket.close();
         resolve(frames);
       }
@@ -208,7 +208,7 @@ async function expectGroupPageErrorAppearance(page: Page, width: number): Promis
       const bounds = element.getBoundingClientRect();
       return {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, width: bounds.width, height: bounds.height};
     };
-    const contrast = (foreground: string, background: string): number => {
+      const contrast = (foreground: string, background: string): number => {
       const channel = (value: number) => {
         const normalized = value / 255;
         return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
@@ -224,16 +224,32 @@ async function expectGroupPageErrorAppearance(page: Page, width: number): Promis
       };
       const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
       return (lighter + 0.05) / (darker + 0.05);
-    };
-    return {
+      };
+      const colorChannels = (value: string): [number, number, number, number] => {
+        const channels = value.match(/[\d.]+/g)?.map(Number);
+        if (!channels || channels.length < 3) throw new Error(`Could not parse computed color ${value}`);
+        return [channels[0], channels[1], channels[2], channels[3] ?? 1];
+      };
+      const composite = (foreground: string, background: string): string => {
+        const top = colorChannels(foreground);
+        const bottom = colorChannels(background);
+        const alpha = top[3] + bottom[3] * (1 - top[3]);
+        const channels = [0, 1, 2].map(index => alpha === 0 ? 0 : (top[index] * top[3] + bottom[index] * bottom[3] * (1 - top[3])) / alpha);
+        return `rgb(${channels.map(channel => Math.round(channel)).join(', ')})`;
+      };
+      const controlEffectiveBackground = colorChannels(controlStyle.backgroundColor)[3] < 1
+        ? composite(controlStyle.backgroundColor, style.backgroundColor)
+        : controlStyle.backgroundColor;
+      return {
       alert: rect(alert),
       control: rect(control),
       alertBackground: style.backgroundColor,
       alertBorder: style.borderTopColor,
       alertBorderStyle: style.borderTopStyle,
-      alertTextContrast: contrast(style.color, style.backgroundColor),
-      controlBackground: controlStyle.backgroundColor,
-      controlTextContrast: contrast(controlStyle.color, controlStyle.backgroundColor),
+        alertTextContrast: contrast(style.color, style.backgroundColor),
+        controlBackground: controlStyle.backgroundColor,
+        controlEffectiveBackground,
+        controlTextContrast: contrast(controlStyle.color, controlEffectiveBackground),
       controlHeight: control.getBoundingClientRect().height,
       controlOutlineStyle: controlStyle.outlineStyle,
       controlOutlineWidth: controlStyle.outlineWidth,
@@ -366,7 +382,7 @@ test('loads 26 shared groups by pages and keeps the rail contained across theme/
     target = await targetContext.newPage();
     // Forward every other socket frame unchanged, in both directions. Keep
     // filtering fixture creation retries for the lifetime of this test socket.
-    await target.routeWebSocket('**/ws/v3?ticket=*', socket => {
+    await target.routeWebSocket('**/ws/v4?ticket=*', socket => {
       forwardSocketExceptFixtureCreations(socket, socket.connectToServer(), creationRevisions);
     });
     const firstPageResponsePromise = target.waitForResponse(response => {

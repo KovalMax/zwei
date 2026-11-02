@@ -1,1 +1,10 @@
+.auth-card { width: min(100%, 520px); }
+.auth-form { display: flex; flex-direction: column; gap: 14px; }
+.auth-form mat-form-field { width: 100%; }
+.auth-form ::ng-deep .mat-mdc-text-field-wrapper { background-color: var(--login-field-surface); }
+.auth-form ::ng-deep .mdc-floating-label { color: var(--login-muted) !important; }
+.auth-form ::ng-deep input { color: var(--auth-title) !important; }
+.auth-form ::ng-deep .mdc-notched-outline > *:not(.mdc-notched-outline__notch) { border-color: var(--login-field-border) !important; }
+.auth-form ::ng-deep .mdc-notched-outline__notch { border-top-color: var(--login-field-border) !important; border-bottom-color: var(--login-field-border) !important; border-left-color: transparent !important; }
+.form-error { color: var(--login-error); }
 .submit-button { min-height: 48px; border-radius: 12px; background: var(--auth-submit) !important; color: var(--auth-submit-text) !important; font-weight: 700; }

@@ -60,20 +60,20 @@ describe('DataProviderService transport', () => {
         service.getObservable().subscribe(event => received.push(event));
         const socket = requestTicket('ticket');
         open(socket.config);
-        socket.socket.emit({version: 3, type: 'presence.snapshot', payload: {user_ids: []}});
+        socket.socket.emit({version: 4, type: 'presence.snapshot', payload: {user_ids: []}});
         const payload = {conversation_id: 'group-1', room_id: 'room-1', generation: 1};
         expect(service.send({type: 'group.call.credentials', request_id: 'request-1', payload})).toBe(true);
-        expect(socket.socket.sent).toContainEqual({version: 3, type: 'group.call.credentials', request_id: 'request-1', payload});
+        expect(socket.socket.sent).toContainEqual({version: 4, type: 'group.call.credentials', request_id: 'request-1', payload});
         const credentials = {...payload, ice_servers: [{urls: ['turn:example.test'], username: 'opaque', credential: 'opaque'}], ice_expires_at: '2099-01-01T00:00:00Z'};
-        socket.socket.emit({version: 3, type: 'group.call.credentials', request_id: 'request-1', payload: {...credentials, ice_expires_at: 'invalid'}});
-        socket.socket.emit({version: 3, type: 'group.call.credentials', payload: credentials});
-        socket.socket.emit({version: 3, type: 'group.call.credentials', request_id: 'request-1', payload: credentials});
-        expect(received.filter(event => event.type === 'group.call.credentials')).toEqual([{version: 3, type: 'group.call.credentials', request_id: 'request-1', payload: credentials}]);
+        socket.socket.emit({version: 4, type: 'group.call.credentials', request_id: 'request-1', payload: {...credentials, ice_expires_at: 'invalid'}});
+        socket.socket.emit({version: 4, type: 'group.call.credentials', payload: credentials});
+        socket.socket.emit({version: 4, type: 'group.call.credentials', request_id: 'request-1', payload: credentials});
+        expect(received.filter(event => event.type === 'group.call.credentials')).toEqual([{version: 4, type: 'group.call.credentials', request_id: 'request-1', payload: credentials}]);
     });
 
     it('uses an encoded ticket, versions outbound events, and filters malformed inbound events', () => {
-        expect(WEBSOCKET_PROTOCOL_VERSION).toBe(3);
-        expect(backends.websocket).toMatch(/\/ws\/v3$/);
+        expect(WEBSOCKET_PROTOCOL_VERSION).toBe(4);
+        expect(backends.websocket).toMatch(/\/ws\/v4$/);
         const received: MessageSocketEvent[] = [];
         service.getObservable().subscribe(event => received.push(event));
 
@@ -85,8 +85,8 @@ describe('DataProviderService transport', () => {
         first.socket.emit(null);
         first.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: null });
         first.socket.emit({ version: 1, type: 'presence.snapshot', payload: { user_ids: ['peer-1'] } });
-        first.socket.emit({ version: 2, type: 'presence.snapshot', payload: { user_ids: ['peer-1'] } });
-        first.socket.emit({ version: 4, type: 'presence.snapshot', payload: { user_ids: ['peer-1'] } });
+        first.socket.emit({ version: 3, type: 'presence.snapshot', payload: { user_ids: ['peer-1'] } });
+        first.socket.emit({ version: 5, type: 'presence.snapshot', payload: { user_ids: ['peer-1'] } });
         first.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.send', payload: {} });
         first.socket.emit({ version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: { user_ids: ['peer-1'] } });
 
@@ -97,7 +97,7 @@ describe('DataProviderService transport', () => {
             }]);
         expect(service.ready).toBe(true);
         expect(service.send({ type: 'presence.refresh' })).toBe(true);
-        expect(first.socket.sent).toEqual([{ type: 'presence.refresh', version: 3 }]);
+        expect(first.socket.sent).toEqual([{ type: 'presence.refresh', version: 4 }]);
     });
 
     it('validates group start preparation and cancellation messages', () => {
@@ -136,6 +136,23 @@ describe('DataProviderService transport', () => {
         const payload = {id: 'message-1', conversation_id: 'chat-1', sender_id: 'alice', client_message_id: 'client-1', sequence: 1, body: '😀 @Alice', created_at: '2026-01-01T00:00:00Z'};
         socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...payload, mentions: [{user_id: 'alice', start: 3, end: 9}]}});
         socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...payload, mentions: [{user_id: 'alice', start: 1, end: 3}]}});
+        expect(received.filter(event => event.type === 'message.created')).toHaveLength(1);
+    });
+
+    it('sends reply commands and rejects malformed reply targets on send and receive', () => {
+        const received: MessageSocketEvent[] = [];
+        service.getObservable().subscribe(event => received.push(event));
+        const socket = requestTicket('reply');
+        open(socket.config);
+        socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'presence.snapshot', payload: {user_ids: []}});
+        const target = '00000000-0000-4000-8000-000000000001';
+        const command = {type: 'message.reply.send' as const, request_id: 'req', payload: {conversation_id: 'chat', client_message_id: 'client', body: 'Reply', content_type: 'text' as const, reply_to_message_id: target}};
+        expect(service.send(command)).toBe(true);
+        expect(socket.socket.sent.at(-1)).toEqual({...command, version: WEBSOCKET_PROTOCOL_VERSION});
+        expect(service.send({...command, payload: {...command.payload, reply_to_message_id: 'invalid'}})).toBe(false);
+        const payload = {id: 'message', conversation_id: 'chat', sender_id: 'alice', client_message_id: 'client', sequence: 1, body: 'Reply', created_at: '2026-01-01T00:00:00Z'};
+        socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...payload, reply_to_message_id: 'invalid'}});
+        socket.socket.emit({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...payload, reply_to_message_id: target}});
         expect(received.filter(event => event.type === 'message.created')).toHaveLength(1);
     });
 
@@ -259,14 +276,14 @@ describe('DataProviderService transport', () => {
         for (const type of ['offer', 'answer']) {
             for (const invalid of [undefined, id.toUpperCase(), '00000000-0000-0000-0000-000000000000', 'invalid']) {
                 const signal = {type, sdp: 'opaque', negotiation_id: invalid};
-                socket.socket.emit({version: 3, type: 'group.call.signal', payload: {...payload, signal}});
+                socket.socket.emit({version: 4, type: 'group.call.signal', payload: {...payload, signal}});
                 expect(isValidGroupCallClientEvent({type: 'group.call.signal', request_id: 'r', payload: {...commandPayload, signal}})).toBe(false);
             }
             const signal = {type, sdp: 'opaque', negotiation_id: id};
-            socket.socket.emit({version: 3, type: 'group.call.signal', payload: {...payload, signal}});
+            socket.socket.emit({version: 4, type: 'group.call.signal', payload: {...payload, signal}});
             expect(isValidGroupCallClientEvent({type: 'group.call.signal', request_id: 'r', payload: {...commandPayload, signal}})).toBe(true);
         }
-        socket.socket.emit({version: 3, type: 'group.call.signal', payload: {...payload, signal: {type: 'candidate', candidate: {}, negotiation_id: id}}});
+        socket.socket.emit({version: 4, type: 'group.call.signal', payload: {...payload, signal: {type: 'candidate', candidate: {}, negotiation_id: id}}});
         expect(received).toHaveLength(2);
     });
 
@@ -312,15 +329,15 @@ describe('DataProviderService transport', () => {
         const socket = requestTicket('ticket-group-candidate-validation');
         open(socket.config);
         const payload = {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'device-1'};
-        const event = (candidate: unknown): void => socket.socket.emit({version: 3, type: 'group.call.signal', payload: {...payload, signal: {type: 'candidate', candidate}}});
+        const event = (candidate: unknown): void => socket.socket.emit({version: 4, type: 'group.call.signal', payload: {...payload, signal: {type: 'candidate', candidate}}});
         const valid = {candidate: '', usernameFragment: 'ice', sdpMLineIndex: 65535};
         event(valid);
         event({candidate: 'opaque-sensitive-value', usernameFragment: 'ice', sdpMid: 'audio'});
         event({candidate: '', usernameFragment: 'ice', sdpMid: 'audio', extra: true});
         expect(received).toEqual([
-            {version: 3, type: 'group.call.signal', payload: {...payload, signal: {type: 'candidate', candidate: valid}}},
-            {version: 3, type: 'group.call.invalid_candidate', payload},
-            {version: 3, type: 'group.call.invalid_candidate', payload},
+            {version: 4, type: 'group.call.signal', payload: {...payload, signal: {type: 'candidate', candidate: valid}}},
+            {version: 4, type: 'group.call.invalid_candidate', payload},
+            {version: 4, type: 'group.call.invalid_candidate', payload},
         ]);
         expect(JSON.stringify(received)).not.toContain('opaque-sensitive-value');
     });
@@ -464,7 +481,7 @@ describe('DataProviderService transport', () => {
         http.expectNone(backends.websocketTicket);
     }));
 
-    it('accepts only a well-formed v3 group membership revision event', () => {
+    it('accepts only a well-formed v4 group membership revision event', () => {
         const received: MessageSocketEvent[] = [];
         service.getObservable().subscribe(event => received.push(event));
         const socket = requestTicket('ticket-group');

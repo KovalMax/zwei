@@ -283,6 +283,19 @@ body :is(a, button, select, [tabindex]):focus-visible {
     line-height: 12px !important;
 }
 
+.mat-mdc-tooltip-panel .mat-mdc-tooltip.archive-chat-action-tooltip .mat-mdc-tooltip-surface {
+    --mdc-plain-tooltip-container-color: #172033;
+    --mdc-plain-tooltip-supporting-text-color: #fff;
+    background-color: #172033 !important;
+    color: #fff !important;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    min-height: 28px;
+    opacity: 1;
+    padding: 6px 10px;
+}
+
 .mat-mdc-tooltip-panel .mat-mdc-tooltip.group-call-end-tooltip .mat-mdc-tooltip-surface {
     --mdc-plain-tooltip-container-color: #f1f5f9;
     --mdc-plain-tooltip-supporting-text-color: #172033;
@@ -336,7 +349,8 @@ html.dark-theme .admin-page th { background: #202c3b; }
 .light-theme .conversation-rail, .light-theme .chat-header { border-color: var(--chat-line); background: var(--chat-surface); }
 .light-theme .rail-heading h1, .light-theme .chat-header h2, .light-theme .chat-empty h3 { color: var(--chat-text); }
 .light-theme .search-field .mat-mdc-text-field-wrapper { background: var(--chat-canvas); }
-.light-theme .search-field .mdc-notched-outline > * { border-color: var(--chat-line) !important; }
+.light-theme .search-field .mdc-notched-outline > *:not(.mdc-notched-outline__notch) { border-color: var(--chat-line) !important; }
+.light-theme .search-field .mdc-notched-outline__notch { border-top-color: var(--chat-line) !important; border-bottom-color: var(--chat-line) !important; border-left-color: transparent !important; }
 .light-theme .search-results { border-color: var(--chat-line); background: var(--chat-surface-raised) !important; box-shadow: 0 8px 20px rgba(23, 32, 51, .06); }
 .light-theme .search-result { color: var(--chat-text); }
 .light-theme .search-result:hover { background: #f1f4f9; }

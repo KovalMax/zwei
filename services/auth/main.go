@@ -58,7 +58,8 @@ func main() {
 	}
 	issuer := token.NewJWTIssuer(cfg.JWTSecret)
 	authService := application.NewService(repository, passwords, issuer, cfg.AccessLifetime, cfg.RefreshLifetime)
-	adminService := application.NewAdminService(repository, passwords, email.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword), cfg.ActivationURL, cfg.InvitationURL)
+	emailSender := email.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword)
+	adminService := application.NewAdminService(repository, passwords, emailSender, cfg.ActivationURL, cfg.InvitationURL)
 	adminIPs, err := httptransport.NewIPAllowlist(cfg.AdminAllowedIPs, cfg.TrustedProxyCIDRs)
 	if err != nil {
 		panic(err)
@@ -71,7 +72,7 @@ func main() {
 	handler := httptransport.NewHandler(authService, adminService, validator, adminIPs, origins, cfg.VAPIDPublicKey, cfg.GiphyAPIKey)
 	mux := runtime.NewHealthHandler("auth")
 	handler.Register(mux)
-	registerBrowserV2(mux, cfg, handler, authService, repository, issuer, validator)
+	registerBrowserV2(mux, cfg, handler, authService, repository, issuer, validator, emailSender)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: runtime.WithCORS(cacheControl(mux), origins)}
 	runtime.ConfigureHTTPServer(server)
 	if err := runtime.RunHTTP(ctx, runtime.NewLogger(), server); err != nil {
@@ -79,10 +80,15 @@ func main() {
 	}
 }
 
-func registerBrowserV2(mux *http.ServeMux, cfg config.Config, handler *httptransport.Handler, authService *application.Service, repository *postgres.Repository, issuer *token.JWTIssuer, validator *sharedauth.SessionValidator) {
+func registerBrowserV2(mux *http.ServeMux, cfg config.Config, handler *httptransport.Handler, authService *application.Service, repository *postgres.Repository, issuer *token.JWTIssuer, validator *sharedauth.SessionValidator, senders ...application.EmailSender) {
 	browserSessions := application.NewBrowserSessions(repository, issuer, cfg.AccessLifetime, cfg.RefreshLifetime)
 	browser := httptransport.NewBrowserV2Handler(handler, authService, repository, browserSessions, validator)
-	browser.SetRegistration(application.NewBrowserRegistration(authService, browserSessions, repository))
+	browser.SetPasswordSetup(application.NewPasswordSetupService(authService, browserSessions))
+	registration := application.NewBrowserRegistration(authService, browserSessions, repository)
+	if len(senders) > 0 {
+		registration.SetPasswordSetupEmail(senders[0], cfg.ActivationURL)
+	}
+	browser.SetRegistration(registration)
 	browser.SetCandidateDiscovery(repository)
 	browser.Register(mux)
 }

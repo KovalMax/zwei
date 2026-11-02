@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"strings"
 	"time"
 
@@ -20,6 +21,13 @@ type BrowserRegistration struct {
 	auth       *Service
 	sessions   *BrowserSessions
 	repository BrowserRegistrationRepository
+	email      EmailSender
+	setupURL   string
+}
+
+func (s *BrowserRegistration) SetPasswordSetupEmail(email EmailSender, setupURL string) {
+	s.email = email
+	s.setupURL = strings.TrimRight(setupURL, "/")
 }
 
 func NewBrowserRegistration(auth *Service, sessions *BrowserSessions, repository BrowserRegistrationRepository) *BrowserRegistration {
@@ -27,12 +35,25 @@ func NewBrowserRegistration(auth *Service, sessions *BrowserSessions, repository
 }
 
 func (s *BrowserRegistration) Register(ctx context.Context, input Credentials, current *BrowserCredential) (bool, BrowserSessionResult, error) {
+	if strings.TrimSpace(input.InvitationCode) == "" {
+		if !validRegistrationIdentity(input.Email, input.DisplayName, input.DeviceID) {
+			return false, BrowserSessionResult{}, ErrInvalidInput
+		}
+		if s.email == nil || strings.TrimSpace(s.setupURL) == "" {
+			return false, BrowserSessionResult{}, errors.New("password setup email unavailable")
+		}
+		token, err := s.auth.registerPending(ctx, input)
+		if err != nil {
+			return false, BrowserSessionResult{}, err
+		}
+		link := s.setupURL + "#setup=" + token
+		if err := s.email.SendPasswordSetup(ctx, normalizeEmail(input.Email), strings.TrimSpace(input.DisplayName), link); err != nil {
+			return false, BrowserSessionResult{}, err
+		}
+		return true, BrowserSessionResult{}, nil
+	}
 	if !validCredentials(input.Email, input.Password, input.DisplayName, input.DeviceID) {
 		return false, BrowserSessionResult{}, ErrInvalidInput
-	}
-	if strings.TrimSpace(input.InvitationCode) == "" {
-		err := s.auth.registerPending(ctx, input)
-		return err == nil, BrowserSessionResult{}, err
 	}
 	if current != nil && !validBrowserCredential(*current) {
 		return false, BrowserSessionResult{}, ErrInvalidInput

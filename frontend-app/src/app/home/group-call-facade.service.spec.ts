@@ -94,7 +94,7 @@ describe('GroupCallFacade', () => {
         const peer = peerConnections[0];
         const add = vi.spyOn(peer, 'addIceCandidate');
         const candidate = {candidate: 'candidate:1 1 udp 2122260223 192.0.2.1 5000 typ host ufrag next', sdpMid: 'audio', sdpMLineIndex: 0, usernameFragment: 'next'};
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'candidate', candidate});
         await tick(0);
         expect(add).not.toHaveBeenCalled();
@@ -108,7 +108,7 @@ describe('GroupCallFacade', () => {
         await facade.start('group-1', 'self-1');
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}, {user_id: 'peer-2', device_id: 'peer-2'}]));
         await tick(0);
-        events.next({version: 3, type: 'group.call.invalid_candidate', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1'}});
+        events.next({version: 4, type: 'group.call.invalid_candidate', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1'}});
         await tick(0);
         expect(facade.state.errorLabel).toContain('rejoin');
         expect(send).not.toHaveBeenCalledWith(expect.objectContaining({type: 'group.call.leave'}));
@@ -128,7 +128,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         const peer = peerConnections[0];
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('old'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'offer', sdp: iceSDP('new'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf2'});
@@ -150,7 +150,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         const peer = peerConnections[0];
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         const sdp = 'v=0\r\na=group:BUNDLE audio video\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio\r\na=ice-ufrag:bundle\r\na=ice-pwd:abcdefghijklmnopqrstuv\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:video\r\na=bundle-only\r\n';
         signal({type: 'offer', sdp, negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
@@ -168,7 +168,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         const peer = peerConnections[0];
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         for (let i = 0; i < 70; i++) { signal({type: 'offer', sdp: iceSDP(`ice${i}`), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}); await tick(0); }
         expect(peer.connectionState).not.toBe('closed');
         const current = {candidate: 'candidate:2 1 udp 1 192.0.2.1 5001 typ host', sdpMid: 'audio', usernameFragment: 'ice69'};
@@ -193,7 +193,7 @@ describe('GroupCallFacade', () => {
         let release: (() => void) | undefined;
         vi.spyOn(peerConnections[0], 'setRemoteDescription').mockReturnValue(new Promise<void>(resolve => { release = resolve; }));
         const add = vi.spyOn(peerConnections[1], 'addIceCandidate');
-        const signal = (peer: GroupCallParticipant, value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: peer.user_id, from_device_id: peer.device_id, signal: value}});
+        const signal = (peer: GroupCallParticipant, value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: peer.user_id, from_device_id: peer.device_id, signal: value}});
         signal(a, {type: 'offer', sdp: iceSDP('a'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal(a, {type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: 'audio', usernameFragment: 'a'}});
@@ -225,7 +225,7 @@ describe('GroupCallFacade', () => {
         const remoteB = vi.spyOn(peerConnections[1], 'setRemoteDescription');
         const presentation = facade.startPresentation('720p');
         await tick(0);
-        const signal = (peer: GroupCallParticipant): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: peer.user_id, from_device_id: peer.device_id, signal: {type: 'offer', sdp: iceSDP(peer.user_id), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        const signal = (peer: GroupCallParticipant): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: peer.user_id, from_device_id: peer.device_id, signal: {type: 'offer', sdp: iceSDP(peer.user_id), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         signal(a); signal(b);
         await tick(0);
         expect(remoteA).not.toHaveBeenCalled();
@@ -242,7 +242,7 @@ describe('GroupCallFacade', () => {
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
         const peer = peerConnections[0];
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('current'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', usernameFragment: 'future', sdpMid: 'audio'}});
@@ -269,7 +269,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         const peer = peerConnections[0];
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('old'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ relay', usernameFragment: 'future', sdpMid: 'audio'}});
@@ -300,7 +300,7 @@ describe('GroupCallFacade', () => {
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
         const peer = peerConnections[0];
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('old'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ relay', usernameFragment: 'future', sdpMid: 'audio'}});
@@ -327,7 +327,7 @@ describe('GroupCallFacade', () => {
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
         const peer = peerConnections[0];
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('current'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', usernameFragment: 'future', sdpMid: 'audio'}});
@@ -347,7 +347,7 @@ describe('GroupCallFacade', () => {
         const peer = peerConnections[0];
         Object.defineProperty(peer, 'connectionState', {configurable: true, writable: true, value: 'connected'});
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         for (let i = 0; i < 135; i++) { signal({type: 'offer', sdp: iceSDP(`ice${i}`), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}); await tick(0); }
         for (let batch = 0; batch < 2; batch++) {
             const start = batch * 35;
@@ -381,7 +381,7 @@ describe('GroupCallFacade', () => {
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
         const peer = peerConnections[0];
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('current'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         Object.defineProperty(peer, 'connectionState', {configurable: true, writable: true, value: 'connected'});
@@ -399,7 +399,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         const peer = peerConnections[0];
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('current'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         const candidate = {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: 'audio', usernameFragment: 'future'};
@@ -418,7 +418,7 @@ describe('GroupCallFacade', () => {
         const participants = [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-a', device_id: 'device-a'}, {user_id: 'peer-b', device_id: 'device-b'}];
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, participants));
         await tick(0);
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal: value}});
         signal({type: 'offer', sdp: iceSDP('current'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         for (let i = 0; i < 65; i++) signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: 'audio', usernameFragment: 'unknown'}});
@@ -437,9 +437,9 @@ describe('GroupCallFacade', () => {
         let release: (() => void) | undefined;
         vi.spyOn(peerConnections[0], 'setRemoteDescription').mockReturnValue(new Promise<void>(resolve => { release = resolve; }));
         const signal = {type: 'offer' as const, sdp: iceSDP('future'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'};
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal}});
         await tick(0);
-        for (let i = 0; i < 64; i++) events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal}});
+        for (let i = 0; i < 64; i++) events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal}});
         await tick(0);
         expect(peerConnections[0].connectionState).toBe('closed');
         expect(peerConnections[1].connectionState).not.toBe('closed');
@@ -476,9 +476,9 @@ describe('GroupCallFacade', () => {
         await tick(0);
         let release: (() => void) | undefined;
         vi.spyOn(peerConnections[0], 'setRemoteDescription').mockReturnValue(new Promise<void>(resolve => { release = resolve; }));
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal: {type: 'offer', sdp: iceSDP('old'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal: {type: 'offer', sdp: iceSDP('old'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         await tick(0);
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal: {type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: 'audio', usernameFragment: 'old'}}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-a', from_device_id: 'device-a', signal: {type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: 'audio', usernameFragment: 'old'}}}});
         facade.abort('group-1');
         await facade.start('group-2', 'self-1');
         const started = room('group.call.started', 'active', 'group-2', 2, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-b', device_id: 'device-b'}]);
@@ -595,7 +595,7 @@ describe('GroupCallFacade', () => {
         vi.spyOn(peer, 'setLocalDescription').mockImplementation(async () => {
             Object.defineProperty(peer, 'currentLocalDescription', {configurable: true, value: {type: 'answer', sdp: iceSDP(local)}});
         });
-        const signal = (sdp: string): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'offer', sdp, negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        const signal = (sdp: string): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'offer', sdp, negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         signal(iceSDP('remote-old'));
         await tick(0);
         local = 'new';
@@ -620,7 +620,7 @@ describe('GroupCallFacade', () => {
         const peer = peerConnections[0];
         Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
         const add = vi.spyOn(peer, 'addIceCandidate');
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: 'audio', usernameFragment: 'ignored'}});
         await tick(0);
         signal({type: 'offer', sdp: iceSDP('ignored'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
@@ -634,7 +634,7 @@ describe('GroupCallFacade', () => {
         await facade.start('group-1', 'self-1');
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('reused'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'offer', sdp: iceSDP('reused').replace('abcdefghijklmnopqrstuv', 'zyxwvutsrqponmlkjihgfe'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf2'});
@@ -652,7 +652,7 @@ describe('GroupCallFacade', () => {
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
         const peer = peerConnections[0];
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         if (failure === 'media mismatch' || failure === 'browser rejection') {
             signal({type: 'offer', sdp: iceSDP('current'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
             await tick(0);
@@ -671,7 +671,7 @@ describe('GroupCallFacade', () => {
         await facade.start('group-1', 'self-1');
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [{user_id: 'self-1', device_id: 'device-1'}, {user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(0);
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', usernameFragment: 'future', sdpMid: 'audio'}}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', usernameFragment: 'future', sdpMid: 'audio'}}}});
         await tick(0);
         facade.end();
         await tick(15_000);
@@ -687,7 +687,7 @@ describe('GroupCallFacade', () => {
         let release: (() => void) | undefined;
         const add = vi.spyOn(peer, 'addIceCandidate');
         vi.spyOn(peer, 'setRemoteDescription').mockReturnValue(new Promise<void>(resolve => { release = resolve; }));
-        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
+        const signal = (value: GroupCallSignalEvent['payload']['signal']): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: value}});
         signal({type: 'offer', sdp: iceSDP('future'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'});
         await tick(0);
         signal({type: 'candidate', candidate: {candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', usernameFragment: 'future', sdpMid: 'audio'}});
@@ -707,9 +707,9 @@ describe('GroupCallFacade', () => {
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
         expect(request).toBeDefined();
         const payload = {...request.payload, ice_servers: [{urls: ['turn:new.example'], username: 'opaque', credential: 'opaque'}], ice_expires_at: new Date(Date.now() + 120000).toISOString()};
-        events.next({version: 3, type: 'group.call.credentials', request_id: 'stale', payload});
+        events.next({version: 4, type: 'group.call.credentials', request_id: 'stale', payload});
         expect(peerConnections[0].restartIce).not.toHaveBeenCalled();
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload});
         await tick(0);
         expect(peerConnections[0].setConfiguration).toHaveBeenCalledWith({iceServers: payload.ice_servers});
         expect(peerConnections[0].restartIce).toHaveBeenCalled();
@@ -725,7 +725,7 @@ describe('GroupCallFacade', () => {
         expect(requests).toHaveLength(4);
         expect(track.stop).not.toHaveBeenCalled();
         facade.end();
-        events.next({version: 3, type: 'group.call.credentials', request_id: requests[3].request_id, payload: {...requests[3].payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 60000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: requests[3].request_id, payload: {...requests[3].payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 60000).toISOString()}});
         await tick(30000);
         expect(facade.state.room).toBeUndefined();
         expect(send.mock.calls.map(([command]) => command).filter(command => command.type === 'group.call.credentials')).toHaveLength(4);
@@ -744,9 +744,9 @@ describe('GroupCallFacade', () => {
         const display = vi.fn().mockRejectedValue(new Error('cancelled'));
         Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {configurable: true, value: display});
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'offer', sdp: 'remote', negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'offer', sdp: 'remote', negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         const presentation = facade.startPresentation('720p');
         await tick(0);
         expect(remote).not.toHaveBeenCalled();
@@ -770,10 +770,10 @@ describe('GroupCallFacade', () => {
         const offer = vi.spyOn(peer, 'createOffer');
         vi.spyOn(peer, 'setRemoteDescription').mockImplementation(async () => { Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: 'stable'}); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         expect(offer).not.toHaveBeenCalled();
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
         await tick(0);
         expect(offer).toHaveBeenCalledTimes(1);
         facade.end();
@@ -791,10 +791,10 @@ describe('GroupCallFacade', () => {
             Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: description?.type === 'offer' ? 'have-local-offer' : 'stable'});
         });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         expect(offer).toHaveBeenCalledTimes(1);
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'offer', sdp: 'remote', negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'offer', sdp: 'remote', negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         await tick(0);
         expect(peer.setLocalDescription).toHaveBeenCalledWith({type: 'rollback'});
         expect(offer).toHaveBeenCalledTimes(2);
@@ -808,7 +808,7 @@ describe('GroupCallFacade', () => {
         acceptStarted(room('group.call.started', 'active', 'group-1', 1, 1, [self, remote]));
         await tick(0);
         const peer = peerConnections[0];
-        const signal = (sdp: string): void => events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp, negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        const signal = (sdp: string): void => events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp, negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         signal(iceSDP('initial'));
         await tick(0);
         expect(senders[0].replaceTrack).not.toHaveBeenCalled();
@@ -854,7 +854,7 @@ describe('GroupCallFacade', () => {
             Object.defineProperty(senders[0].sender, 'track', {configurable: true, writable: true, value: next});
             return Promise.resolve();
         });
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         await tick(0);
         const replacement = {kind: 'audio', enabled: true, readyState: 'live', stop: vi.fn()};
         vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValueOnce({getTracks: () => [replacement], getAudioTracks: () => [replacement]} as unknown as MediaStream);
@@ -883,7 +883,7 @@ describe('GroupCallFacade', () => {
         Object.defineProperty(peerConnections[0], 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
         let release: (() => void) | undefined;
         senders[0].replaceTrack.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         await tick(0);
         expect(senders[0].replaceTrack).toHaveBeenCalledWith(null);
         facade.abort('group-1');
@@ -903,7 +903,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         Object.defineProperty(peerConnections[0], 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
         senders[0].replaceTrack.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('reattachment failed'));
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         await tick(0);
         expect(peerConnections[0].connectionState).toBe('closed');
         expect(peerConnections[1].connectionState).not.toBe('closed');
@@ -922,7 +922,7 @@ describe('GroupCallFacade', () => {
         Object.defineProperty(peerConnections[0], 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
         let release: (() => void) | undefined;
         senders[0].replaceTrack.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: remote.user_id, from_device_id: remote.device_id, signal: {type: 'offer', sdp: iceSDP('restart'), negotiation_id: '8c72dd14-fafe-4e2d-9735-e09c37358bf1'}}});
         await tick(0);
         Object.defineProperty(track, 'readyState', {configurable: true, writable: true, value: 'ended'});
         release?.();
@@ -969,7 +969,7 @@ describe('GroupCallFacade', () => {
         }
         const signals = (mock: Mock): GroupCallSignalEvent[] => mock.mock.calls.map(([command]) => command).filter(command => command.type === 'group.call.signal');
         const deliver = (event: GroupCallSignalEvent, source: GroupCallParticipant, target: Subject<MessageSocketEvent>): void => {
-            target.next({version: 3, type: 'group.call.signal', payload: {room_id: event.payload.room_id, generation: event.payload.generation, from_user_id: source.user_id, from_device_id: source.device_id, signal: event.payload.signal}});
+            target.next({version: 4, type: 'group.call.signal', payload: {room_id: event.payload.room_id, generation: event.payload.generation, from_user_id: source.user_id, from_device_id: source.device_id, signal: event.payload.signal}});
         };
         await tick(0);
         deliver(signals(send)[0], self, otherEvents);
@@ -982,8 +982,8 @@ describe('GroupCallFacade', () => {
         const requestA = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
         const requestB = otherSend.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
         const credentials = {ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()};
-        events.next({version: 3, type: 'group.call.credentials', request_id: requestA.request_id, payload: {...requestA.payload, ...credentials}});
-        otherEvents.next({version: 3, type: 'group.call.credentials', request_id: requestB.request_id, payload: {...requestB.payload, ...credentials}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: requestA.request_id, payload: {...requestA.payload, ...credentials}});
+        otherEvents.next({version: 4, type: 'group.call.credentials', request_id: requestB.request_id, payload: {...requestB.payload, ...credentials}});
         await tick(0);
         const offerA = signals(send).at(-1);
         const offerB = signals(otherSend).at(-1);
@@ -1003,9 +1003,9 @@ describe('GroupCallFacade', () => {
         expect(senders[1].replaceTrack).not.toHaveBeenCalled();
         const addCandidate = vi.spyOn(a, 'addIceCandidate');
         const ignoredCandidate = {candidate: 'candidate:1 1 udp 2122260223 192.0.2.1 5000 typ host ufrag b-offer-1', sdpMid: 'audio', sdpMLineIndex: 0, usernameFragment: 'b-offer-1'};
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: other.user_id, from_device_id: other.device_id, signal: {type: 'candidate', candidate: ignoredCandidate}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: other.user_id, from_device_id: other.device_id, signal: {type: 'candidate', candidate: ignoredCandidate}}});
         if (offerB.payload.signal.type !== 'offer') throw new Error('Expected offer');
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: other.user_id, from_device_id: other.device_id, signal: {type: 'answer', sdp: 'stale', negotiation_id: offerB.payload.signal.negotiation_id}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: other.user_id, from_device_id: other.device_id, signal: {type: 'answer', sdp: 'stale', negotiation_id: offerB.payload.signal.negotiation_id}}});
         await tick(0);
         expect(a.connectionState).not.toBe('closed');
         expect(a.signalingState).toBe('have-local-offer');
@@ -1015,7 +1015,7 @@ describe('GroupCallFacade', () => {
         await tick(0);
         // An ICE candidate for the ignored collision can arrive after the
         // accepted answer; it must not be passed to the live peer.
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: other.user_id, from_device_id: other.device_id, signal: {type: 'candidate', candidate: ignoredCandidate}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: other.user_id, from_device_id: other.device_id, signal: {type: 'candidate', candidate: ignoredCandidate}}});
         await tick(0);
         expect(addCandidate).not.toHaveBeenCalled();
         expect(a.connectionState).not.toBe('closed');
@@ -1023,7 +1023,7 @@ describe('GroupCallFacade', () => {
         const retried = signals(otherSend).at(-1);
         if (!retried || retried.payload.signal.type !== 'offer' || responses[1].payload.signal.type !== 'offer') throw new Error('Expected restart retry');
         expect(retried.payload.signal.negotiation_id).not.toBe(responses[1].payload.signal.negotiation_id);
-        otherEvents.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: self.user_id, from_device_id: self.device_id, signal: {type: 'answer', sdp: 'stale', negotiation_id: responses[1].payload.signal.negotiation_id}}});
+        otherEvents.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: self.user_id, from_device_id: self.device_id, signal: {type: 'answer', sdp: 'stale', negotiation_id: responses[1].payload.signal.negotiation_id}}});
         await tick(0);
         expect(b.signalingState).toBe('have-local-offer');
         deliver(retried, other, events);
@@ -1061,7 +1061,7 @@ describe('GroupCallFacade', () => {
         const old = peerConnections[0];
         vi.mocked(old.setConfiguration).mockImplementation(() => { throw new Error('transient'); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(7000);
         expect(old.setConfiguration).toHaveBeenCalledTimes(4);
         expect(track.stop).not.toHaveBeenCalled();
@@ -1085,7 +1085,7 @@ describe('GroupCallFacade', () => {
         const old = peerConnections[0];
         vi.mocked(old.setConfiguration).mockImplementation(() => { throw new Error('transient'); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         events.next(room('group.call.participant.left', 'active', 'group-1', 1, 2, [self]));
         events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 3, [self, other]));
@@ -1104,7 +1104,7 @@ describe('GroupCallFacade', () => {
         const peer = peerConnections[0];
         const offer = vi.spyOn(peer, 'createOffer').mockReturnValue(Promise.reject(new Error('transient')) as never);
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(1000);
         expect(offer).toHaveBeenCalledTimes(2);
         expect(track.stop).not.toHaveBeenCalled();
@@ -1121,7 +1121,7 @@ describe('GroupCallFacade', () => {
         await tick(3000);
         vi.mocked(peerConnections[0].setConfiguration).mockImplementation(() => { throw new Error('transient'); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(1000);
         expect(peerConnections[0].setConfiguration).toHaveBeenCalledTimes(2);
         expect(peerConnections[1].setConfiguration).toHaveBeenCalledTimes(1);
@@ -1143,7 +1143,7 @@ describe('GroupCallFacade', () => {
         Object.defineProperty(second, 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
         vi.spyOn(second, 'setRemoteDescription').mockImplementation(async () => { Object.defineProperty(second, 'signalingState', {configurable: true, writable: true, value: 'stable'}); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         const ack = () => {
             const sync = [...send.mock.calls].reverse().map(([command]) => command).find(command => command.type === 'group.call.sync');
             if (sync) events.next(synced(sync.request_id, {participants}));
@@ -1161,12 +1161,12 @@ describe('GroupCallFacade', () => {
         expect(first.restartIce).toHaveBeenCalled();
         expect(facade.state.statusLabel).toContain('Retrying automatically');
         Object.defineProperty(first, 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-2', from_device_id: 'peer-2', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-2')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-2', from_device_id: 'peer-2', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-2')}}});
         await tick(0);
         expect(facade.state.statusLabel).toContain('Retrying automatically');
         Object.defineProperty(second, 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-2', from_device_id: 'peer-2', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-2')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-2', from_device_id: 'peer-2', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-2')}}});
         await tick(0);
         expect(facade.state.statusLabel).not.toContain('Retrying automatically');
         expect(senders[0].replaceTrack).not.toHaveBeenCalled();
@@ -1184,7 +1184,7 @@ describe('GroupCallFacade', () => {
         const peer = peerConnections[0];
         vi.mocked(peer.setConfiguration).mockImplementationOnce(() => { throw new Error('transient'); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         expect(facade.state.statusLabel).toContain('Retrying automatically');
         const servers = [{urls: ['turn:new.example'], username: 'opaque', credential: 'opaque'}];
@@ -1195,7 +1195,7 @@ describe('GroupCallFacade', () => {
         expect(peer.setConfiguration).toHaveBeenLastCalledWith({iceServers: servers});
         expect(facade.state.statusLabel).toContain('Retrying automatically');
         Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: 'have-local-offer'});
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
         await tick(0);
         expect(facade.state.statusLabel).not.toContain('Retrying automatically');
         facade.end();
@@ -1222,7 +1222,7 @@ describe('GroupCallFacade', () => {
             return true;
         });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         const offers = () => send.mock.calls.map(([command]) => command).filter(command => command.type === 'group.call.signal' && command.payload.signal.type === 'offer');
         const initial = offers().at(-1);
@@ -1234,7 +1234,7 @@ describe('GroupCallFacade', () => {
         expect(peer.setLocalDescription).toHaveBeenCalledWith({type: 'rollback'});
         expect(offers().length).toBeGreaterThanOrEqual(2);
         expect(facade.state.statusLabel).toContain('Retrying automatically');
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
         await tick(0);
         expect(facade.state.statusLabel).not.toContain('Retrying automatically');
         expect(senders[0].replaceTrack).toHaveBeenNthCalledWith(1, null);
@@ -1261,7 +1261,7 @@ describe('GroupCallFacade', () => {
         });
         vi.spyOn(peer, 'setRemoteDescription').mockImplementation(async () => { Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: 'stable'}); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         const oldID = lastOfferID('peer-1');
         const newer = room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants);
@@ -1276,10 +1276,10 @@ describe('GroupCallFacade', () => {
         peer.onicecandidate?.call(peer, {candidate: stale} as RTCPeerConnectionIceEvent);
         expect(send.mock.calls).toHaveLength(beforeStale);
         expect(facade.state.errorLabel).toBeUndefined();
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: oldID}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: oldID}}});
         await tick(0);
         expect(senders[0].replaceTrack).not.toHaveBeenCalled();
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: nextID}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: nextID}}});
         await tick(0);
         expect(senders[0].replaceTrack).toHaveBeenNthCalledWith(1, null);
         expect(senders[0].replaceTrack).toHaveBeenNthCalledWith(2, track);
@@ -1304,7 +1304,7 @@ describe('GroupCallFacade', () => {
         });
         vi.spyOn(peer, 'setRemoteDescription').mockImplementation(async () => { Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: 'stable'}); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         const next = room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants);
         events.next({...next, payload: {...next.payload, ice_expires_at: new Date(Date.now() + 180000).toISOString()}});
@@ -1314,7 +1314,7 @@ describe('GroupCallFacade', () => {
         events.next({...latest, payload: {...latest.payload, ice_expires_at: new Date(Date.now() + 240000).toISOString()}});
         release?.();
         await tick(0);
-        events.next({version: 3, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
+        events.next({version: 4, type: 'group.call.signal', payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer', sdp: 'answer', negotiation_id: lastOfferID('peer-1')}}});
         await tick(0);
         expect(senders[0].replaceTrack).toHaveBeenNthCalledWith(1, null);
         expect(senders[0].replaceTrack).toHaveBeenNthCalledWith(2, track);
@@ -1337,7 +1337,7 @@ describe('GroupCallFacade', () => {
             return Promise.resolve();
         });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         const next = room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants);
         events.next({...next, payload: {...next.payload, ice_expires_at: new Date(Date.now() + 180000).toISOString()}});
@@ -1364,7 +1364,7 @@ describe('GroupCallFacade', () => {
             Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: description.type === 'offer' ? 'have-local-offer' : 'stable'});
         });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         const old = [...send.mock.calls].reverse().map(([command]) => command).find(command => command.type === 'group.call.signal' && command.payload.signal.type === 'offer');
         const next = room('group.call.participant.joined', 'active', 'group-1', 1, 2, participants);
@@ -1391,13 +1391,13 @@ describe('GroupCallFacade', () => {
         });
         const remote = vi.spyOn(peer, 'setRemoteDescription').mockImplementation(async () => { Object.defineProperty(peer, 'signalingState', {configurable: true, writable: true, value: 'stable'}); });
         const request = send.mock.calls.map(([command]) => command).find(command => command.type === 'group.call.credentials');
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         await tick(0);
         const first = lastOfferID('peer-1');
         await tick(9000);
         const second = lastOfferID('peer-1');
         expect(first).not.toBe(second);
-        const answer = (id: string) => ({version: 3 as const, type: 'group.call.signal' as const, payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer' as const, sdp: 'answer', negotiation_id: id}}});
+        const answer = (id: string) => ({version: 4 as const, type: 'group.call.signal' as const, payload: {room_id: 'room-1', generation: 1, from_user_id: 'peer-1', from_device_id: 'peer-1', signal: {type: 'answer' as const, sdp: 'answer', negotiation_id: id}}});
         events.next(answer(first));
         events.next(answer('INVALID'));
         await tick(0);
@@ -1458,7 +1458,7 @@ describe('GroupCallFacade', () => {
         await tick(7000);
         expect(credentials()).toHaveLength(5);
         const request = credentials()[4];
-        events.next({version: 3, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: request.request_id, payload: {...request.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         expect(facade.state.statusLabel).not.toContain('Retrying automatically');
         expect(facade.state.phase).toBe('active');
         facade.end();
@@ -1478,7 +1478,7 @@ describe('GroupCallFacade', () => {
         events.next({...unchanged, payload: {...unchanged.payload, ice_expires_at: expiry}});
         await tick(2000);
         expect(commands()).toHaveLength(2);
-        events.next({version: 3, type: 'group.call.credentials', request_id: first.request_id, payload: {...first.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
+        events.next({version: 4, type: 'group.call.credentials', request_id: first.request_id, payload: {...first.payload, ice_servers: [], ice_expires_at: new Date(Date.now() + 120000).toISOString()}});
         expect(facade.state.statusLabel).toContain('Retrying automatically');
         facade.end();
         await tick(30000);
@@ -1500,7 +1500,7 @@ describe('GroupCallFacade', () => {
         events.next(room('group.call.started', 'ringing', 'group-1', 1, 1, [{user_id: 'peer-1', device_id: 'peer-1'}]));
         await tick(10000);
         const request = sentRequestID('group.call.discover');
-        events.next({version: 3, type: 'group.call.discovered', request_id: request, payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: request, payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.phase).toBe('ended');
         expect(facade.state.room).toBeUndefined();
         expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
@@ -1517,13 +1517,13 @@ describe('GroupCallFacade', () => {
         await tick(10000);
         const first = sentRequestID('group.call.discover');
         events.next(room('group.call.participant.joined', 'active', 'group-1', 1, 2, [peer]));
-        events.next({version: 3, type: 'group.call.discovered', request_id: first, payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: first, payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.phase).toBe('ringing');
         await tick(10000);
         const second = sentRequestID('group.call.discover', 1);
-        events.next({version: 3, type: 'group.call.discovered', request_id: first, payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: first, payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.phase).toBe('ringing');
-        events.next({version: 3, type: 'group.call.discovered', request_id: second, payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: second, payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.phase).toBe('ended');
     }));
 
@@ -1544,7 +1544,7 @@ describe('GroupCallFacade', () => {
         ready.next(true);
         await tick(0);
         expect(send.mock.calls.filter(([command]) => command.type === 'group.call.discover')).toHaveLength(3);
-        events.next({version: 3, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover', 2), payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover', 2), payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.phase).toBe('ended');
         expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
     }));
@@ -1574,7 +1574,7 @@ describe('GroupCallFacade', () => {
         events.next(room('group.call.ended', 'ended', 'group-1', 1, 2, [{user_id: 'peer-1', device_id: 'peer-1'}]));
         const next = room('group.call.started', 'ringing', 'group-2', 2, 1, [{user_id: 'peer-2', device_id: 'peer-2'}]);
         events.next({...next, payload: {...next.payload, room_id: 'room-2'}});
-        events.next({version: 3, type: 'group.call.discovered', request_id: first, payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: first, payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.room?.room_id).toBe('room-2');
         await tick(10000);
         expect(send.mock.calls.filter(([command]) => command.type === 'group.call.discover')).toHaveLength(2);
@@ -1589,10 +1589,10 @@ describe('GroupCallFacade', () => {
         const ended = room('group.call.ended', 'ended', 'group-1', 1, 2, [peer]).payload;
         const {ice_servers: _servers, ice_expires_at: _expiry, ...snapshot} = ended;
         await tick(10000);
-        events.next({version: 3, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover'), payload: {conversation_id: 'group-1', room: snapshot}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover'), payload: {conversation_id: 'group-1', room: snapshot}});
         expect(facade.state.phase).toBe('ringing');
         await tick(10000);
-        events.next({version: 3, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover', 1), payload: {conversation_id: 'group-1', room: {...snapshot, state_revision: 4}}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: sentRequestID('group.call.discover', 1), payload: {conversation_id: 'group-1', room: {...snapshot, state_revision: 4}}});
         expect(facade.state.phase).toBe('ended');
     }));
 
@@ -1604,7 +1604,7 @@ describe('GroupCallFacade', () => {
         let resolveMedia: ((stream: MediaStream) => void) | undefined;
         vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValue(new Promise(resolve => { resolveMedia = resolve; }));
         const join = facade.join(incoming.payload, 'self-1');
-        events.next({version: 3, type: 'group.call.discovered', request_id: observerRequest, payload: {conversation_id: 'group-1', room: null}});
+        events.next({version: 4, type: 'group.call.discovered', request_id: observerRequest, payload: {conversation_id: 'group-1', room: null}});
         expect(facade.state.phase).toBe('requesting');
         resolveMedia?.({getTracks: () => [track], getAudioTracks: () => [track]} as unknown as MediaStream);
         await join;

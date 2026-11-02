@@ -108,8 +108,8 @@ func TestGroupStartAttemptCommands(t *testing.T) {
 	hub.Add(context.Background(), owner)
 	hub.Add(context.Background(), peer)
 	command := func(client Client, event string, id uuid.UUID) error {
-		payload := fmt.Sprintf(`{"version":3,"type":%q,"request_id":"req","payload":{"conversation_id":%q,"attempt_id":%q}}`, event, conversation, id)
-		return hub.HandleVersion(context.Background(), client, 3, []byte(payload))
+		payload := fmt.Sprintf(`{"version":4,"type":%q,"request_id":"req","payload":{"conversation_id":%q,"attempt_id":%q}}`, event, conversation, id)
+		return hub.HandleVersion(context.Background(), client, 4, []byte(payload))
 	}
 	if err := command(owner, "group.call.start", uuid.Nil); err == nil {
 		t.Fatal("unfenced start accepted")

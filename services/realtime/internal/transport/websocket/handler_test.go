@@ -147,7 +147,7 @@ func TestServeHTTPClosesConnectionForInvalidBinaryAndOversizedFrames(t *testing.
 		payload     []byte
 		closeCode   int
 	}{
-		{name: "binary", messageType: websocket.BinaryMessage, payload: []byte(`{"version":3}`), closeCode: websocket.CloseUnsupportedData},
+		{name: "binary", messageType: websocket.BinaryMessage, payload: []byte(`{"version":4}`), closeCode: websocket.CloseUnsupportedData},
 		{name: "invalid json", messageType: websocket.TextMessage, payload: []byte("{"), closeCode: websocket.CloseUnsupportedData},
 		{name: "v1 protocol", messageType: websocket.TextMessage, payload: []byte(`{"version":2,"type":"presence.refresh"}`), closeCode: websocket.CloseUnsupportedData},
 		{name: "oversized", messageType: websocket.TextMessage, payload: bytes.Repeat([]byte("x"), maxFrameSize+1), closeCode: websocket.CloseMessageTooBig},
@@ -189,22 +189,22 @@ func TestServeHTTPClosesConnectionForInvalidBinaryAndOversizedFrames(t *testing.
 	}
 }
 
-func TestWSV3RouteRejectsVersionTwoFrames(t *testing.T) {
+func TestWSV4RouteRejectsVersionThreeFrames(t *testing.T) {
 	secret := []byte("01234567890123456789012345678901")
 	mux := http.NewServeMux()
-	mux.Handle("GET /ws/v3", newNetworkHandler(secret, &networkTicketConsumer{allow: true}))
+	mux.Handle("GET /ws/v4", newNetworkHandler(secret, &networkTicketConsumer{allow: true}))
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
 	conn, response, err := (&websocket.Dialer{HandshakeTimeout: time.Second}).Dial(
-		websocketURL(server.URL+"/ws/v3", signedTicket(t, secret, "websocket", time.Now().Add(time.Minute))),
+		websocketURL(server.URL+"/ws/v4", signedTicket(t, secret, "websocket", time.Now().Add(time.Minute))),
 		http.Header{"Origin": []string{"https://chat.localhost"}},
 	)
 	if err != nil {
 		if response != nil {
 			response.Body.Close()
 		}
-		t.Fatalf("websocket upgrade on /ws/v3: %v", err)
+		t.Fatalf("websocket upgrade on /ws/v4: %v", err)
 	}
 	defer conn.Close()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -217,8 +217,49 @@ func TestWSV3RouteRejectsVersionTwoFrames(t *testing.T) {
 	var snapshot struct {
 		Version int `json:"version"`
 	}
-	if err := json.Unmarshal(initial, &snapshot); err != nil || snapshot.Version != 3 {
-		t.Fatalf("initial event version = %d, decode error = %v; want 3", snapshot.Version, err)
+	if err := json.Unmarshal(initial, &snapshot); err != nil || snapshot.Version != 4 {
+		t.Fatalf("initial event version = %d, decode error = %v; want 4", snapshot.Version, err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"version":3,"type":"presence.refresh"}`)); err != nil {
+		t.Fatalf("write v3 frame: %v", err)
+	}
+	_, _, err = conn.ReadMessage()
+	var closeError *websocket.CloseError
+	if !errors.As(err, &closeError) || closeError.Code != websocket.CloseUnsupportedData {
+		t.Fatalf("read rejection = %v, want unsupported-data close", err)
+	}
+}
+
+func TestWSV4RouteRejectsVersionTwoFrames(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	mux := http.NewServeMux()
+	mux.Handle("GET /ws/v4", newNetworkHandler(secret, &networkTicketConsumer{allow: true}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	conn, response, err := (&websocket.Dialer{HandshakeTimeout: time.Second}).Dial(
+		websocketURL(server.URL+"/ws/v4", signedTicket(t, secret, "websocket", time.Now().Add(time.Minute))),
+		http.Header{"Origin": []string{"https://chat.localhost"}},
+	)
+	if err != nil {
+		if response != nil {
+			response.Body.Close()
+		}
+		t.Fatalf("websocket upgrade on /ws/v4: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, initial, err := conn.ReadMessage() // initial presence snapshot
+	if err != nil {
+		t.Fatalf("read initial event: %v", err)
+	}
+	var snapshot struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(initial, &snapshot); err != nil || snapshot.Version != 4 {
+		t.Fatalf("initial event version = %d, decode error = %v; want 4", snapshot.Version, err)
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"version":2,"type":"presence.refresh"}`)); err != nil {
 		t.Fatalf("write v2 frame: %v", err)
@@ -230,7 +271,7 @@ func TestWSV3RouteRejectsVersionTwoFrames(t *testing.T) {
 	}
 }
 
-func TestServeHTTPReturnsVersionTwoRejectionForRejectedGroupCall(t *testing.T) {
+func TestServeHTTPReturnsV4RejectionForRejectedGroupCall(t *testing.T) {
 	secret := []byte("01234567890123456789012345678901")
 	consumer := &networkTicketConsumer{allow: true}
 	handler := NewHandler(
@@ -258,7 +299,7 @@ func TestServeHTTPReturnsVersionTwoRejectionForRejectedGroupCall(t *testing.T) {
 	if _, _, err := conn.ReadMessage(); err != nil { // initial presence snapshot
 		t.Fatalf("read initial event: %v", err)
 	}
-	command := []byte(`{"version":3,"type":"group.call.start","request_id":"group-start-v2","payload":{"conversation_id":"` + uuid.NewString() + `"}}`)
+	command := []byte(`{"version":4,"type":"group.call.start","request_id":"group-start-v4","payload":{"conversation_id":"` + uuid.NewString() + `"}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, command); err != nil {
 		t.Fatal(err)
 	}
@@ -274,8 +315,8 @@ func TestServeHTTPReturnsVersionTwoRejectionForRejectedGroupCall(t *testing.T) {
 	if err := json.Unmarshal(payload, &rejection); err != nil {
 		t.Fatalf("decode rejection: %v", err)
 	}
-	if rejection.Version != 3 || rejection.Type != "call.rejected" || rejection.RequestID != "group-start-v2" {
-		t.Fatalf("rejection = %+v, want v3 call.rejected for request group-start-v2", rejection)
+	if rejection.Version != 4 || rejection.Type != "call.rejected" || rejection.RequestID != "group-start-v4" {
+		t.Fatalf("rejection = %+v, want v4 call.rejected for request group-start-v4", rejection)
 	}
 }
 
@@ -293,15 +334,15 @@ func TestReadPumpOmitsPerFrameInfoLogsForCallSignals(t *testing.T) {
 	}{
 		{
 			name:    "direct call signal",
-			command: `{"version":3,"type":"call.signal","request_id":"signal-direct","payload":{"signal":"private-signal-marker"}}`,
+			command: `{"version":4,"type":"call.signal","request_id":"signal-direct","payload":{"signal":"private-signal-marker"}}`,
 		},
 		{
 			name:    "group call signal",
-			command: `{"version":3,"type":"group.call.signal","request_id":"signal-group","payload":{"signal":"private-signal-marker"}}`,
+			command: `{"version":4,"type":"group.call.signal","request_id":"signal-group","payload":{"signal":"private-signal-marker"}}`,
 		},
 		{
 			name:    "call lifecycle command",
-			command: `{"version":3,"type":"call.start","request_id":"call-lifecycle","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
+			command: `{"version":4,"type":"call.start","request_id":"call-lifecycle","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
 			wantLog: true,
 		},
 	}
@@ -360,41 +401,41 @@ func TestServeHTTPRejectsScreenShareSignalsWithExtraWebRTCFields(t *testing.T) {
 	}{
 		{
 			name:     "direct call",
-			protocol: 3,
-			request:  "direct-screen-share-v2",
-			command:  `{"version":3,"type":"call.signal","request_id":"direct-screen-share-v2","payload":{"call_id":"` + uuid.NewString() + `","signal":{"type":"screen-share-started","sdp":"` + sdpValue + `","candidate":{"candidate":"` + candidateValue + `"}}}}`,
+			protocol: 4,
+			request:  "direct-screen-share-v4",
+			command:  `{"version":4,"type":"call.signal","request_id":"direct-screen-share-v4","payload":{"call_id":"` + uuid.NewString() + `","signal":{"type":"screen-share-started","sdp":"` + sdpValue + `","candidate":{"candidate":"` + candidateValue + `"}}}}`,
 		},
 		{
-			name:     "v2 group call",
-			protocol: 3,
-			request:  "group-screen-share-v2",
-			command:  `{"version":3,"type":"group.call.signal","request_id":"group-screen-share-v2","payload":{"conversation_id":"` + uuid.NewString() + `","room_id":"` + uuid.NewString() + `","generation":1,"target_user_id":"` + uuid.NewString() + `","target_device_id":"peer-device","signal":{"type":"screen-share-stopped","sdp":"` + sdpValue + `","candidate":{"candidate":"` + candidateValue + `"}}}}`,
+			name:     "v4 group call",
+			protocol: 4,
+			request:  "group-screen-share-v4",
+			command:  `{"version":4,"type":"group.call.signal","request_id":"group-screen-share-v4","payload":{"conversation_id":"` + uuid.NewString() + `","room_id":"` + uuid.NewString() + `","generation":1,"target_user_id":"` + uuid.NewString() + `","target_device_id":"peer-device","signal":{"type":"screen-share-stopped","sdp":"` + sdpValue + `","candidate":{"candidate":"` + candidateValue + `"}}}}`,
 		},
 		{
-			name:           "v2 rejected group start includes support reference",
-			protocol:       3,
+			name:           "v4 rejected group start includes support reference",
+			protocol:       4,
 			request:        "group-start-support-ref",
-			command:        `{"version":3,"type":"group.call.start","request_id":"group-start-support-ref","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
+			command:        `{"version":4,"type":"group.call.start","request_id":"group-start-support-ref","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
 			wantSupportRef: true,
 		},
 		{
 			name:             "invalid direct start UUID omits support reference",
-			protocol:         3,
+			protocol:         4,
 			request:          "invalid-direct-start-uuid",
 			requestIDOmitted: true,
-			command:          `{"version":3,"type":"call.start","request_id":"invalid-direct-start-uuid","payload":{"conversation_id":"not-a-uuid"}}`,
+			command:          `{"version":4,"type":"call.start","request_id":"invalid-direct-start-uuid","payload":{"conversation_id":"not-a-uuid"}}`,
 		},
 		{
 			name:     "missing direct start conversation omits support reference",
-			protocol: 3,
+			protocol: 4,
 			request:  "missing-direct-start-conversation",
-			command:  `{"version":3,"type":"call.start","request_id":"missing-direct-start-conversation","payload":{}}`,
+			command:  `{"version":4,"type":"call.start","request_id":"missing-direct-start-conversation","payload":{}}`,
 		},
 		{
 			name:           "valid direct start rejected by business logic includes support reference",
-			protocol:       3,
+			protocol:       4,
 			request:        "valid-direct-start-rejected",
-			command:        `{"version":3,"type":"call.start","request_id":"valid-direct-start-rejected","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
+			command:        `{"version":4,"type":"call.start","request_id":"valid-direct-start-rejected","payload":{"conversation_id":"` + uuid.NewString() + `"}}`,
 			wantSupportRef: true,
 		},
 	}
@@ -614,7 +655,7 @@ func TestSendJSONQueueOverflowDefersCleanupUntilGroupStripeIsReleased(t *testing
 		conn := &client{
 			socket: socket, identity: identity, hub: hub, send: make(chan []byte, 16),
 			closeRequest: make(chan struct{}, 1), budget: budget, connectionID: "connection",
-			protocol: 3,
+			protocol: 4,
 		}
 		hub.Add(r.Context(), conn)
 		clientReady <- conn
@@ -726,4 +767,79 @@ func (r sessionVersionRow) Scan(dest ...any) error {
 	}
 	*dest[0].(*bool) = r.version == 3
 	return nil
+}
+
+func TestMalformedReplyPayloadCorrelatesRejection(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	server := httptest.NewServer(newNetworkHandler(secret, &networkTicketConsumer{allow: true}))
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURL(server.URL, signedTicket(t, secret, "websocket", time.Now().Add(time.Minute))), http.Header{"Origin": []string{"https://chat.localhost"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{`[]`, `"bad"`} {
+		frame := `{"version":4,"type":"message.reply.send","request_id":"correlated","payload":` + payload + `}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		var event struct {
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+		}
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != "message.rejected" || event.RequestID != "correlated" {
+			t.Fatalf("rejection = %+v", event)
+		}
+	}
+	frame := `{"version":4,"type":"message.reply.send","request_id":"duplicate","payload":{},"payload":{}}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+		t.Fatal(err)
+	}
+	var duplicate struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+	}
+	if err := conn.ReadJSON(&duplicate); err != nil || duplicate.Type != "message.rejected" || duplicate.RequestID != "" {
+		t.Fatalf("duplicate payload rejection = %+v, err = %v", duplicate, err)
+	}
+	for _, fields := range []string{
+		`"request_id":"first","request_id":"second"`,
+		`"request_id":"first","REQUEST_ID":"second"`,
+		`"request_id":"first","type":"message.reply.send"`,
+		`"request_id":"first","TYPE":"message.reply.send"`,
+		`"request_id":"first","TYPE":"call.signal"`,
+		`"request_id":"first","version":4`,
+		`"request_id":"first","VERSION":4`,
+	} {
+		frame := `{"version":4,"type":"message.reply.send",` + fields + `,"payload":{}}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+		}
+		if err := conn.ReadJSON(&got); err != nil || (got.Type != "message.rejected" && got.Type != "call.rejected") || got.RequestID != "" {
+			t.Fatalf("ambiguous envelope rejection = %+v, err = %v", got, err)
+		}
+	}
+	for _, payload := range []string{`[]`, `"bad"`} {
+		frame := `{"version":4,"type":"message.reply.send","request_id":"first","REQUEST_ID":"second","payload":` + payload + `}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := conn.ReadJSON(&got); err != nil || got.RequestID != "" {
+			t.Fatalf("ambiguous malformed rejection = %+v, err = %v", got, err)
+		}
+	}
 }

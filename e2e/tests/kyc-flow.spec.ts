@@ -11,13 +11,24 @@ function uniqueEmail(name: string): string {
   return `e2e-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.test`;
 }
 
+async function expectNoVisibleNotchSeam(page: Page, selector: string, context: string): Promise<void> {
+  const seams = await page.locator(`${selector} .mdc-notched-outline__notch`).evaluateAll(elements => elements.map(element => {
+    const color = getComputedStyle(element).borderLeftColor;
+    return {color, alpha: color.match(/[\d.]+/g)?.map(Number)?.[3] ?? 1};
+  }));
+  expect(seams.length, `${context}: expected notched outline segments`).toBeGreaterThan(0);
+  for (const seam of seams) expect(seam.alpha, `${context}: ${JSON.stringify(seam)}`).toBe(0);
+}
+
 async function fillRegistration(page: Page, email: string): Promise<void> {
   await page.locator('[formControlName="email"]').fill(email);
   await page.locator('[formControlName="firstName"]').fill('Kyc');
   await page.locator('[formControlName="lastName"]').fill('Test');
   await page.locator('[formControlName="nickName"]').fill('Kyc Test');
-  await page.locator('[formControlName="password"]').fill(password);
-  await page.locator('[formControlName="confirmPassword"]').fill(password);
+  if (await page.locator('[formControlName="password"]').count()) {
+    await page.locator('[formControlName="password"]').fill(password);
+    await page.locator('[formControlName="confirmPassword"]').fill(password);
+  }
 }
 
 async function register(page: Page, email: string, invitationCode?: string): Promise<{status: number; accessToken?: string}> {
@@ -27,16 +38,20 @@ async function register(page: Page, email: string, invitationCode?: string): Pro
   const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   const response = await responsePromise;
+  if (invitationCode) expect(response.request().postDataJSON()).toHaveProperty('password', password);
+  else expect(response.request().postDataJSON()).not.toHaveProperty('password');
   const payload = await response.json() as {access_token?: string};
   return {status: response.status(), accessToken: payload.access_token};
 }
 
 async function registerFromInvitationLink(page: Page, email: string, link: string): Promise<{status: number; accessToken?: string}> {
   await page.goto(link);
+  await expect(page.locator('[formControlName="password"]')).toBeVisible();
   await fillRegistration(page, email);
   const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
   await page.getByRole('button', {name: 'Create account'}).click();
   const response = await responsePromise;
+  expect(response.request().postDataJSON()).toHaveProperty('password', password);
   const payload = await response.json() as {access_token?: string};
   return {status: response.status(), accessToken: payload.access_token};
 }
@@ -117,11 +132,6 @@ async function reloadAdmin(page: Page): Promise<void> {
   await restoreSession(page, () => page.reload(), 'admin');
 }
 
-async function activationLink(request: APIRequestContext, email: string): Promise<string> {
-  const links = await activationLinks(request, email);
-  return links[0];
-}
-
 async function activationLinks(request: APIRequestContext, email: string, minimum = 1): Promise<string[]> {
   let links: string[] = [];
   await expect.poll(async () => {
@@ -133,13 +143,26 @@ async function activationLinks(request: APIRequestContext, email: string, minimu
     links = [];
     for (const detail of details) {
       if (!detail.ok()) continue;
-      const text = JSON.stringify(await detail.json());
-      const link = text.match(/https:\/\/chat\.localhost\/activate\?token=[A-Za-z0-9_-]+/)?.[0];
-      if (link) links.push(link);
+      const text = JSON.stringify(await detail.json()).replace(/\\\//g, '/').replace(/&amp;/g, '&').replace(/%23/gi, '#');
+      const link = text.match(/https:\/\/chat\.localhost\/activate#setup=[A-Za-z0-9_-]{43}/)?.[0];
+      if (link && !links.includes(link)) links.push(link);
     }
     return links.length;
   }, {timeout: 10_000}).toBeGreaterThanOrEqual(minimum);
   return links;
+}
+
+async function setupLink(request: APIRequestContext, email: string): Promise<string> {
+  const link = (await activationLinks(request, email))[0];
+  if (typeof link !== 'string' || !link.startsWith('https://chat.localhost/activate#setup=')) {
+    throw new Error('Mailpit did not return a valid password setup URL');
+  }
+  return link;
+}
+
+async function setPassword(page: Page): Promise<void> {
+  await page.locator('[formControlName="password"]').fill(password);
+  await page.locator('[formControlName="confirmPassword"]').fill(password);
 }
 
 async function invitationLink(request: APIRequestContext, email: string): Promise<string> {
@@ -371,38 +394,266 @@ test('pending registration, admin approval, activation email, and blocked login'
   const pendingEmail = uniqueEmail('pending');
   const userContext = await browser.newContext();
   const user = await userContext.newPage();
-  const registration = await register(user, pendingEmail);
-  expect(registration.status).toBe(202);
+  await user.goto('/sign-up');
+  for (const theme of ['dark', 'light'] as const) {
+    for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+      // Each matrix cell starts with a new ordinary signup form so a previous focus
+      // or validation interaction cannot leak into its pristine-state capture.
+      await user.goto('/sign-up');
+      await user.evaluate(selectedTheme => {
+        document.documentElement.classList.toggle('dark-theme', selectedTheme === 'dark');
+        document.body.classList.toggle('dark-theme', selectedTheme === 'dark');
+        document.documentElement.classList.toggle('light-theme', selectedTheme === 'light');
+        document.body.classList.toggle('light-theme', selectedTheme === 'light');
+      }, theme);
+      await expect(user.locator('html')).toHaveClass(new RegExp(`${theme}-theme`));
+      await user.setViewportSize(viewport);
+      await expect(user.locator('[formControlName="password"]')).toHaveCount(0);
+      const signupFields = user.locator('.auth-form input[formControlName]');
+      await expect(signupFields).toHaveCount(4);
+      for (const field of await signupFields.all()) {
+        await expect(field).toHaveValue('');
+        await expect(field).toHaveClass(/ng-untouched/);
+        await expect(field).toHaveClass(/ng-pristine/);
+      }
+      await expect(user.locator('.auth-form mat-error:visible')).toHaveCount(0);
+      await expect(user.locator('.auth-form [role="alert"]')).toHaveCount(0);
+      const signupGeometry = await user.evaluate(() => {
+        const form = document.querySelector<HTMLElement>('.auth-form');
+        const card = document.querySelector<HTMLElement>('.auth-card');
+        const rect = form?.getBoundingClientRect();
+        const cardRect = card?.getBoundingClientRect();
+        const controls = Array.from(form?.querySelectorAll<HTMLElement>('input, button') ?? []).map(control => {
+          const bounds = control.getBoundingClientRect();
+          return {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom};
+        });
+        return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+          left: rect?.left ?? -1, right: rect?.right ?? Number.MAX_SAFE_INTEGER,
+          cardLeft: cardRect?.left ?? -1, cardRight: cardRect?.right ?? Number.MAX_SAFE_INTEGER,
+          controlContainment: controls.map(control => ({insideForm: !!rect && control.left >= rect.left - 1 && control.right <= rect.right + 1,
+            insideViewport: control.left >= 0 && control.right <= document.documentElement.clientWidth + 1,
+            top: control.top, bottom: control.bottom}))};
+      });
+      expect(signupGeometry.documentWidth).toBeLessThanOrEqual(signupGeometry.viewportWidth + 1);
+      expect(signupGeometry.left).toBeGreaterThanOrEqual(0);
+      expect(signupGeometry.right).toBeLessThanOrEqual(signupGeometry.viewportWidth + 1);
+      expect(signupGeometry.cardLeft).toBeGreaterThanOrEqual(0);
+      expect(signupGeometry.cardRight).toBeLessThanOrEqual(signupGeometry.viewportWidth + 1);
+      expect(signupGeometry.controlContainment.length).toBeGreaterThan(0);
+      for (const control of signupGeometry.controlContainment) {
+        expect(control.insideForm).toBeTruthy();
+        expect(control.insideViewport).toBeTruthy();
+      }
+      const focusedSignupField = user.locator('[formControlName="email"]');
+      await expect(focusedSignupField).not.toBeFocused();
+      await expect(user.locator('.auth-form :focus')).toHaveCount(0);
+      await user.screenshot({path: testInfo.outputPath(`kyc-signup-${theme}-${viewport.width}-empty.png`), fullPage: false});
+      await focusedSignupField.focus();
+      await expect(focusedSignupField).toBeFocused();
+      await expect(focusedSignupField.locator('xpath=ancestor::mat-form-field')).toHaveClass(/mat-focused/);
+      const focusedSignupOutline = await focusedSignupField.evaluate(input => {
+        const field = input.closest('mat-form-field');
+        const outline = field?.querySelector<HTMLElement>('.mdc-notched-outline');
+        const style = outline && getComputedStyle(outline);
+        const rect = outline?.getBoundingClientRect();
+        return {focused: field?.classList.contains('mat-focused'), visible: !!rect && rect.width > 0 && rect.height > 0 && style?.visibility === 'visible', borderColor: style?.borderColor};
+      });
+      expect(focusedSignupOutline.focused).toBeTruthy();
+      expect(focusedSignupOutline.visible).toBeTruthy();
+      expect(focusedSignupOutline.borderColor).not.toBe('rgba(0, 0, 0, 0)');
+      await user.screenshot({path: testInfo.outputPath(`kyc-signup-${theme}-${viewport.width}-focus.png`), fullPage: false});
+      await focusedSignupField.blur();
+      await expect(focusedSignupField).not.toBeFocused();
+    }
+  }
+  await fillRegistration(user, pendingEmail);
+  const registrationResponsePromise = user.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
+  await user.getByRole('button', {name: 'Create account'}).click();
+  const registrationResponse = await registrationResponsePromise;
+  expect(registrationResponse.status()).toBe(202);
+  expect(registrationResponse.request().postDataJSON()).not.toHaveProperty('password');
+  const registration = {status: registrationResponse.status(), accessToken: (await registrationResponse.json() as {access_token?: string}).access_token};
   expect(registration.accessToken).toBeUndefined();
   await expect(user).toHaveURL(/\/pending$/);
   await expect(user.locator('.auth-card')).toBeVisible();
+  await expect(user.locator('[formControlName="password"]')).toHaveCount(0);
+  await expect(user.getByText(/password setup link/i)).toBeVisible();
+  await user.setViewportSize({width: 1440, height: 900});
   const pendingCardWidth = await user.locator('.auth-card').evaluate(element => element.getBoundingClientRect().width);
   expect(pendingCardWidth).toBeLessThanOrEqual(440);
   await user.screenshot({path: testInfo.outputPath('kyc-pending-dark.png'), fullPage: false});
+  await user.setViewportSize({width: 390, height: 844});
+  expect(await user.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+  await user.screenshot({path: testInfo.outputPath('kyc-pending-dark-mobile.png'), fullPage: false});
   await user.evaluate(() => localStorage.setItem('zwei_theme', 'light'));
   await user.reload();
   await expect(user.locator('html')).toHaveClass(/light-theme/);
+  await user.setViewportSize({width: 1440, height: 900});
   await user.screenshot({path: testInfo.outputPath('kyc-pending-light.png'), fullPage: false});
-  await login(user, pendingEmail);
-  await expect(user).toHaveURL(/\/login$/);
-  await expect(user.getByText('account is not active')).toBeVisible();
+  await user.setViewportSize({width: 390, height: 844});
+  expect(await user.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+  await user.screenshot({path: testInfo.outputPath('kyc-pending-light-mobile.png'), fullPage: false});
+  const initialSetupLink = await setupLink(request, pendingEmail);
+  expect(new URL(initialSetupLink).search).toBe('');
+  expect(new URL(initialSetupLink).hash).toMatch(/^#setup=[A-Za-z0-9_-]{43}$/);
+  await user.goto(initialSetupLink);
+  await expect(user.getByRole('heading', {name: 'Set your password'})).toBeVisible();
+  await expect(user.getByRole('button', {name: 'Set password'})).toBeDisabled();
+  for (const theme of ['light', 'dark'] as const) {
+    if (theme === 'dark') {
+      await user.evaluate(() => { document.documentElement.classList.remove('light-theme'); document.body.classList.remove('light-theme'); document.documentElement.classList.add('dark-theme'); document.body.classList.add('dark-theme'); });
+    }
+    for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+      await user.setViewportSize(viewport);
+      const setupFields = user.locator('.auth-form input[formControlName]');
+      await expect(setupFields).toHaveCount(2);
+      for (const field of await setupFields.all()) {
+        await expect(field).toHaveValue('');
+        await expect(field).toHaveClass(/ng-untouched/);
+        await expect(field).toHaveClass(/ng-pristine/);
+      }
+      await expect(user.locator('.auth-form :focus')).toHaveCount(0);
+      await expect(user.locator('.auth-form mat-error:visible')).toHaveCount(0);
+      const setupGeometry = await user.evaluate(() => {
+        const form = document.querySelector<HTMLElement>('.auth-form');
+        const button = form?.querySelector<HTMLElement>('button');
+        const rect = form?.getBoundingClientRect();
+        const buttonRect = button?.getBoundingClientRect();
+        const controls = Array.from(form?.querySelectorAll<HTMLElement>('input, button') ?? []).map(control => {
+          const bounds = control.getBoundingClientRect();
+          return {left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom};
+        });
+        const notchSeams = Array.from(form?.querySelectorAll<HTMLElement>('.mdc-notched-outline__notch') ?? []).map(notch => {
+          const color = getComputedStyle(notch).borderLeftColor;
+          return {color, alpha: color.match(/[\d.]+/g)?.map(Number)?.[3] ?? 1};
+        });
+        const outlineGeometry = Array.from(form?.querySelectorAll<HTMLElement>('mat-form-field') ?? []).map(field => {
+          const rect = (element: Element | null) => {
+            const bounds = element?.getBoundingClientRect();
+            return bounds && {left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height};
+          };
+          const outline = field.querySelector<HTMLElement>('.mdc-notched-outline');
+          const leading = field.querySelector<HTMLElement>('.mdc-notched-outline__leading');
+          const notch = field.querySelector<HTMLElement>('.mdc-notched-outline__notch');
+          const trailing = field.querySelector<HTMLElement>('.mdc-notched-outline__trailing');
+          const label = field.querySelector<HTMLElement>('.mdc-floating-label');
+          const segment = (element: HTMLElement | null) => element && {
+            rect: rect(element),
+            borderTopWidth: getComputedStyle(element).borderTopWidth,
+            borderTopColor: getComputedStyle(element).borderTopColor,
+            borderLeftWidth: getComputedStyle(element).borderLeftWidth,
+            borderLeftColor: getComputedStyle(element).borderLeftColor,
+          };
+          return {outline: rect(outline), leading: segment(leading), notch: segment(notch), trailing: segment(trailing),
+            label: rect(label),
+            input: rect(field.querySelector('input')), field: rect(field)};
+        });
+        return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+          documentClientWidth: document.documentElement.clientWidth,
+          formLeft: rect?.left ?? -1, formRight: rect?.right ?? Number.MAX_SAFE_INTEGER,
+          buttonLeft: buttonRect?.left ?? -1, buttonRight: buttonRect?.right ?? Number.MAX_SAFE_INTEGER,
+          controls: controls.map(control => ({insideForm: !!rect && control.left >= rect.left - 1 && control.right <= rect.right + 1 && control.top >= rect.top - 1 && control.bottom <= rect.bottom + 1,
+            insideViewport: control.left >= 0 && control.right <= document.documentElement.clientWidth + 1 && control.top >= 0 && control.bottom <= document.documentElement.clientHeight + 1})),
+          notchSeams, outlineGeometry,
+          controlsOverlap: controls.some((control, index) => controls.slice(index + 1).some(other => control.left < other.right && control.right > other.left && control.top < other.bottom && control.bottom > other.top))};
+      });
+      console.log(`KYC empty password setup outline (${theme}/${viewport.width}px): ${JSON.stringify(setupGeometry.outlineGeometry)}`);
+      expect(setupGeometry.documentWidth).toBeLessThanOrEqual(setupGeometry.viewportWidth + 1);
+      expect(setupGeometry.formLeft).toBeGreaterThanOrEqual(0);
+      expect(setupGeometry.formRight).toBeLessThanOrEqual(setupGeometry.viewportWidth + 1);
+      expect(setupGeometry.buttonLeft).toBeGreaterThanOrEqual(0);
+      expect(setupGeometry.buttonRight).toBeLessThanOrEqual(setupGeometry.viewportWidth + 1);
+      expect(setupGeometry.controls.length).toBeGreaterThan(0);
+      expect(setupGeometry.notchSeams.length).toBeGreaterThan(0);
+      for (const seam of setupGeometry.notchSeams) expect(seam.alpha, `${theme}/${viewport.width}px setup notch seam: ${JSON.stringify(seam)}`).toBe(0);
+      for (const field of setupGeometry.outlineGeometry) {
+        expect(field.notch?.rect, `${theme}/${viewport.width}px outline notch must render: ${JSON.stringify(field)}`).toBeDefined();
+        expect(field.leading?.borderTopWidth, `${theme}/${viewport.width}px leading top outline must render: ${JSON.stringify(field)}`).not.toBe('0px');
+        expect(field.trailing?.borderTopWidth, `${theme}/${viewport.width}px trailing top outline must render: ${JSON.stringify(field)}`).not.toBe('0px');
+        expect(field.notch?.borderTopWidth, `${theme}/${viewport.width}px notch must continue the top outline: ${JSON.stringify(field)}`).toBe(field.leading?.borderTopWidth);
+        expect(field.notch?.borderTopColor, `${theme}/${viewport.width}px notch top color must continue the top outline: ${JSON.stringify(field)}`).toBe(field.leading?.borderTopColor);
+        expect(field.notch?.borderTopColor, `${theme}/${viewport.width}px notch top color must continue the top outline: ${JSON.stringify(field)}`).toBe(field.trailing?.borderTopColor);
+      }
+      for (const control of setupGeometry.controls) {
+        expect(control.insideForm).toBeTruthy();
+        expect(control.insideViewport).toBeTruthy();
+      }
+      expect(setupGeometry.controlsOverlap).toBeFalsy();
+      await user.screenshot({path: testInfo.outputPath(`kyc-password-setup-${theme}-${viewport.width}.png`), fullPage: false});
+    }
+  }
+  await setPassword(user);
+  await user.locator('[formControlName="confirmPassword"]').fill('different-password');
+  await expect(user.getByRole('button', {name: 'Set password'})).toBeDisabled();
+  await expect(user.getByText('Passwords do not match.')).toBeVisible();
+  await setPassword(user);
+  let loginRequests = 0;
+  user.on('request', outgoing => {
+    if (outgoing.method() === 'POST' && new URL(outgoing.url()).pathname === '/api/auth/v2/login') loginRequests += 1;
+  });
+  const setupResponsePromise = user.waitForResponse(response => response.url().endsWith('/api/auth/v2/activate/setup') && response.request().method() === 'POST');
+  await user.getByRole('button', {name: 'Set password'}).click();
+  const setupResponse = await setupResponsePromise;
+  expect(setupResponse.status()).toBe(200);
+  const setupBody = setupResponse.request().postDataJSON() as Record<string, unknown>;
+  expect(Object.keys(setupBody).sort()).toEqual(['device_id', 'device_name', 'password', 'token']);
+  expect(typeof setupBody.token === 'string' && setupBody.token === new URL(initialSetupLink).hash.slice('#setup='.length)).toBeTruthy();
+  expect(setupBody.password === password).toBeTruthy();
+  expect(typeof setupBody.device_id === 'string' && setupBody.device_id.length > 0).toBeTruthy();
+  expect(typeof setupBody.device_name === 'string' && setupBody.device_name.length > 0).toBeTruthy();
+  const setupPayload = await setupResponse.json() as Record<string, unknown>;
+  expect(Object.keys(setupPayload).sort()).toEqual(['access_token', 'browser_id', 'expires_in', 'generation', 'status', 'token_type']);
+  expect(typeof setupPayload.access_token === 'string' && setupPayload.access_token.length > 0).toBeTruthy();
+  expect(typeof setupPayload.browser_id === 'string' && setupPayload.browser_id.length > 0).toBeTruthy();
+  expect(typeof setupPayload.generation === 'string' && setupPayload.generation.length > 0).toBeTruthy();
+  expect(setupPayload.status).toBe('password_set');
+  expect(setupPayload).not.toHaveProperty('refresh_token');
+  await expect(user).toHaveURL(/\/home$/);
+  const sessionCookies = (await userContext.cookies('https://chat.localhost/api/auth')).map(cookie => ({
+    path: cookie.path,
+    httpOnly: cookie.httpOnly,
+    secure: cookie.secure,
+    sameSite: cookie.sameSite,
+  }));
+  expect(sessionCookies).toContainEqual({path: '/api/auth', httpOnly: true, secure: true, sameSite: 'None'});
+  await expect(user.getByRole('heading', {name: 'Chats'})).toBeVisible();
+  await expect(user.locator('.people-list .empty-rail')).toContainText('No conversations yet.');
+  await expectNoVisibleNotchSeam(user, '.search-field', 'dark chat search field after password setup');
+  await expect(user.getByRole('button', {name: 'Account menu'})).toBeVisible();
+  expect(new URL(user.url()).hash).toBe('');
+  expect(loginRequests).toBe(0);
+  for (const theme of ['light', 'dark'] as const) {
+    await user.evaluate(selectedTheme => {
+      document.documentElement.classList.toggle('dark-theme', selectedTheme === 'dark');
+      document.body.classList.toggle('dark-theme', selectedTheme === 'dark');
+      document.documentElement.classList.toggle('light-theme', selectedTheme === 'light');
+      document.body.classList.toggle('light-theme', selectedTheme === 'light');
+    }, theme);
+    for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+      await user.setViewportSize(viewport);
+      expect(await user.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+      await expect(user.getByRole('heading', {name: 'Chats'})).toBeVisible();
+      await expectNoVisibleNotchSeam(user, '.search-field', `${theme} ${viewport.width}px chat search field after password setup`);
+      await user.screenshot({path: testInfo.outputPath(`kyc-password-setup-signed-in-${theme}-${viewport.width}.png`), fullPage: false});
+    }
+  }
 
   const searcherContext = await browser.newContext();
   const searcher = await searcherContext.newPage();
   await login(searcher, adminEmail);
   const searchResult = searcher.locator('.search-result').filter({hasText: pendingEmail});
   await searcher.getByPlaceholder('Name or email').fill(pendingEmail);
-  await expect(searchResult).toHaveCount(0);
+  await expect(searchResult).toBeVisible();
 
   const adminContext = await browser.newContext({httpCredentials: {username: basicAuthUser, password: basicAuthPassword}});
   const admin = await adminContext.newPage();
   await adminLogin(admin);
   await admin.screenshot({path: testInfo.outputPath('kyc-admin-dark.png'), fullPage: false});
   await captureTableBounds(admin, testInfo, 'kyc-admin-accounts');
-  const pendingRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
-  await expect(pendingRow).toContainText('Pending');
-  await expect(pendingRow.getByRole('button', {name: 'Activate account'})).toBeEnabled();
-  await expect(pendingRow.getByRole('button', {name: 'Block account'})).toBeEnabled();
+  const setupAccountRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
+  await expect(setupAccountRow).toContainText('Active');
+  await expect(setupAccountRow.getByRole('button', {name: 'Activate account'})).toBeDisabled();
+  await expect(setupAccountRow.getByRole('button', {name: 'Block account'})).toBeEnabled();
   for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
     await admin.setViewportSize(viewport);
     const geometry = await admin.evaluate(() => {
@@ -418,9 +669,9 @@ test('pending registration, admin approval, activation email, and blocked login'
     expect(geometry.tableContained).toBeTruthy();
     if (viewport.width === 390) {
       await assertPinnedTableSurfacesAreOpaque(admin);
-      const mobileRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
+      const mobileRow = setupAccountRow;
       await expect(mobileRow.getByText(pendingEmail)).toBeVisible();
-      await expect(mobileRow.getByRole('button', {name: 'Activate account'})).toBeVisible();
+      await expect(mobileRow.getByRole('button', {name: 'Activate account'})).toBeDisabled();
       await expect(mobileRow.getByRole('button', {name: 'Block account'})).toBeVisible();
       await expect(admin.getByText('Email and row actions stay visible.')).toBeVisible();
       const pinnedGeometry = await mobileRow.evaluate(row => {
@@ -441,104 +692,6 @@ test('pending registration, admin approval, activation email, and blocked login'
       await admin.screenshot({path: testInfo.outputPath('kyc-admin-accounts-mobile-dark.png'), fullPage: false});
     }
   }
-  const activationResponsePromise = admin.waitForResponse(response => response.url().includes('/api/admin/users/') && response.url().endsWith('/activate') && response.request().method() === 'POST');
-  await pendingRow.getByRole('button', {name: 'Activate'}).click();
-  const activationResponse = await activationResponsePromise;
-  expect(activationResponse.status()).toBe(204);
-  await expect(admin.getByText('Account activated.')).toBeVisible();
-
-  const firstLink = await activationLink(request, pendingEmail);
-  await reloadAdmin(admin);
-  const activePendingRow = admin.locator('tbody tr').filter({hasText: pendingEmail});
-  await expect(activePendingRow).toContainText('Active');
-  await expect(activePendingRow.getByRole('button', {name: 'Resend activation link'})).toBeEnabled();
-  const resendResponsePromise = admin.waitForResponse(response => response.url().includes('/api/admin/users/') && response.url().endsWith('/resend-activation') && response.request().method() === 'POST');
-  await activePendingRow.getByRole('button', {name: 'Resend activation link'}).click();
-  const resendResponse = await resendResponsePromise;
-  expect(resendResponse.status()).toBe(204);
-  await expect(admin.getByText('Activation link sent.')).toBeVisible();
-  const resendButton = admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Resend activation link'});
-  await expect(resendButton).toBeEnabled();
-  const assertResendFeedbackDoesNotCoverRow = async (): Promise<void> => {
-    const feedback = admin.getByRole('status').filter({hasText: 'Activation link sent.'});
-    await expect(feedback).toBeVisible();
-    const geometry = await feedback.evaluate(element => {
-      const table = element.parentElement?.querySelector<HTMLElement>('.table-wrap');
-      const feedbackRect = element.getBoundingClientRect();
-      const tableRect = table?.getBoundingClientRect();
-      return tableRect ? {feedbackBottom: feedbackRect.bottom, tableTop: tableRect.top, feedbackLeft: feedbackRect.left, feedbackRight: feedbackRect.right, tableLeft: tableRect.left, tableRight: tableRect.right} : null;
-    });
-    if (!geometry) throw new Error('account feedback and table geometry were not rendered');
-    expect(geometry.feedbackBottom).toBeLessThanOrEqual(geometry.tableTop);
-    expect(geometry.feedbackLeft).toBeGreaterThanOrEqual(geometry.tableLeft - 1);
-    expect(geometry.feedbackRight).toBeLessThanOrEqual(geometry.tableRight + 1);
-    const row = admin.locator('tbody tr').filter({hasText: pendingEmail});
-    await expect(row.getByText(pendingEmail)).toBeVisible();
-    await expect(row.getByRole('button', {name: 'Resend activation link'})).toBeEnabled();
-    await expect(row.getByRole('button', {name: 'Block account'})).toBeEnabled();
-    for (const label of ['Resend activation link', 'Block account']) {
-      const receivesPointer = await row.getByRole('button', {name: label}).evaluate(button => {
-        const rect = button.getBoundingClientRect();
-        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        return hit === button || button.contains(hit);
-      });
-      expect(receivesPointer, `${label} remains the hit target`).toBeTruthy();
-    }
-  };
-  await admin.setViewportSize({width: 1440, height: 900});
-  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-desktop.png'), fullPage: false});
-  await admin.setViewportSize({width: 390, height: 844});
-  await assertResendFeedbackDoesNotCoverRow();
-  await assertPinnedTableSurfacesAreOpaque(admin);
-  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByText(pendingEmail)).toBeVisible();
-  const resendGeometry = await resendButton.evaluate(button => {
-    const table = button.closest<HTMLElement>('.table-wrap');
-    if (!table) return null;
-    table.scrollLeft = table.scrollWidth;
-    const rect = button.getBoundingClientRect();
-    return {left: rect.left, right: rect.right, viewport: document.documentElement.clientWidth};
-  });
-  if (!resendGeometry) throw new Error('resend action is not inside the table');
-  expect(resendGeometry.left).toBeGreaterThanOrEqual(0);
-  expect(resendGeometry.right).toBeLessThanOrEqual(resendGeometry.viewport + 1);
-  await expect(resendButton).toBeVisible();
-  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Block account'})).toBeVisible();
-  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-mobile.png'), fullPage: false});
-  await admin.getByRole('button', {name: 'Account menu'}).click();
-  await admin.getByRole('menuitem', {name: 'Switch to light theme'}).click();
-  await expect(admin.locator('html')).toHaveClass(/light-theme/);
-  await admin.keyboard.press('Escape');
-  await expect(admin.getByRole('menuitem', {name: 'Switch to dark theme'})).toHaveCount(0);
-  await admin.setViewportSize({width: 1440, height: 900});
-  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-light.png'), fullPage: false});
-  await admin.setViewportSize({width: 390, height: 844});
-  await assertResendFeedbackDoesNotCoverRow();
-  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByText(pendingEmail)).toBeVisible();
-  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Block account'})).toBeEnabled();
-  await expect(admin.locator('tbody tr').filter({hasText: pendingEmail}).getByRole('button', {name: 'Resend activation link'})).toBeVisible();
-  await admin.screenshot({path: testInfo.outputPath('kyc-admin-resend-light-mobile.png'), fullPage: false});
-  await admin.setViewportSize({width: 1440, height: 900});
-  await admin.getByRole('button', {name: 'Account menu'}).click();
-  await admin.getByRole('menuitem', {name: 'Switch to dark theme'}).click();
-  await expect(admin.locator('html')).toHaveClass(/dark-theme/);
-  const activationMessages = await activationLinks(request, pendingEmail, 2);
-  const secondLink = activationMessages.find(candidate => candidate !== firstLink);
-  if (!secondLink) throw new Error('resend did not produce a new activation link');
-  await searcher.getByPlaceholder('Name or email').fill('');
-  await searcher.getByPlaceholder('Name or email').fill(pendingEmail);
-  await expect(searchResult).toHaveCount(0);
-  await user.evaluate(() => localStorage.setItem('zwei_theme', 'dark'));
-  await user.goto(firstLink);
-  await expect(user.getByRole('heading', {name: 'Activation link unavailable'})).toBeVisible();
-  await user.goto(secondLink);
-  await expect(user.getByRole('heading', {name: 'Your account is active'})).toBeVisible();
-  await expect(user.locator('.auth-card')).toBeVisible();
-  await user.screenshot({path: testInfo.outputPath('kyc-activation-dark.png'), fullPage: false});
-  await user.getByRole('button', {name: 'Continue to sign in'}).click();
-  await user.goto(secondLink);
-  await expect(user.getByRole('heading', {name: 'Activation link unavailable'})).toBeVisible();
-  await login(user, pendingEmail);
-  await expect(user).toHaveURL(/\/home$/);
   await searcher.getByPlaceholder('Name or email').fill('');
   await searcher.getByPlaceholder('Name or email').fill(pendingEmail);
   await expect(searchResult).toBeVisible();
@@ -611,6 +764,137 @@ test('pending registration, admin approval, activation email, and blocked login'
   await reactivatedContext.close();
 });
 
+test('cached setup client falls back to legacy password setup only when v2 is unavailable', async ({browser, request}, testInfo) => {
+  const email = uniqueEmail('legacy-setup-client');
+  const context = await browser.newContext();
+  const user = await context.newPage();
+  await user.goto('/sign-up');
+  await fillRegistration(user, email);
+  const registration = user.waitForResponse(response => response.url().endsWith('/api/auth/v2/register') && response.request().method() === 'POST');
+  await user.getByRole('button', {name: 'Create account'}).click();
+  expect((await registration).status()).toBe(202);
+  await expect(user).toHaveURL(/\/pending$/);
+
+  await user.goto(await setupLink(request, email));
+  await user.setViewportSize({width: 1440, height: 900});
+  await expect(user.getByRole('heading', {name: 'Set your password'})).toBeVisible();
+  let v2Requests = 0;
+  let legacyRequests = 0;
+  await user.route('**/api/auth/v2/activate/setup', async route => {
+    v2Requests++;
+    await route.fulfill({status: 404, contentType: 'application/json', body: JSON.stringify({error: 'not found'})});
+  });
+  user.on('request', outgoing => {
+    if (outgoing.method() === 'POST' && new URL(outgoing.url()).pathname === '/api/auth/activate/setup') legacyRequests++;
+  });
+  await setPassword(user);
+  const legacyResponsePromise = user.waitForResponse(response => response.url().endsWith('/api/auth/activate/setup') && response.request().method() === 'POST');
+  await user.getByRole('button', {name: 'Set password'}).click();
+  const legacyResponse = await legacyResponsePromise;
+  expect(legacyResponse.status()).toBe(200);
+  expect(legacyResponse.headers()['cache-control']).toBe('no-store');
+  expect(await legacyResponse.json()).toEqual({status: 'password_set'});
+  await expect(user.getByRole('heading', {name: 'Password setup complete'})).toBeVisible();
+  await expect(user.getByRole('status')).toHaveText('Your password is set. An administrator must approve your account before you can sign in.');
+  await expect(user.locator('app-notice .app-notice')).toHaveClass(/app-notice-info/);
+  await expect(user.getByRole('button', {name: 'Back to login'})).toBeVisible();
+  await expect(user.getByRole('button', {name: 'Account menu'})).toHaveCount(0);
+  expect(v2Requests).toBe(1);
+  expect(legacyRequests).toBe(1);
+  expect((await context.cookies()).some(cookie => cookie.name.startsWith('zwei_refresh'))).toBe(false);
+  const assertLegacySetupFeedbackContained = async (): Promise<void> => {
+    const geometry = await user.evaluate(() => {
+      const notice = document.querySelector<HTMLElement>('.auth-card app-notice');
+      const button = document.querySelector<HTMLElement>('.auth-card button');
+      const measure = (element: HTMLElement | null) => {
+        const rect = element?.getBoundingClientRect();
+        return rect && {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
+      };
+      return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+        viewportHeight: document.documentElement.clientHeight, notice: measure(notice), button: measure(button)};
+    });
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    for (const [name, box] of [['notice', geometry.notice], ['button', geometry.button]] as const) {
+      expect(box, `${name} should render in the legacy setup state`).not.toBeNull();
+      expect(box!.left, `${name} left edge`).toBeGreaterThanOrEqual(0);
+      expect(box!.right, `${name} right edge`).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+      expect(box!.top, `${name} top edge`).toBeGreaterThanOrEqual(0);
+      expect(box!.bottom, `${name} bottom edge`).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+    }
+    expect(geometry.notice!.bottom).toBeLessThanOrEqual(geometry.button!.top + 1);
+  };
+  await expect(user.locator('html')).toHaveClass(/dark-theme/);
+  await assertLegacySetupFeedbackContained();
+  await user.screenshot({path: testInfo.outputPath('legacy-password-setup-dark-1440.png'), fullPage: false});
+  await user.evaluate(() => { document.documentElement.classList.replace('dark-theme', 'light-theme'); document.body.classList.replace('dark-theme', 'light-theme'); });
+  await user.setViewportSize({width: 390, height: 844});
+  await expect(user.locator('html')).toHaveClass(/light-theme/);
+  await assertLegacySetupFeedbackContained();
+  await user.screenshot({path: testInfo.outputPath('legacy-password-setup-light-mobile.png'), fullPage: false});
+  await user.getByRole('button', {name: 'Back to login'}).click();
+  await expect(user).toHaveURL(/\/login$/);
+  await expect(user.getByRole('heading', {name: 'Sign in to zwei'})).toBeVisible();
+  await context.close();
+});
+
+test('approval before password setup rotates the emailed setup token', async ({browser, request}, testInfo) => {
+  test.setTimeout(60_000);
+  const email = uniqueEmail('approval-first');
+  const userContext = await browser.newContext();
+  const user = await userContext.newPage();
+  const registration = await register(user, email);
+  expect(registration.status).toBe(202);
+  const originalLink = await setupLink(request, email);
+
+  const adminContext = await browser.newContext({httpCredentials: {username: basicAuthUser, password: basicAuthPassword}});
+  const admin = await adminContext.newPage();
+  await adminLogin(admin);
+  const row = admin.locator('tbody tr').filter({hasText: email});
+  const approval = admin.waitForResponse(response => response.url().includes('/api/admin/users/') && response.url().endsWith('/activate') && response.request().method() === 'POST');
+  await row.getByRole('button', {name: 'Activate'}).click();
+  expect((await approval).status()).toBe(204);
+  const links = await activationLinks(request, email, 2);
+  const replacementLink = links.find(link => link !== originalLink);
+  if (!replacementLink) throw new Error('approval did not rotate the pending password setup token');
+  expect(new URL(replacementLink).hash).not.toBe(new URL(originalLink).hash);
+
+  await user.goto(originalLink);
+  await expect(user.getByRole('heading', {name: 'Set your password'})).toBeVisible();
+  await setPassword(user);
+  const oldTokenRequest = user.waitForResponse(response => response.url().endsWith('/api/auth/v2/activate/setup') && response.request().method() === 'POST');
+  await user.getByRole('button', {name: 'Set password'}).click();
+  expect((await oldTokenRequest).status()).toBeGreaterThanOrEqual(400);
+  await expect(user.getByRole('heading', {name: 'Password setup unavailable'})).toBeVisible();
+  await expect(user.getByRole('alert')).toContainText('invalid, expired, or already used');
+  expect(await user.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+  await user.screenshot({path: testInfo.outputPath('kyc-password-setup-invalid-dark.png'), fullPage: false});
+  await user.evaluate(() => { document.documentElement.classList.remove('dark-theme'); document.body.classList.remove('dark-theme'); document.documentElement.classList.add('light-theme'); document.body.classList.add('light-theme'); });
+  await user.setViewportSize({width: 390, height: 844});
+  expect(await user.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+  await user.screenshot({path: testInfo.outputPath('kyc-password-setup-invalid-light-mobile.png'), fullPage: false});
+
+  await user.goto(replacementLink);
+  await user.reload();
+  await expect(user.getByRole('heading', {name: 'Set your password'})).toBeVisible();
+  await setPassword(user);
+  const newTokenRequest = user.waitForResponse(response => response.url().endsWith('/api/auth/v2/activate/setup') && response.request().method() === 'POST');
+  await user.getByRole('button', {name: 'Set password'}).click();
+  const setupResponse = await newTokenRequest;
+  expect(setupResponse.status()).toBe(200);
+  const setupPayload = await setupResponse.json() as Record<string, unknown>;
+  expect(Object.keys(setupPayload).sort()).toEqual(['access_token', 'browser_id', 'expires_in', 'generation', 'status', 'token_type']);
+  expect(typeof setupPayload.access_token === 'string' && setupPayload.access_token.length > 0).toBeTruthy();
+  expect(typeof setupPayload.browser_id === 'string' && setupPayload.browser_id.length > 0).toBeTruthy();
+  expect(typeof setupPayload.generation === 'string' && setupPayload.generation.length > 0).toBeTruthy();
+  expect(setupPayload).not.toHaveProperty('refresh_token');
+  await expect(user).toHaveURL(/\/home$/);
+  await expect(user.getByRole('button', {name: 'Account menu'})).toBeVisible();
+  expect(new URL(user.url()).hash).toBe('');
+  await user.screenshot({path: testInfo.outputPath('kyc-password-setup-rotated-signed-in.png'), fullPage: false});
+  await userContext.close();
+  await adminContext.close();
+});
+
 test('invitation code activates and logs in an account, then cannot be reused', async ({browser, request}, testInfo) => {
   const invitedEmail = uniqueEmail('invited');
   const adminContext = await browser.newContext({httpCredentials: {username: basicAuthUser, password: basicAuthPassword}});
@@ -674,9 +958,10 @@ test('invitation code activates and logs in an account, then cannot be reused', 
   await expect(user).toHaveURL(/\/login$/);
   await user.getByRole('link', {name: 'Create one'}).click();
   await expect(user).toHaveURL(/\/sign-up$/);
-  for (const fieldName of ['email', 'firstName', 'lastName', 'nickName', 'password', 'confirmPassword']) {
+  for (const fieldName of ['email', 'firstName', 'lastName', 'nickName']) {
     await expect(user.locator(`[formControlName="${fieldName}"]`)).toHaveValue('');
   }
+  await expect(user.locator('[formControlName="password"]')).toHaveCount(0);
   await reloadAdmin(admin);
   await admin.getByRole('button', {name: 'Invitations'}).click();
   const redeemedInvitation = admin.locator('tbody tr').filter({hasText: invitedEmail});

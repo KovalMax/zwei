@@ -16,6 +16,12 @@ type RenderedContrast = {foreground: string; background: string; ratio: number};
 type RenderedTextContrast = {foreground: string; background: string; ratio: number; opacity: number; disabled: boolean; visible: boolean};
 type Deferred = {promise: Promise<void>; resolve: () => void};
 
+// Material keeps tooltip overlays in the DOM during transitions, and its
+// aria-hidden attribute is also present on shown tooltips. Select its show
+// state so Playwright does not mistake a fading hide-state overlay for active.
+const visibleTooltipSurfaceSelector = '.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible';
+const activeTooltipSelector = '.mat-mdc-tooltip-panel .mat-mdc-tooltip-show .mat-mdc-tooltip-surface:visible';
+
 function createDeferred(): Deferred {
   let resolve: () => void = () => {};
   const promise = new Promise<void>(complete => { resolve = complete; });
@@ -761,7 +767,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   await assertSettingsBodyClearOfHeading('top');
   await page.mouse.move(0, 0);
   await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
-  await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px settings top has no detached action tooltip`).toHaveCount(0);
+  await expect(page.locator(visibleTooltipSurfaceSelector), `${theme} ${viewport.width}px settings top has no detached action tooltip`).toHaveCount(0);
   await page.screenshot({path: testInfo.outputPath(`group-settings-${theme}-${viewport.width}-top.png`), fullPage: false, timeout: 15_000});
 
   const inspectMemberEdge = async (edge: 'top' | 'end') => panel.evaluate(async (element, requestedEdge) => {
@@ -872,22 +878,22 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     {id: 'remove-member', label: 'Remove', ariaLabel: 'Remove Member 1', button: adminActionRow.getByRole('button', {name: 'Remove Member 1', exact: true})},
   ];
   const assertTooltipGeometry = async (action: typeof actionButtons[number]): Promise<void> => {
-    const tooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: action.label}).last();
+    const tooltip = page.locator(activeTooltipSelector).filter({hasText: action.label}).last();
     await expect(tooltip, `${theme} ${viewport.width}px tooltip: ${action.label}`).toBeVisible();
-    await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px must render only the active action tooltip`).toHaveCount(1);
+    await expect(page.locator(activeTooltipSelector), `${theme} ${viewport.width}px must render only the active action tooltip`).toHaveCount(1);
     await page.evaluate(() => new Promise<void>(resolve => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     }));
     const contrast = await waitForReadableTooltip(tooltip);
     expect(contrast.ratio, `${theme} ${viewport.width}px ${action.label} rendered contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
     expect(contrast.opacity, `${theme} ${viewport.width}px ${action.label} tooltip should finish its show transition: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(.95);
-    await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px should show only the focused or hovered action tooltip`).toHaveCount(1);
+    await expect(page.locator(activeTooltipSelector), `${theme} ${viewport.width}px should show only the focused or hovered action tooltip`).toHaveCount(1);
     const {tooltipRect, managerRect, tooltipClasses, panelClasses, tooltipStyle} = await page.evaluate(label => {
       const toRect = (element: Element | null) => {
         const rect = element?.getBoundingClientRect();
         return rect ? {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height} : undefined;
       };
-      const tooltipElements = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface'))
+      const tooltipElements = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-tooltip-panel .mat-mdc-tooltip-show .mat-mdc-tooltip-surface'))
         .filter(element => element.textContent?.trim() === label);
       const surface = tooltipElements[tooltipElements.length - 1];
       const panel = surface?.closest<HTMLElement>('.mat-mdc-tooltip-panel');
@@ -980,7 +986,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await waitForFocusScroll();
     await cycleKeyboardFocus(button);
   };
-  const visibleTooltips = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible');
+  const visibleTooltips = page.locator(visibleTooltipSurfaceSelector);
   const scrollMemberListAwayFromCurrentEdge = async (): Promise<{before: number; targetScrollTop: number; scrollTop: number; scrollHeight: number; clientHeight: number; maxScroll: number; scrollEvents: number}> => memberScroller.evaluate(element => new Promise(resolve => {
     const list = element as HTMLElement;
     const before = list.scrollTop;
@@ -1020,13 +1026,13 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     }
   }
   if (viewport.width === 1440 && theme === 'dark') {
-    const resizeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: 'Remove'}).last();
+    const resizeTooltip = page.locator(activeTooltipSelector).filter({hasText: 'Remove'}).last();
     await page.mouse.move(1, viewport.height / 2);
     await actionButtons[2].button.hover();
     await expect(resizeTooltip).toBeVisible();
     await page.setViewportSize({width: 390, height: 844});
     await expect(resizeTooltip, 'resizing while a member tooltip is open must dismiss it').not.toBeVisible();
-    await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible')).toHaveCount(0);
+    await expect(page.locator(visibleTooltipSurfaceSelector)).toHaveCount(0);
     await page.setViewportSize(viewport);
     await expect(actionButtons[2].button, 'resizing should retain keyboard focus on the action').toBeFocused();
     await waitForFocusScroll();
@@ -1040,6 +1046,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     if (focusRecoveryScroll.targetScrollTop === 0) expect(focusRecoveryScroll.scrollTop).toBe(0);
     else expect(focusRecoveryScroll.scrollTop + focusRecoveryScroll.clientHeight).toBeGreaterThanOrEqual(focusRecoveryScroll.scrollHeight - 1);
     await expect(resizeTooltip, 'keyboard-recovered tooltip must dismiss on a subsequent list scroll').not.toBeVisible();
+    await expect(visibleTooltips, 'all tooltip surfaces must finish dismissing after a subsequent list scroll').toHaveCount(0);
     await page.mouse.move(1, viewport.height / 2);
     await expect(resizeTooltip, 'pointer movement outside after scroll must not resurrect the tooltip').not.toBeVisible();
     await actionButtons[2].button.evaluate(button => (button as HTMLButtonElement).blur());
@@ -1048,7 +1055,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await panel.evaluate(element => { element.scrollTop = 0; });
     await page.mouse.move(0, 0);
   }
-  const removeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: 'Remove'}).last();
+  const removeTooltip = page.locator(activeTooltipSelector).filter({hasText: 'Remove'}).last();
   await focusUsingKeyboard(actionButtons[2].button);
   await assertTooltipGeometry(actionButtons[2]);
   await page.mouse.move(0, 0);
@@ -1069,6 +1076,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     // scroll event must dismiss tooltips, not race the subsequent focus event.
     await waitForFocusScroll();
     await expect(removeTooltip, `${context} repositioning alone must not resurrect the tooltip`).not.toBeVisible();
+    await expect(visibleTooltips, `${context} all tooltip surfaces must remain dismissed after repositioning`).toHaveCount(0);
     await expect(actionButtons[2].button, `${context} list scroll should retain keyboard focus`).toBeFocused();
     await cycleKeyboardFocus(actionButtons[2].button);
     await expect(actionButtons[2].button, `${context} keyboard focus should recover without pointer movement`).toBeFocused();
@@ -1082,13 +1090,23 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   expect(dismissalScroll.targetScrollTop, JSON.stringify({theme, viewport, dismissalScroll})).not.toBe(dismissalScroll.before);
   expect(dismissalScroll.scrollEvents, JSON.stringify({theme, viewport, dismissalScroll})).toBeGreaterThan(0);
   await expect(removeTooltip, `${theme} ${viewport.width}px a following scroll must dismiss the recovered tooltip`).not.toBeVisible();
+  await expect(visibleTooltips, `${theme} ${viewport.width}px all tooltip surfaces must clear after the following scroll`).toHaveCount(0);
   await page.screenshot({path: testInfo.outputPath(`group-settings-${theme}-${viewport.width}-list-end-scrolled-away-no-tooltip.png`), fullPage: false});
   await page.mouse.move(1, viewport.height / 2);
   await expect(removeTooltip, `${theme} ${viewport.width}px pointer movement must not resurrect a dismissed tooltip`).not.toBeVisible();
+  await expect(visibleTooltips, `${theme} ${viewport.width}px pointer movement must not leave a residual tooltip surface`).toHaveCount(0);
   await actionButtons[2].button.scrollIntoViewIfNeeded();
   await waitForFocusScroll();
   await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
-  await page.mouse.move(1, viewport.height / 2);
+  await expect(visibleTooltips, `${theme} ${viewport.width}px repositioning alone must not leave a residual tooltip surface`).toHaveCount(0);
+  // Let the component's bounded 250 ms post-scroll hide transition settle;
+  // recovery still requires an explicit fresh pointer movement below.
+  await page.waitForTimeout(275);
+  // Re-arm hover with a real, distinct pointer movement after the scroll.
+  // Repeating the previous neutral coordinate may be a no-op when scrolling
+  // has already moved the pointer away from its original hit target.
+  await page.mouse.move(viewport.width / 2, 8);
+  await expect(removeTooltip, `${theme} ${viewport.width}px cooldown and neutral pointer movement must not resurrect the tooltip`).not.toBeVisible();
   await actionButtons[2].button.hover();
   await assertTooltipGeometry(actionButtons[2]);
   await expect(removeTooltip).toBeVisible();
@@ -3834,7 +3852,83 @@ test('register, create conversation, and deliver a message', async ({ browser },
    await alice.setViewportSize(desktop.viewport);
    await setTheme(alice, 'dark');
    await expect(alice.getByText(bobEmail)).toBeVisible();
+   let initialHistoryFailures = 0;
+   const initialHistoryStarted = createDeferred();
+   const completeInitialHistory = createDeferred();
+   await alice.route('**/api/chat/conversations/*/messages*', async route => {
+     if (initialHistoryFailures++ === 0) {
+       initialHistoryStarted.resolve();
+       await completeInitialHistory.promise;
+       await route.fulfill({status: 500, contentType: 'application/json', body: JSON.stringify({error: 'could not load history'})});
+       return;
+     }
+     await route.continue();
+   });
    await alice.getByText(bobEmail).click();
+   await initialHistoryStarted.promise;
+   await expect(alice.locator('.empty-messages')).toHaveCount(0);
+   const initialHistoryLoading = alice.getByRole('status').filter({hasText: 'Loading messages…'});
+   await expect(initialHistoryLoading).toBeVisible();
+   // Initial-history loading acceptance matrix: light/dark × 2560, 1440, 1024, and 390x844.
+   for (const theme of ['light', 'dark'] as const) {
+     await setTheme(alice, theme);
+     for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+       await alice.setViewportSize(viewport);
+       await expect(initialHistoryLoading).toBeVisible();
+       await expect(alice.getByText('No messages yet.', {exact: true})).toHaveCount(0);
+       const geometry = await alice.evaluate(() => {
+         const loading = document.querySelector<HTMLElement>('.message-history .history-loading-state[role="status"]');
+         const history = document.querySelector<HTMLElement>('.message-history');
+         if (!loading || !history) throw new Error('Initial history loading status is missing');
+         const rect = (element: HTMLElement) => element.getBoundingClientRect().toJSON();
+         return {loading: rect(loading), history: rect(history), documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth};
+       });
+       const context = `${theme}/${viewport.width}x${viewport.height} initial history loading: ${JSON.stringify(geometry)}`;
+       expect(geometry.documentWidth, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+       expect(geometry.loading.left, context).toBeGreaterThanOrEqual(geometry.history.left - 1);
+       expect(geometry.loading.right, context).toBeLessThanOrEqual(geometry.history.right + 1);
+       expect(geometry.loading.top, context).toBeGreaterThanOrEqual(geometry.history.top - 1);
+       expect(geometry.loading.bottom, context).toBeLessThanOrEqual(geometry.history.bottom + 1);
+       const contrast = await measureRenderedTextContrastAtSurface(alice.locator('.message-history .history-loading-state'));
+       expect(contrast.ratio, `${context} text contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
+       await alice.screenshot({path: testInfo.outputPath(`initial-history-loading-${theme}-${viewport.width}.png`), fullPage: false});
+     }
+   }
+   await alice.setViewportSize(desktop.viewport);
+   await setTheme(alice, 'dark');
+   completeInitialHistory.resolve();
+   const initialHistoryNotice = alice.getByRole('alert').filter({hasText: 'Could not load messages. Try again.'});
+   await expect(initialHistoryNotice).toBeVisible();
+   await expect(alice.locator('.empty-messages')).toHaveCount(0);
+   // Initial-history failure acceptance matrix: light/dark × 2560, 1440, 1024, and 390x844.
+   for (const theme of ['light', 'dark'] as const) {
+     await setTheme(alice, theme);
+     for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}]) {
+       await alice.setViewportSize(viewport);
+       await expect(initialHistoryNotice).toBeVisible();
+       await expect(alice.locator('.empty-messages')).toHaveCount(0);
+       const geometry = await alice.evaluate(() => {
+         const notice = document.querySelector<HTMLElement>('.message-history app-notice section[role="alert"]');
+         const retry = notice?.querySelector<HTMLElement>('button');
+         const history = document.querySelector<HTMLElement>('.message-history');
+         if (!notice || !retry || !history) throw new Error('Initial history failure notice is incomplete');
+         const rect = (element: HTMLElement) => element.getBoundingClientRect().toJSON();
+         return {notice: rect(notice), retry: rect(retry), history: rect(history), documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth};
+       });
+       const context = `${theme}/${viewport.width}x${viewport.height} initial history error: ${JSON.stringify(geometry)}`;
+       expect(geometry.documentWidth, context).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+       expect(geometry.notice.left, context).toBeGreaterThanOrEqual(geometry.history.left - 1);
+       expect(geometry.notice.right, context).toBeLessThanOrEqual(geometry.history.right + 1);
+       expect(geometry.retry.left, context).toBeGreaterThanOrEqual(geometry.notice.left - 1);
+       expect(geometry.retry.right, context).toBeLessThanOrEqual(geometry.notice.right + 1);
+       await alice.screenshot({path: testInfo.outputPath(`initial-history-error-${theme}-${viewport.width}.png`), fullPage: false});
+     }
+   }
+   await alice.setViewportSize(desktop.viewport);
+   await setTheme(alice, 'dark');
+   await initialHistoryNotice.getByRole('button', {name: 'Retry'}).click();
+   await expect(alice.getByText('No messages yet.', {exact: true})).toBeVisible();
+   await alice.unroute('**/api/chat/conversations/*/messages*');
    await expect(alice.getByText('No messages yet.', {exact: true})).toBeVisible();
    // Acceptance matrix: rendered empty-message copy in light/dark at 2560, 1440, 1024, and 390px.
    for (const theme of ['light', 'dark'] as const) {
@@ -4996,6 +5090,9 @@ test('register, create conversation, and deliver a message', async ({ browser },
   expect(shortMessageBox?.width).toBeGreaterThanOrEqual(180);
   expect(shortMessageBox?.height).toBeGreaterThanOrEqual(64);
   expect(Date.now() - started).toBeLessThan(5_000);
+  // This constraint is the desktop message-bubble contract; mobile intentionally
+  // lets bubbles grow naturally so the inner scroll region is not unusable.
+  await alice.setViewportSize(desktop.viewport);
   const longMessage = `long-message-${'x'.repeat(4_000)}`;
   await alice.getByPlaceholder('Write a message…').fill(longMessage);
   await alice.getByRole('button', { name: 'Send message' }).click();
@@ -5509,13 +5606,13 @@ test('Home people search clears results, distinguishes empty and failed states, 
 
     await search.fill(malformedQuery);
     await expect(resultOptions).toHaveCount(0);
-    const malformedAlert = page.locator('.conversation-rail .group-search-status[role="alert"]');
-    await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
+    const malformedAlert = page.locator('.conversation-rail app-notice .app-notice');
+    await expect(malformedAlert).toContainText('Could not search for people. Try again.');
     await expect(searchStatus).toHaveCount(0);
 
     await search.fill(errorQuery);
     await expect(resultOptions).toHaveCount(0);
-    await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
+    await expect(malformedAlert).toContainText('Could not search for people. Try again.');
     await expect(searchStatus).toHaveCount(0);
 
     // The stale request is deliberately held while a newer query completes. Releasing it
@@ -5545,7 +5642,7 @@ test('Home people search clears results, distinguishes empty and failed states, 
 
         await search.fill(errorQuery);
         await expect(resultOptions).toHaveCount(0);
-        await expect(malformedAlert).toHaveText('Could not search for people. Try again.');
+        await expect(malformedAlert).toContainText('Could not search for people. Try again.');
         await page.screenshot({path: testInfo.outputPath(`home-people-search-error-${theme}-${viewport.width}.png`), fullPage: false});
       }
     }
@@ -5610,6 +5707,228 @@ test('plays a background message sound without duplicating the visible message o
     await expect.poll(async () => bob.evaluate(() => (window as Window & {__zweiAudioState: {tones: number; unlocks: number}}).__zweiAudioState.tones)).toBeGreaterThan(0);
   } finally {
     await aliceContext.close();
+    await bobContext.close();
+  }
+});
+
+test('replies survive delivery and reload and jump to the original', async ({browser}, testInfo) => {
+  // Reply states (composer preview, received quote, jump): light/dark × 2560, 1440, 1024, 390px.
+  const aliceEmail = uniqueEmail('reply-alice');
+  const bobEmail = uniqueEmail('reply-bob');
+  const aliceContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const alice = await aliceContext.newPage();
+  const bob = await bobContext.newPage();
+  try {
+    await register(alice, aliceEmail, 'Alice');
+    await register(bob, bobEmail, 'Bob');
+    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob)]);
+    await alice.getByPlaceholder('Name or email').fill(bobEmail);
+    await alice.getByText(bobEmail).click();
+    await bob.getByPlaceholder('Name or email').fill(aliceEmail);
+    await bob.locator('.search-result').filter({hasText: aliceEmail}).click();
+    const original = `original-${Date.now()}-${'long-quote-'.repeat(30)}`;
+    const answer = `answer-${Date.now()}`;
+    await alice.getByPlaceholder('Write a message…').fill(original);
+    await alice.getByRole('button', {name: 'Send message'}).click();
+    const source = bob.locator('.message-bubble').filter({hasText: original});
+    await source.getByRole('button', {name: 'Reply to message'}).click();
+    await expect(bob.locator('.reply-composer-preview')).toContainText(original);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(bob, theme);
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await bob.setViewportSize(viewport);
+        const preview = bob.locator('.reply-composer-preview');
+        const composer = bob.locator('.composer');
+        const previewBox = await preview.boundingBox();
+        const composerBox = await composer.boundingBox();
+        expect(previewBox && composerBox).toBeTruthy();
+        expect(previewBox!.x).toBeGreaterThanOrEqual(0);
+        expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(viewport.width);
+        expect(previewBox!.y + previewBox!.height).toBeLessThanOrEqual(composerBox!.y + 1);
+        await bob.screenshot({path: testInfo.outputPath(`reply-preview-${theme}-${viewport.width}.png`)});
+      }
+    }
+    await bob.getByRole('button', {name: 'Cancel reply'}).click();
+    await expect(bob.locator('.reply-composer-preview')).toHaveCount(0);
+    await source.getByRole('button', {name: 'Reply to message'}).click();
+    let rateLimited = false;
+    await alice.route('**/api/chat/conversations/*/messages/*', async route => {
+      if (!rateLimited) {
+        rateLimited = true;
+        await route.fulfill({status: 429, headers: {'Retry-After': '1', 'Access-Control-Allow-Origin': 'https://chat.localhost', 'Access-Control-Expose-Headers': 'Retry-After'}, contentType: 'application/json', body: '{"error":"rate limited"}'});
+      } else await route.continue();
+    });
+    await bob.getByPlaceholder('Write a message…').fill(answer);
+    await bob.getByRole('button', {name: 'Send message'}).click();
+    const received = alice.locator('.message-bubble').filter({hasText: answer});
+    await expect(received.locator('.reply-quote')).toContainText('Try again');
+    await received.getByRole('button', {name: /Try again/}).click();
+    await expect(received.locator('.reply-quote')).toContainText(original);
+    await alice.unroute('**/api/chat/conversations/*/messages/*');
+    await reloadSession(alice);
+    await expect(alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote')).toContainText(original);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(alice, theme);
+      await setTheme(bob, theme);
+      for (const viewport of [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await alice.setViewportSize(viewport);
+        await bob.setViewportSize(viewport);
+        const quote = alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote');
+        const originalBubble = bob.locator('.message-bubble').filter({hasText: original}).filter({hasNot: bob.locator('.reply-quote')});
+        const action = originalBubble.getByRole('button', {name: 'Reply to message'});
+        const timestamp = originalBubble.locator('time');
+        const sender = originalBubble.locator('.message-sender');
+        await action.scrollIntoViewIfNeeded();
+        await action.hover();
+        await expect(action).toBeInViewport();
+        await expect(sender).toBeVisible();
+        const actionLayout = await originalBubble.evaluate(element => {
+          const action = element.querySelector<HTMLElement>('.reply-action');
+          const sender = element.querySelector<HTMLElement>('.message-sender');
+          const bubble = element.getBoundingClientRect();
+          const actionRect = action?.getBoundingClientRect();
+          const senderRect = sender?.getBoundingClientRect();
+          return actionRect && senderRect ? {
+            action: {left: actionRect.left, right: actionRect.right, top: actionRect.top, bottom: actionRect.bottom, width: actionRect.width, height: actionRect.height},
+            sender: {left: senderRect.left, right: senderRect.right, top: senderRect.top, bottom: senderRect.bottom},
+            bubble: {left: bubble.left, right: bubble.right, top: bubble.top, bottom: bubble.bottom},
+          } : null;
+        });
+        if (!actionLayout) throw new Error('Reply action and sender metadata must both be rendered');
+        expect(actionLayout.action.width, `${theme}/${viewport.width}px reply target width`).toBeGreaterThanOrEqual(44);
+        expect(actionLayout.action.height, `${theme}/${viewport.width}px reply target height`).toBeGreaterThanOrEqual(44);
+        const replyInsetLeft = actionLayout.action.left - actionLayout.bubble.left;
+        const replyInsetTop = actionLayout.action.top - actionLayout.bubble.top;
+        expect(replyInsetLeft, `${theme}/${viewport.width}px reply action must have a compact left inset`).toBeGreaterThanOrEqual(0);
+        expect(replyInsetLeft, `${theme}/${viewport.width}px reply action must have a compact left inset`).toBeLessThanOrEqual(12);
+        expect(replyInsetTop, `${theme}/${viewport.width}px reply action must have a compact top inset`).toBeGreaterThanOrEqual(0);
+        expect(replyInsetTop, `${theme}/${viewport.width}px reply action must have a compact top inset`).toBeLessThanOrEqual(12);
+        expect(actionLayout.action.right, `${theme}/${viewport.width}px reply action must be on the sender's left`).toBeLessThanOrEqual(actionLayout.sender.left + 1);
+        expect(Math.abs((actionLayout.action.top + actionLayout.action.bottom) / 2 - (actionLayout.sender.top + actionLayout.sender.bottom) / 2), `${theme}/${viewport.width}px reply action must align alongside sender metadata`).toBeLessThanOrEqual(2);
+        const actionOverlapsSender = actionLayout.action.left < actionLayout.sender.right && actionLayout.action.right > actionLayout.sender.left && actionLayout.action.top < actionLayout.sender.bottom && actionLayout.action.bottom > actionLayout.sender.top;
+        expect(actionOverlapsSender, `${theme}/${viewport.width}px reply action must not overlap sender metadata`).toBeFalsy();
+        if (viewport.width === 390) {
+          await expect(timestamp).toBeInViewport();
+          const dimensions = await originalBubble.evaluate(element => ({height: element.clientHeight, scrollHeight: element.scrollHeight}));
+          expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.height + 1);
+        }
+        await bob.screenshot({path: testInfo.outputPath(`reply-original-${theme}-${viewport.width}.png`)});
+        await expect(quote).toBeVisible();
+        const geometry = await quote.evaluate(element => {
+          const rect = element.getBoundingClientRect();
+          return {left: rect.left, right: rect.right, width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth};
+        });
+        expect(geometry.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.right).toBeLessThanOrEqual(geometry.width);
+        expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
+        const quoteBounds = await quote.boundingBox();
+        const bubbleBounds = await quote.locator('..').boundingBox();
+        expect(quoteBounds && bubbleBounds).toBeTruthy();
+        expect(quoteBounds!.x + quoteBounds!.width).toBeLessThanOrEqual(bubbleBounds!.x + bubbleBounds!.width + 1);
+        if (theme === 'light') expect((await measureRenderedTextContrast(alice.locator('.message-bubble').filter({hasText: answer}).locator('time'))).ratio).toBeGreaterThanOrEqual(4.5);
+        await quote.focus();
+        await alice.keyboard.press('Tab');
+        await alice.keyboard.press('Shift+Tab');
+        await expect(quote).toBeFocused();
+        const focus = await quote.evaluate(element => ({style: getComputedStyle(element).outlineStyle, width: parseFloat(getComputedStyle(element).outlineWidth)}));
+        expect(focus.style).not.toBe('none');
+        expect(focus.width).toBeGreaterThanOrEqual(2);
+        await alice.screenshot({path: testInfo.outputPath(`reply-${theme}-${viewport.width}.png`)});
+      }
+    }
+    await alice.locator('.message-bubble').filter({hasText: answer}).locator('.reply-quote').click();
+    await expect(alice.locator('.message-bubble.message-highlight').filter({hasText: original})).toBeVisible();
+  } finally {
+    await aliceContext.close();
+    await bobContext.close();
+  }
+});
+
+test('pull refresh reloads the active Home view and Profile without reloading or losing the draft', async ({browser}, testInfo) => {
+  test.setTimeout(150_000);
+  const aliceEmail = uniqueEmail('refresh-alice');
+  const bobEmail = uniqueEmail('refresh-bob');
+  const context = await browser.newContext({viewport: {width: 390, height: 844}});
+  const bobContext = await browser.newContext();
+  const alice = await context.newPage();
+  const bob = await bobContext.newPage();
+  const refreshViewports = [{width: 2560, height: 1440}, {width: 1440, height: 900}, {width: 1024, height: 768}, {width: 390, height: 844}];
+  const captureRefreshLayout = async (theme: 'light' | 'dark', state: string, viewport: {width: number; height: number}, controlSelector: string): Promise<void> => {
+    await alice.setViewportSize(viewport);
+    await setTheme(alice, theme);
+    const geometry = await alice.evaluate(selector => {
+      const control = document.querySelector(selector);
+      if (!control) throw new Error(`Refresh control not found: ${selector}`);
+      const rect = control.getBoundingClientRect();
+      return {documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth, top: rect.top, bottom: rect.bottom, height: window.innerHeight};
+    }, controlSelector);
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+    expect(geometry.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
+    await alice.screenshot({path: testInfo.outputPath(`refresh-${state}-${theme}-${viewport.width}.png`)});
+  };
+  try {
+    await register(alice, aliceEmail, 'Refresh Alice');
+    await register(bob, bobEmail, 'Refresh Bob');
+    await Promise.all([waitForLiveConnection(alice), waitForLiveConnection(bob)]);
+    const initialURL = alice.url();
+    await alice.getByPlaceholder('Name or email').fill(bobEmail);
+    const bobResult = alice.locator('.search-result').filter({hasText: bobEmail});
+    await expect(bobResult).toBeVisible();
+    await bobResult.click();
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    await alice.getByRole('button', {name: 'Back to chats'}).click();
+    const conversationRow = alice.locator('.person-option').filter({hasText: 'Refresh Bob'});
+    await expect(conversationRow).toBeVisible();
+    const listRequest = alice.waitForRequest(request => request.method() === 'GET' && request.url().includes('/api/chat/conversations'));
+    await conversationRow.locator('span').first().evaluate(row => {
+      const touch = (type: string, y: number) => {
+        const point = new Touch({identifier: 1, target: row, clientX: 100, clientY: y});
+        row.dispatchEvent(new TouchEvent(type, {bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [point], changedTouches: [point]}));
+      };
+      touch('touchstart', 20); touch('touchmove', 112); touch('touchend', 112);
+    });
+    await listRequest;
+    expect(alice.url()).toBe(initialURL);
+    await expect(alice.getByRole('button', {name: /Refresh(ing)? chats/})).toBeEnabled({timeout: 10_000});
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of refreshViewports) await captureRefreshLayout(theme, 'home', viewport, '.people-list .pull-refresh-control');
+    }
+    await conversationRow.click();
+    await expect(alice.getByPlaceholder('Write a message…')).toBeEnabled();
+    const draft = `kept-draft-${Date.now()}`;
+    await alice.getByPlaceholder('Write a message…').fill(draft);
+    const historyRequest = alice.waitForRequest(request => request.method() === 'GET' && /\/api\/chat\/conversations\/[^/]+\/messages(?:\?|$)/.test(request.url()));
+    await alice.evaluate(() => {
+      const surface = document.querySelector('.message-history');
+      if (!surface) throw new Error('Message history scroll surface missing');
+      const touch = (type: string, y: number) => {
+        const point = new Touch({identifier: 2, target: surface, clientX: 100, clientY: y});
+        surface.dispatchEvent(new TouchEvent(type, {bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [point], changedTouches: [point]}));
+      };
+      touch('touchstart', 20); touch('touchmove', 112); touch('touchend', 112);
+    });
+    await historyRequest;
+    await expect(alice.getByPlaceholder('Write a message…')).toHaveValue(draft);
+    expect(alice.url()).toBe(initialURL);
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of refreshViewports) await captureRefreshLayout(theme, 'history', viewport, '.message-history .pull-refresh-control');
+    }
+
+    await alice.getByRole('button', {name: 'Back to chats'}).click();
+    await alice.getByRole('button', {name: 'Account menu'}).click();
+    await alice.getByRole('menuitem', {name: 'Profile'}).click();
+    await expect(alice.getByRole('heading', {name: 'Profile'})).toBeVisible();
+    const profileRequest = alice.waitForRequest(request => request.method() === 'GET' && request.url().includes('/api/auth/me'));
+    await alice.getByRole('button', {name: 'Refresh profile'}).click();
+    await profileRequest;
+    expect(alice.url()).toContain('/profile');
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of refreshViewports) await captureRefreshLayout(theme, 'profile', viewport, '.profile-refresh');
+    }
+  } finally {
+    await context.close();
     await bobContext.close();
   }
 });
@@ -6075,7 +6394,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     await Promise.all([installDeterministicGroupMedia(owner, '#b84a3a'), installDeterministicGroupMedia(member, '#2563eb')]);
     // Delay only the removal notification: the real server and all other frames remain live.
     // A removal frame may precede the HTTP response, so the test must not depend on that ordering.
-    await member.routeWebSocket('**/ws/v3?ticket=*', socket => {
+    await member.routeWebSocket('**/ws/v4?ticket=*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (typeof message === 'string') {
@@ -6232,7 +6551,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     expect((pendingRect?.x ?? 390) + (pendingRect?.width ?? 390)).toBeLessThanOrEqual(391);
     await member.screenshot({path: testInfo.outputPath('departure-quarantine-pending-light-390.png'), fullPage: false});
     releaseProjection();
-    const alert = member.locator('.group-settings-error[role="alert"]').filter({hasText: 'The group is hidden until access is verified'});
+    const alert = member.getByRole('alert').filter({hasText: 'The group is hidden until access is verified'});
     await expect(alert).toContainText('hidden until access is verified', {timeout: 10_000});
     for (const theme of ['light', 'dark'] as const) {
       for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
@@ -6287,7 +6606,7 @@ test('a departed member quarantines private group UI after a newer revision and 
     await member.getByRole('button', {name: 'Back to chats'}).click();
     await expect(member.locator('.conversation-rail')).toBeVisible();
     await expect(member.locator('.chat-panel')).toBeHidden();
-    const railAlert = member.locator('.conversation-rail > .group-settings-error[role="alert"]');
+    const railAlert = member.locator('aside.conversation-rail app-notice .app-notice[role="alert"]');
     await expect(railAlert).toContainText('hidden until access is verified');
     await expect(railAlert.getByRole('button', {name: 'Refresh chats'})).toBeVisible();
     await member.screenshot({path: testInfo.outputPath('departure-quarantine-rail-retry-dark-390.png'), fullPage: false});
@@ -6625,8 +6944,8 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await expect(searchStatus).toHaveText('Searching people…');
     await expect(owner.getByRole('option')).toHaveCount(0);
     releaseErrorResponse();
-    const searchAlert = owner.locator('.group-search-status[role="alert"]');
-    await expect(searchAlert).toHaveText('Could not search for people. Try again.');
+    const searchAlert = owner.locator('.group-manager app-notice .app-notice');
+    await expect(searchAlert).toContainText('Could not search for people. Try again.');
     await expect(owner.getByRole('option')).toHaveCount(0);
     await owner.screenshot({path: testInfo.outputPath('group-member-search-error-dark-desktop.png'), fullPage: false});
     await owner.unroute('**/api/chat/users/search?*');
@@ -6722,7 +7041,7 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
       data: {role: 'member'},
     });
     expect(membershipRecovery.status()).toBe(200);
-    await expect(owner.locator('.group-settings-error[role="alert"]')).toContainText('Could not refresh group membership', {timeout: 10_000});
+    await expect(owner.getByRole('alert')).toContainText('Could not refresh group membership', {timeout: 10_000});
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toHaveCount(0);
     await expect(owner.locator('.person-option').filter({hasText: 'Browser acceptance group'})).toHaveCount(0);
     await expect(owner.locator('.message-history')).toHaveCount(0);
@@ -6730,11 +7049,12 @@ test('manages a group through authorized UI states', async ({browser}, testInfo)
     await expect(owner.locator('.group-manager, .group-members, .member-actions')).toHaveCount(0);
     await expect(owner.getByRole('button', {name: 'Join or start group audio call'})).toHaveCount(0);
     await expect(owner.locator('.composer textarea')).toBeDisabled();
-    await expect(owner.getByRole('button', {name: 'Refresh chats'})).toBeVisible();
+    const retryGroupProjection = owner.getByRole('alert').getByRole('button', {name: 'Refresh chats'});
+    await expect(retryGroupProjection).toBeVisible();
     await owner.screenshot({path: testInfo.outputPath('group-projection-transient-error-dark.png'), fullPage: false, timeout: 15_000});
     await owner.unroute(`**/api/chat/groups/${groupID}`);
-    await owner.getByRole('button', {name: 'Refresh chats'}).click();
-    await expect(owner.locator('.group-settings-error')).toHaveCount(0, {timeout: 10_000});
+    await retryGroupProjection.click();
+    await expect(owner.locator('app-notice.app-notice-error')).toHaveCount(0, {timeout: 10_000});
     await expect(owner.getByRole('heading', {name: 'Browser acceptance group'})).toBeVisible();
     await expect(owner.getByText(firstGroupMessage, {exact: true})).toBeVisible({timeout: 10_000});
     await owner.getByRole('button', {name: 'Manage group'}).click();
@@ -7393,7 +7713,7 @@ test('removing a member from an active group call stops only that member media a
       installDeterministicGroupMedia(removed, '#2563eb'),
       installDeterministicGroupMedia(remaining, '#15803d'),
     ]);
-    await removed.routeWebSocket('**/ws/v3*', socket => {
+    await removed.routeWebSocket('**/ws/v4*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (typeof message === 'string') {
@@ -7649,7 +7969,7 @@ test('group invitation expires without ending and solo starter can stay or end',
   const member = await memberContext.newPage();
   const commands: string[] = [];
   try {
-    await owner.routeWebSocket('**/ws/v3*', socket => {
+    await owner.routeWebSocket('**/ws/v4*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => socket.send(message));
       socket.onMessage(message => {
@@ -7790,7 +8110,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
   let dropObserverTerminal = false;
 
   try {
-    await observer.routeWebSocket('**/ws/v3*', socket => {
+    await observer.routeWebSocket('**/ws/v4*', socket => {
       const server = socket.connectToServer();
       server.onMessage(message => {
         if (dropObserverTerminal && typeof message === 'string') {
@@ -8442,6 +8762,85 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     await expect.poll(async () => owner.locator('audio[groupRemoteAudio]').evaluateAll(audios => audios.length === 1 && audios.every(audio => !audio.paused)), {timeout: 10_000}).toBeTruthy();
     await owner.screenshot({path: testInfo.outputPath('group-call-restored-dark.png'), fullPage: false, timeout: 15_000});
 
+    // Exercise the existing call transition on the chats rail without changing media ownership.
+    await owner.getByRole('button', {name: 'Minimize group call'}).click();
+    await expect(owner.locator('.call-minimized-banner')).toBeVisible();
+    await owner.locator('.back-button').evaluate(button => (button as HTMLButtonElement).click());
+    const railGroupCall = owner.locator('.conversation-rail .call-minimized-banner-rail');
+    await expect(railGroupCall).toBeVisible();
+    await expect(owner.locator('.group-call-panel')).toHaveCount(0);
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of [{width: 1440, height: 900}, {width: 1024, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        await expect(railGroupCall).toBeVisible();
+        await expect(railGroupCall).toContainText('Deterministic media group');
+        await expect(railGroupCall).toContainText('participants in the group call');
+        await expect(railGroupCall.getByRole('button', {name: 'Return to group call'})).toBeVisible();
+        const railGeometry = await railGroupCall.evaluate(banner => {
+          const bounds = banner.getBoundingClientRect();
+          const rail = banner.closest('.conversation-rail')?.getBoundingClientRect();
+          const controls = Array.from(banner.querySelectorAll<HTMLElement>('button')).map(control => control.getBoundingClientRect());
+          return {bounds: bounds.toJSON(), rail: rail?.toJSON(), scrollWidth: banner.scrollWidth, clientWidth: banner.clientWidth,
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
+            controls: controls.map(control => control.toJSON())};
+        });
+        expect(railGeometry.rail, `${theme}/${viewport.width}px minimized rail container`).toBeDefined();
+        expect(railGeometry.bounds.left).toBeGreaterThanOrEqual((railGeometry.rail?.left ?? 0) - 1);
+        expect(railGeometry.bounds.right).toBeLessThanOrEqual((railGeometry.rail?.right ?? viewport.width) + 1);
+        expect(railGeometry.scrollWidth).toBeLessThanOrEqual(railGeometry.clientWidth + 1);
+        expect(railGeometry.documentWidth).toBeLessThanOrEqual(railGeometry.viewportWidth + 1);
+        for (let index = 0; index < railGeometry.controls.length; index++) {
+          const control = railGeometry.controls[index];
+          expect(control.left).toBeGreaterThanOrEqual(railGeometry.bounds.left - 1);
+          expect(control.right).toBeLessThanOrEqual(railGeometry.bounds.right + 1);
+          for (const other of railGeometry.controls.slice(index + 1)) {
+            const overlaps = control.left < other.right && control.right > other.left && control.top < other.bottom && control.bottom > other.top;
+            expect(overlaps, `${theme}/${viewport.width}px minimized rail controls overlap`).toBe(false);
+          }
+        }
+        await owner.screenshot({path: testInfo.outputPath(`group-call-minimized-chats-rail-${theme}-${viewport.width}.png`), fullPage: false, timeout: 15_000});
+      }
+    }
+    await owner.getByRole('button', {name: 'Return to group call'}).click();
+    await expect(owner.locator('.group-call-panel')).toBeVisible();
+    await expect(owner.locator('.call-minimized-banner-rail')).toHaveCount(0);
+    await expect(owner.locator('.person-option').filter({hasText: 'Deterministic media group'})).toHaveClass(/selected/);
+    for (const theme of ['light', 'dark'] as const) {
+      for (const viewport of [{width: 1440, height: 900}, {width: 390, height: 844}]) {
+        await owner.setViewportSize(viewport);
+        await setTheme(owner, theme);
+        await expect(owner.locator('.group-call-panel')).toBeVisible();
+        await expect(owner.locator('.call-minimized-banner')).toHaveCount(0);
+        const restoredGeometry = await owner.locator('.group-call-panel').evaluate(panel => {
+          const bounds = panel.getBoundingClientRect();
+          const chat = panel.closest('.chat-panel')?.getBoundingClientRect();
+          const actions = Array.from(panel.querySelectorAll<HTMLElement>('button')).map(button => button.getBoundingClientRect());
+          return {bounds: bounds.toJSON(), chat: chat?.toJSON(), actions: actions.map(action => action.toJSON()),
+            documentWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth};
+        });
+        expect(restoredGeometry.bounds.left).toBeGreaterThanOrEqual(0);
+        expect(restoredGeometry.bounds.right).toBeLessThanOrEqual(viewport.width + 1);
+        expect(restoredGeometry.bounds.bottom).toBeLessThanOrEqual(viewport.height + 1);
+        expect(restoredGeometry.bounds.left).toBeGreaterThanOrEqual((restoredGeometry.chat?.left ?? 0) - 1);
+        expect(restoredGeometry.bounds.right).toBeLessThanOrEqual((restoredGeometry.chat?.right ?? viewport.width) + 1);
+        expect(restoredGeometry.documentWidth).toBeLessThanOrEqual(restoredGeometry.viewportWidth + 1);
+        for (const action of restoredGeometry.actions) {
+          expect(action.left).toBeGreaterThanOrEqual(0);
+          expect(action.right).toBeLessThanOrEqual(viewport.width + 1);
+          expect(action.bottom).toBeLessThanOrEqual(viewport.height + 1);
+        }
+        for (let index = 0; index < restoredGeometry.actions.length; index++) {
+          for (const other of restoredGeometry.actions.slice(index + 1)) {
+            const action = restoredGeometry.actions[index];
+            const overlaps = action.left < other.right && action.right > other.left && action.top < other.bottom && action.bottom > other.top;
+            expect(overlaps, `${theme}/${viewport.width}px restored call controls overlap`).toBe(false);
+          }
+        }
+        await owner.screenshot({path: testInfo.outputPath(`group-call-restored-selected-${theme}-${viewport.width}.png`), fullPage: false, timeout: 15_000});
+      }
+    }
+
     const dark = await assertGroupCallLayout(owner, testInfo, 'dark', {width: 1440, height: 900});
     const light = await assertGroupCallLayout(owner, testInfo, 'light', {width: 1440, height: 900});
     await assertGroupCallLayout(owner, testInfo, 'dark', {width: 2560, height: 1440});
@@ -8580,10 +8979,30 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     dropObserverTerminal = true;
     await setTheme(owner, 'light');
     await setTheme(observer, 'dark');
-    await Promise.all([owner, observer].map(page => page.setViewportSize({width: 1440, height: 900})));
+    await owner.setViewportSize({width: 390, height: 844});
+    await observer.setViewportSize({width: 1440, height: 900});
     await owner.getByRole('button', {name: 'Minimize group call'}).click();
-    await expect(owner.locator('.call-minimized-banner:not(.call-minimized-banner-rail):not(.call-minimized-banner-chat)')).toBeVisible();
+    await expect(owner.locator('.call-minimized-banner')).toBeVisible();
+    await owner.getByRole('button', {name: 'Back to chats'}).click();
+    const mobileCallBanner = owner.locator('.call-minimized-banner-rail');
+    const restoreGroupCall = owner.getByRole('button', {name: 'Return to group call'});
+    const endMinimizedGroupCall = owner.getByRole('button', {name: 'End group call for everyone'});
+    await expect(mobileCallBanner).toBeVisible();
+    await expect(restoreGroupCall).toBeVisible();
+    await expect(endMinimizedGroupCall).toBeEnabled();
+    await owner.screenshot({path: testInfo.outputPath('group-call-mobile-back-to-chats-banner.png'), fullPage: false, timeout: 15_000});
+    await restoreGroupCall.click();
+    await expect(owner.locator('.group-call-panel')).toBeVisible();
+    await expect(mobileCallBanner).toHaveCount(0);
+    await owner.screenshot({path: testInfo.outputPath('group-call-mobile-restored.png'), fullPage: false, timeout: 15_000});
+    await expect(owner.getByRole('button', {name: 'Back to chats'})).toBeVisible();
+    await owner.getByRole('button', {name: 'Back to chats'}).click();
+    await expect(mobileCallBanner).toBeVisible();
+    await expect(owner.getByRole('button', {name: 'Return to group call'})).toBeVisible();
     await owner.getByRole('button', {name: 'End group call for everyone'}).click();
+    await expect(owner.getByRole('button', {name: 'Return to group call'})).toHaveCount(0);
+    await expect(owner.locator('.call-minimized-banner-rail')).toHaveCount(0);
+    await owner.setViewportSize({width: 1440, height: 900});
     const ownerTerminal = owner.locator('app-call-terminal-notice .group-call-terminal');
     await expect(ownerTerminal).toBeVisible({timeout: 5_000});
     await expect(ownerTerminal).toContainText('Group call ended.');
@@ -8609,6 +9028,7 @@ test('runs a deterministic three-member group media lifecycle', async ({browser}
     await assertTerminalCapture(owner, 'light', {width: 390, height: 844});
     await owner.screenshot({path: testInfo.outputPath('group-call-terminal-owner-light-390-immediate.png'), fullPage: false, timeout: 15_000});
     await owner.setViewportSize({width: 1440, height: 900});
+    await owner.getByRole('button', {name: 'Deterministic media group', exact: true}).click();
     await expect.poll(() => observer.evaluate(() => (window as Window & {__groupSyncRequests?: string[]}).__groupSyncRequests?.length ?? 0), {timeout: 20_000}).toBeGreaterThan(observerSyncsBeforeTerminal);
     await expect(observer.locator('.group-call-terminal')).toContainText('Group call ended.', {timeout: 30_000});
     await expect(observer.locator('.group-call-devices')).not.toBeVisible();

@@ -1,5 +1,6 @@
-import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, Inject, OnDestroy, OnInit, Optional, ViewChild} from '@angular/core';
-import {BehaviorSubject, finalize, map, Observable, Subscription} from 'rxjs';
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, Inject, OnDestroy, OnInit, Optional, QueryList, ViewChild, ViewChildren} from '@angular/core';
+import {MatTooltip} from '@angular/material/tooltip';
+import {BehaviorSubject, finalize, map, Observable, Subscription, timeout} from 'rxjs';
 import {Conversation, GroupConversation, GroupMember, GroupPeerReadCursor, GroupRole} from './conversation.model';
 import {compareConversationActivityDescending} from './conversation-activity';
 import {ConversationService, GroupProjectionNotFoundError} from './conversation.service';
@@ -10,7 +11,7 @@ import {ConnectionState, DataProviderService, MessageSocketEvent} from './data-p
 import {createRandomID} from '../login/login';
 import {AuthService} from '../auth/auth.service';
 import {Profile} from '../auth/profile.model';
-import {messageSenderDisplayName, toGroupPeerReadCursor, toMessage, toMessageMentionWires} from './wire.mapper';
+import {messageSenderDisplayName, toGroupPeerReadCursor, toMessage, toMessageSendEvent} from './wire.mapper';
 import {CallFacade, CallState} from './call-facade.service';
 import {GroupCallFacade, GroupCallPeer, GroupCallState} from './group-call-facade.service';
 import {HomeNotificationService} from './home-notification.service';
@@ -24,8 +25,10 @@ import {parseGiphyMedia} from './giphy-media';
 import {GiphySearchPage, GiphySearchResult, GiphySearchService} from './giphy-search.service';
 import {PwaService} from '../pwa/pwa.service';
 import {PushClickIntent, PushClickService} from '../pwa/push-click.service';
+import {HttpErrorResponse} from '@angular/common/http';
 
 const GIPHY_SEARCH_COOLDOWN_MS = 750;
+const REPLY_JUMP_PAGE_LIMIT = 10;
 
 export const COMPOSER_EMOJIS = [
     {label: 'Smiling face', glyph: '😊'}, {label: 'Laughing face', glyph: '😂'},
@@ -65,7 +68,21 @@ export class HomeComponent implements OnInit, OnDestroy {
     public messages: Message[] = [];
     public historyCursor?: string;
     public isHistoryLoading = false;
+    public historyLoadError = false;
+    public historyPullRefreshing = false;
+    public historyPullError = false;
+    public pullRefreshing = false;
+    public pullRefreshError = false;
     public draft = '';
+    public replyTarget?: Message;
+    public replyQuotes = new Map<string, {state: 'loading' | 'available' | 'unavailable' | 'error'; message?: Message}>();
+    private replyRequests = new Subscription();
+    private replyJumpID?: string;
+    private replyQueue: string[] = [];
+    private replyActive = false;
+    private replyTimer?: number;
+    private replyLastRequestAt = 0;
+    private replyGeneration = 0;
     public emojiPickerOpen = false;
     public giphyPickerOpen = false;
     public giphyQuery = '';
@@ -75,6 +92,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     public giphyPreviewFailed = false;
     public giphySearchState: 'idle' | 'loading' | 'results' | 'empty' | 'error' = 'idle';
     public giphySearchError = '';
+    public giphySearchRetryable = false;
     public giphyPageLoading = false;
     public giphyPageError = false;
     public giphyHasMore = false;
@@ -118,6 +136,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     private lastTypingStartAt = 0;
     private readonly pendingRequests = new Map<string, {clientMessageID: string; timeout: number}>();
     private historyLoadID = 0;
+    private preserveHistoryScroll?: {conversationID: string; scrollTop: number; scrollHeight: number};
     private onlineUserIDs = new Set<string>();
     private typingConversationID?: string;
     private readonly groupTypingTimeouts = new Map<string, number>();
@@ -178,6 +197,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     @ViewChild('giphyPickerTrigger') private giphyPickerTrigger?: ElementRef<HTMLButtonElement>;
     @ViewChild('giphySearchInput') private set giphySearchInput(input: ElementRef<HTMLInputElement> | undefined) { input?.nativeElement.focus(); }
     @ViewChild('archiveModeControl') private archiveModeControl?: ElementRef<HTMLButtonElement>;
+    @ViewChildren('archiveActionTooltipRef') private archiveActionTooltips?: QueryList<MatTooltip>;
     @ViewChild(GroupMemberListComponent) private groupMemberList?: GroupMemberListComponent;
 
     constructor(private conversationService: ConversationService, private authService: AuthService, private changeDetector: ChangeDetectorRef, private dataProvider: DataProviderService, public call: CallFacade, groupAccess: HomeGroupAccessFacade, @Optional() @Inject(HomeNotificationService) private readonly notifications?: HomeNotificationService, @Optional() @Inject(GroupCallFacade) public groupCall?: GroupCallFacade, @Optional() @Inject(PwaService) private readonly pwa?: PwaService, @Optional() private readonly giphySearch?: GiphySearchService, @Optional() @Inject(PushClickService) private readonly pushClicks?: PushClickService) {
@@ -186,6 +206,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.unreadBadgeSubscription.add(this.conversations.subscribe(conversations => this.pwa?.setUnreadCount(conversations.reduce((total, conversation) => total + conversation.unreadCount, 0))));
         if (this.pushClicks) this.groupAccessSubscription.add(this.pushClicks.intents.subscribe(intent => {
             this.pushIntentGeneration++;
+            this.replyJumpID = undefined;
             this.clearPendingPushCallRequests();
             this.pushConversationLoadGeneration++;
             this.pendingPushConversationLoadID = undefined;
@@ -250,6 +271,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public ngOnDestroy(): void {
+        this.resetReplyLookups();
         this.clearGiphyPicker();
         window.clearTimeout(this.giphySearchCooldownTimer);
         this.conversationRefreshGeneration++;
@@ -799,8 +821,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     public searchGiphy(): void {
         const term = this.giphyQuery.trim();
         if (!this.giphyEnabled || !this.giphyPickerOpen || !this.selectedConversation || !this.socketReady) return;
-        if (!term || term.length > 50) { this.giphySearchState = 'error'; this.giphySearchError = 'Enter a search term of 1 to 50 characters.'; return; }
-        if (!this.giphySearch) { this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; return; }
+        if (!term || term.length > 50) { this.giphySearchState = 'error'; this.giphySearchError = 'Enter a search term of 1 to 50 characters.'; this.giphySearchRetryable = false; this.changeDetector.markForCheck(); return; }
+        if (!this.giphySearch) { this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search is unavailable.'; this.giphySearchRetryable = false; this.changeDetector.markForCheck(); return; }
         if (this.giphySearchCoolingDown) return;
         // UX/quota hygiene only—not a security boundary. Public production keys still require provider-side origin restrictions and quota monitoring.
         this.giphySearchCooldownUntil = Date.now() + GIPHY_SEARCH_COOLDOWN_MS;
@@ -809,11 +831,11 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphySearchRequest?.unsubscribe();
         const generation = ++this.giphySearchGeneration;
         this.giphyActiveQuery = term;
-        this.giphySearchState = 'loading'; this.giphySearchError = ''; this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined;
+        this.giphySearchState = 'loading'; this.giphySearchError = ''; this.giphySearchRetryable = false; this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined;
         this.giphyPageError = false; this.giphyPageLoading = false; this.giphyHasMore = false; this.giphyNextOffset = 0;
         this.giphySearchRequest = this.giphySearch.search(term, 0).subscribe({
             next: page => { if (generation !== this.giphySearchGeneration || !this.giphyEnabled || !this.giphyPickerOpen) return; this.acceptGiphyPage(page, false); },
-            error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.changeDetector.markForCheck(); },
+            error: () => { if (generation !== this.giphySearchGeneration) return; this.giphySearchState = 'error'; this.giphySearchError = 'GIPHY search failed. Try again.'; this.giphySearchRetryable = true; this.changeDetector.markForCheck(); },
         });
     }
 
@@ -853,6 +875,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.giphyHasMore = page.hasMore && this.giphyNextOffset <= 4999;
         this.giphyPageError = false;
         this.giphySearchState = this.giphyResults.length ? 'results' : 'empty';
+        this.giphySearchRetryable = false;
         this.changeDetector.markForCheck();
     }
 
@@ -887,7 +910,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     private clearGiphyPicker(): void {
         this.giphySearchGeneration++;
         this.giphySearchRequest?.unsubscribe(); this.giphySearchRequest = undefined;
-        this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = '';
+        this.giphyResults = []; this.giphyThumbnailFailures = {}; this.selectedGiphy = undefined; this.giphyQuery = ''; this.giphySearchState = 'idle'; this.giphySearchError = ''; this.giphySearchRetryable = false;
         this.giphyPageLoading = false; this.giphyPageError = false; this.giphyHasMore = false; this.giphyNextOffset = 0; this.giphyActiveQuery = '';
     }
 
@@ -1182,19 +1205,25 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.stopTyping();
         this.clearRemoteTypingState();
         if (!preserveCallSurface && this.isOngoingCall()) this.minimizeCall();
+        if (!preserveCallSurface && this.groupCall?.isOngoing) this.minimizeGroupCall();
         const selectedConversation = {...conversation};
-        if (this.selectedConversation?.id !== selectedConversation.id) { this.giphyPickerOpen = false; this.clearGiphyPicker(); }
+        if (this.selectedConversation?.id !== selectedConversation.id) { this.giphyPickerOpen = false; this.clearGiphyPicker(); this.clearReplies(); }
         if (this.selectedConversation?.id !== selectedConversation.id) this.draftMentions.splice(0);
         this.mentionSuggestions = [];
         this.isCreatingGroup = false;
         if (selectedConversation.kind === 'group') this.groupName = selectedConversation.name;
         this.selectedConversation = selectedConversation;
+        this.preserveHistoryScroll = undefined;
+        this.historyLoadError = false;
+        this.historyPullRefreshing = false;
+        this.historyPullError = false;
         const eligibleMentionIDs = new Set(selectedConversation.kind === 'group'
             ? selectedConversation.members.filter(member => member.userId !== this.profile?.id).map(member => member.userId)
             : [selectedConversation.otherUserId].filter(userID => userID !== this.profile?.id));
         this.draftMentions.splice(0, this.draftMentions.length, ...this.draftMentions.filter(mention => eligibleMentionIDs.has(mention.userId)));
         this.showDepartedGroupStatus = false;
         if (selectedConversation.kind === 'group' && selectedConversation.accessNeedsVerification) {
+            this.clearReplies();
             this.messages = [];
             this.showDepartedGroupStatus = true;
             this.groupAccess.verifyQuarantined(selectedConversation.id, this.groupAccessContext(selectedConversation.id));
@@ -1213,6 +1242,9 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public closeConversation(trackNavigationIntent = true): void {
+        if (this.groupCall?.isOngoing) this.minimizeGroupCall();
+        if (this.isOngoingCall()) this.minimizeCall();
+        this.clearReplies();
         this.giphyPickerOpen = false;
         this.clearGiphyPicker();
         if (trackNavigationIntent) this.navigationIntentVersion++;
@@ -1220,6 +1252,10 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.stopTyping();
         this.clearRemoteTypingState();
         this.historyLoadID++;
+        this.preserveHistoryScroll = undefined;
+        this.historyPullRefreshing = false;
+        this.historyLoadError = false;
+        this.historyPullError = false;
         this.selectedConversation = undefined;
         this.notifications?.setSelectedConversationID?.(undefined);
         this.messages = [];
@@ -1254,20 +1290,19 @@ export class HomeComponent implements OnInit, OnDestroy {
         const requestID = createRandomID();
         this.stopTyping();
         const trimOffset = /^\s*/u.exec(originalDraft)?.[0].length || 0;
-        const mentions = toMessageMentionWires(this.draftMentions.filter(mention => mention.start >= trimOffset && mention.end <= trimOffset + body.length).map(mention => ({...mention, start: mention.start - trimOffset, end: mention.end - trimOffset})));
-        const sent = this.dataProvider.send({
-            type: 'message.send',
-            request_id: requestID,
-            payload: {conversation_id: this.selectedConversation.id, client_message_id: clientMessageId, body, content_type: 'text', ...(mentions.length ? {mentions} : {})},
-        });
+        const mentions = this.draftMentions.filter(mention => mention.start >= trimOffset && mention.end <= trimOffset + body.length).map(mention => ({...mention, start: mention.start - trimOffset, end: mention.end - trimOffset}));
+        const targetID = this.replyTarget?.id;
+        const sent = this.dataProvider.send(toMessageSendEvent(requestID, this.selectedConversation.id, clientMessageId, body, mentions, targetID));
         if (!sent) {
             this.socketReady = false;
             this.sendStatus = 'Secure connection was lost. Refresh to reconnect.';
             this.changeDetector.markForCheck();
             return;
         }
-        const optimisticMentions = mentions.map(mention => ({userId: mention.user_id, start: mention.start, end: mention.end}));
-        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: this.selectedConversation.id, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body, contentType: 'text', ...(optimisticMentions.length ? {mentions: optimisticMentions} : {}), createdAt: new Date().toISOString(), pending: true}];
+        const optimisticMentions = mentions;
+        this.messages = [...this.messages, {id: `pending:${clientMessageId}`, conversationId: this.selectedConversation.id, senderId: this.profile?.id || '', clientMessageId, sequence: 0, body, contentType: 'text', ...(targetID ? {replyToMessageId: targetID} : {}), ...(optimisticMentions.length ? {mentions: optimisticMentions} : {}), createdAt: new Date().toISOString(), pending: true}];
+        this.replyTarget = undefined;
+        this.loadReplyQuotes();
         this.sendStatus = '';
         this.draft = '';
         this.draftSnapshot = '';
@@ -1431,8 +1466,13 @@ export class HomeComponent implements OnInit, OnDestroy {
         }
         if (event.type !== 'message.accepted' && event.type !== 'message.created') return;
         const message = toMessage(event.payload);
-        if (event.type === 'message.accepted' && event.request_id) this.resolvePendingMessage(event.request_id);
         if (!message) return;
+        if (event.type === 'message.accepted' && event.request_id && this.pendingRequests.get(event.request_id)?.clientMessageID === message.clientMessageId) this.resolvePendingMessage(event.request_id);
+        if (this.isOwnMessage(message)) {
+            for (const [requestID, pending] of this.pendingRequests) {
+                if (pending.clientMessageID === message.clientMessageId) this.resolvePendingMessage(requestID);
+            }
+        }
         if (!this.selectedConversation || message.conversationId !== this.selectedConversation.id) {
             this.updateBackgroundConversationActivity(message.conversationId, message.createdAt, message.sequence, event.type === 'message.created');
             this.changeDetector.markForCheck();
@@ -1445,6 +1485,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         } else if (!this.messages.some(item => item.id === message.id)) {
             this.messages = [...this.messages, message];
         }
+        this.loadReplyQuotes();
         const incomingDuringCall = event.type === 'message.created' && !this.isOwnMessage(message) && this.isCallSurfaceVisible() && this.call.state.conversationID === message.conversationId;
         if (event.type === 'message.created' && !this.isOwnMessage(message) && !incomingDuringCall) this.markSelectedConversationRead();
         this.updateConversationActivity(message.createdAt, incomingDuringCall);
@@ -1465,8 +1506,26 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
 
     public refreshChats(): void {
+        this.pullRefreshing = true;
+        this.pullRefreshError = false;
         this.groupAccess.retryQuarantined();
         this.refreshConversations();
+    }
+
+    public refreshSelectedHistory(): void {
+        if (!this.selectedConversation || this.isHistoryLoading || (this.selectedConversation.kind === 'group' && this.selectedConversation.accessNeedsVerification)) return;
+        const historyElement = this.messageHistory?.nativeElement;
+        this.preserveHistoryScroll = historyElement ? {conversationID: this.selectedConversation.id, scrollTop: historyElement.scrollTop, scrollHeight: historyElement.scrollHeight} : undefined;
+        this.historyLoadError = false;
+        this.historyPullRefreshing = true;
+        this.historyPullError = false;
+        this.loadHistory();
+    }
+
+    public retrySelectedHistoryLoad(): void {
+        if (!this.selectedConversation || this.isHistoryLoading || (this.selectedConversation.kind === 'group' && this.selectedConversation.accessNeedsVerification)) return;
+        this.historyLoadError = false;
+        this.loadHistory();
     }
 
     public retryConversationList(): void {
@@ -1712,6 +1771,8 @@ export class HomeComponent implements OnInit, OnDestroy {
                 this.groupNextCursor = snapshot.groups.nextCursor;
                 this.groupSnapshotLoading = false;
                 this.isLoading = false;
+                this.pullRefreshing = false;
+                this.pullRefreshError = false;
                 this.groupPageError = false;
                 this.groupPageLoaded = true;
                 this.conversationsError = false;
@@ -1766,6 +1827,7 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.reconciliationRequest = undefined;
         const messages = event.payload.messages.map(toMessage).filter((message): message is Message => message !== null);
         this.messages = this.mergeHistoryMessages(messages);
+        this.loadReplyQuotes(true);
         this.historyCursor = event.payload.has_more ? String(event.payload.next_after_sequence) : undefined;
         this.ownReadSequences.set(request.conversationID, event.payload.own_read_sequence);
         const reconciledConversation = this.conversations.getValue().find(item => item.id === request.conversationID) || this.selectedConversation;
@@ -1829,6 +1891,8 @@ export class HomeComponent implements OnInit, OnDestroy {
                 this.groupNextCursor = snapshot.groups.nextCursor;
                 this.groupSnapshotLoading = false;
                 this.isLoading = false;
+                this.pullRefreshing = false;
+                this.pullRefreshError = false;
                 this.groupPageError = false;
                 this.groupPageLoaded = true;
                 this.conversationsError = false;
@@ -1841,6 +1905,7 @@ export class HomeComponent implements OnInit, OnDestroy {
                 if (refreshedSelected) {
                     this.selectedConversation = refreshedSelected;
                     if (refreshedSelected.kind === 'group' && refreshedSelected.accessNeedsVerification) {
+                        this.clearReplies();
                         this.messages = [];
                         this.historyCursor = undefined;
                         this.showGroupManager = false;
@@ -1871,9 +1936,12 @@ export class HomeComponent implements OnInit, OnDestroy {
             error: () => {
                 if (generation !== this.conversationRefreshGeneration) return;
                 if (retriesRemaining === 0) {
+                    const wasPullRefreshing = this.pullRefreshing;
                     this.groupSnapshotLoading = false;
                     this.isLoading = false;
-                    this.conversationsError = true;
+                    this.pullRefreshing = false;
+                    if (this.initialConversationLoadState !== 'ready') this.conversationsError = true;
+                    else if (wasPullRefreshing) this.pullRefreshError = true;
                     this.changeDetector.markForCheck();
                     return;
                 }
@@ -1940,6 +2008,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     public toggleArchive(conversation: Conversation): void {
         if (this.archiveActionsPending.has(conversation.id)) return;
+        this.archiveActionTooltips?.forEach(tooltip => tooltip.hide(0));
         const sourceMode = this.archiveMode;
         const archiving = sourceMode === 'active';
         const destinationMode = archiving ? 'archived' : 'active';
@@ -2315,6 +2384,120 @@ export class HomeComponent implements OnInit, OnDestroy {
         }
     }
 
+    public startReply(message: Message): void {
+        if (message.kind === 'system' || message.pending || message.uncertain || message.sequence < 1 || message.conversationId !== this.selectedConversation?.id) return;
+        this.replyTarget = message;
+    }
+
+    public jumpToReply(messageID: string): void {
+        if (!this.selectedConversation || this.replyQuotes.get(messageID)?.state !== 'available') return;
+        this.pushCallNotice = '';
+        this.pushIntentGeneration++;
+        this.replyJumpID = messageID;
+        this.enqueueReplyQuote(messageID, true);
+    }
+
+    private beginReplyJump(messageID: string): void {
+        if (this.replyJumpID !== messageID) return;
+        this.pendingPushMessageID = messageID;
+        if (this.messages.some(message => message.id === messageID)) {
+            this.pendingPushMessageID = undefined;
+            this.replyJumpID = undefined;
+            this.highlightPushMessage(messageID);
+        } else if (this.historyCursor) {
+            this.loadHistory(this.historyCursor, true);
+        } else {
+            this.pendingPushMessageID = undefined;
+            this.replyJumpID = undefined;
+            this.pushCallNotice = 'Message not found in loaded history. Try loading older messages.';
+        }
+    }
+
+    private clearReplies(): void {
+        this.resetReplyLookups();
+        this.replyQuotes.clear();
+        this.replyTarget = undefined;
+        if (this.replyJumpID && this.pendingPushMessageID === this.replyJumpID) {
+            this.pendingPushMessageID = undefined;
+            this.pushIntentGeneration++;
+        }
+        this.replyJumpID = undefined;
+    }
+
+    private resetReplyLookups(): void {
+        this.replyGeneration++;
+        window.clearTimeout(this.replyTimer);
+        this.replyTimer = undefined;
+        this.replyRequests.unsubscribe();
+        this.replyRequests = new Subscription();
+        this.replyQueue = [];
+        this.replyActive = false;
+    }
+
+    private loadReplyQuotes(revalidate = false): void {
+        const conversationID = this.selectedConversation?.id;
+        if (!conversationID) return;
+        if (revalidate) {
+            this.resetReplyLookups();
+            this.replyQuotes.clear();
+        }
+        for (const message of [...this.messages].reverse()) {
+            const targetID = message.replyToMessageId;
+            if (!targetID || this.replyQuotes.has(targetID)) continue;
+            this.enqueueReplyQuote(targetID);
+        }
+    }
+
+    public retryReplyQuote(targetID: string): void {
+        if (this.replyQuotes.get(targetID)?.state === 'error') this.enqueueReplyQuote(targetID, true);
+    }
+
+    private enqueueReplyQuote(targetID: string, priority = false): void {
+        this.replyQuotes.set(targetID, {state: 'loading'});
+        this.replyQueue = this.replyQueue.filter(id => id !== targetID);
+        if (priority) this.replyQueue.unshift(targetID); else this.replyQueue.push(targetID);
+        this.pumpReplyQueue();
+    }
+
+    private pumpReplyQueue(): void {
+        if (this.replyActive || this.replyTimer || !this.replyQueue.length || !this.selectedConversation) return;
+        const delay = Math.max(0, this.replyLastRequestAt + 1000 - Date.now());
+        if (delay) {
+            this.replyTimer = window.setTimeout(() => { this.replyTimer = undefined; this.pumpReplyQueue(); }, delay);
+            return;
+        }
+        const targetID = this.replyQueue.shift();
+        if (!targetID) return;
+        const conversationID = this.selectedConversation.id;
+        const generation = this.replyGeneration;
+        this.replyActive = true;
+        this.replyLastRequestAt = Date.now();
+        this.replyRequests.add(this.conversationService.message(conversationID, targetID).pipe(timeout({first: 15_000}), finalize(() => {
+            if (generation !== this.replyGeneration) return;
+            this.replyActive = false;
+            this.pumpReplyQueue();
+        })).subscribe({
+            next: target => {
+                if (generation !== this.replyGeneration || this.selectedConversation?.id !== conversationID) return;
+                this.replyQuotes.set(targetID, {state: 'available', message: target});
+                if (this.replyJumpID === targetID) this.beginReplyJump(targetID);
+                this.changeDetector.markForCheck();
+            },
+            error: (error: unknown) => {
+                if (generation !== this.replyGeneration || this.selectedConversation?.id !== conversationID) return;
+                if (error instanceof HttpErrorResponse && error.status === 429) {
+                    const retrySeconds = Number(error.headers.get('Retry-After'));
+                    const wait = Number.isFinite(retrySeconds) && retrySeconds > 0 ? Math.min(retrySeconds, 3600) * 1000 : 60_000;
+                    this.replyLastRequestAt = Date.now() + wait - 1000;
+                }
+                this.replyQuotes.set(targetID, {state: error instanceof HttpErrorResponse && error.status === 404 ? 'unavailable' : 'error'});
+                if (error instanceof HttpErrorResponse && error.status === 404 && this.replyTarget?.id === targetID) this.replyTarget = undefined;
+                if (this.replyJumpID === targetID) this.replyJumpID = undefined;
+                this.changeDetector.markForCheck();
+            },
+        }));
+    }
+
     private loadHistory(before?: string, prepend = false, pushPagination?: {messageID: string; generation: number; requestedCursors: Set<string>}): void {
         if (!this.selectedConversation || (this.selectedConversation.kind === 'group' && this.selectedConversation.accessNeedsVerification)) {
             return;
@@ -2327,31 +2510,51 @@ export class HomeComponent implements OnInit, OnDestroy {
         this.conversationService.history(conversationID, before).subscribe({
             next: history => {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
+                this.historyLoadError = false;
+                this.historyPullRefreshing = false;
+                this.historyPullError = false;
                 this.messages = this.mergeHistoryMessages([...history.messages].reverse());
+                this.loadReplyQuotes(!prepend);
                 this.historyCursor = history.nextCursor;
                 const pushIsCurrent = pendingPush && pendingPush.generation === this.pushIntentGeneration && this.pendingPushMessageID === pendingPush.messageID;
                 const target = pushIsCurrent ? this.messages.find(message => message.id === pendingPush.messageID) : undefined;
                 if (target) {
                     this.pendingPushMessageID = undefined;
+                    if (this.replyJumpID === target.id) this.replyJumpID = undefined;
                     this.highlightPushMessage(target.id);
                 } else if (pushIsCurrent) {
                     const nextCursor = history.nextCursor;
-                    if (nextCursor && !pendingPush.requestedCursors.has(nextCursor)) {
+                    const replyJump = this.replyJumpID === pendingPush.messageID;
+                    if (nextCursor && (!replyJump || pendingPush.requestedCursors.size < REPLY_JUMP_PAGE_LIMIT) && !pendingPush.requestedCursors.has(nextCursor)) {
                         this.loadHistory(nextCursor, true, pendingPush);
                     } else {
                         this.pendingPushMessageID = undefined;
-                        this.pushCallNotice = 'This message is no longer available.';
+                        if (this.replyJumpID === pendingPush.messageID) this.replyJumpID = undefined;
+                        this.pushCallNotice = replyJump ? 'Could not reach this message yet. Load older messages or try again.' : 'This message is no longer available.';
                     }
                 }
                 if (!prepend && this.markSelectedConversationRead()) this.clearSelectedConversationUnreadCount();
                 this.changeDetector.markForCheck();
-                if (!prepend && !pushIsCurrent) this.scrollToLatest();
+                const preserveScroll = this.preserveHistoryScroll;
+                if (preserveScroll?.conversationID === conversationID) {
+                    window.setTimeout(() => {
+                        const element = this.messageHistory?.nativeElement;
+                        if (element && this.selectedConversation?.id === conversationID) element.scrollTop = preserveScroll.scrollTop + (element.scrollHeight - preserveScroll.scrollHeight);
+                        if (this.preserveHistoryScroll === preserveScroll) this.preserveHistoryScroll = undefined;
+                    }, 0);
+                } else if (!prepend && !pushIsCurrent) this.scrollToLatest();
             },
             error: () => {
                 if (!this.isCurrentHistoryLoad(historyLoadID, conversationID)) return;
+                if (this.historyPullRefreshing) this.historyPullError = true;
+                else if (!before) this.historyLoadError = true;
+                this.historyPullRefreshing = false;
+                if (this.preserveHistoryScroll?.conversationID === conversationID) this.preserveHistoryScroll = undefined;
                 if (pendingPush && pendingPush.generation === this.pushIntentGeneration && this.pendingPushMessageID === pendingPush.messageID) {
                     this.pendingPushMessageID = undefined;
-                    this.pushCallNotice = 'This message is no longer available.';
+                    const replyJump = this.replyJumpID === pendingPush.messageID;
+                    if (this.replyJumpID === pendingPush.messageID) this.replyJumpID = undefined;
+                    this.pushCallNotice = replyJump ? 'Could not reach this message yet. Load older messages or try again.' : 'This message is no longer available.';
                 }
                 this.isHistoryLoading = false;
                 this.changeDetector.markForCheck();
@@ -2446,12 +2649,7 @@ export class HomeComponent implements OnInit, OnDestroy {
     private replayUncertainMessages(): void {
         for (const message of this.messages.filter(item => item.uncertain && !item.pending && item.senderId === this.profile?.id)) {
             const requestID = createRandomID();
-            const mentions = toMessageMentionWires(message.mentions || []);
-            if (!this.dataProvider.send({
-                type: 'message.send',
-                request_id: requestID,
-                payload: {conversation_id: message.conversationId, client_message_id: message.clientMessageId, body: message.body, content_type: 'text', ...(mentions.length ? {mentions} : {})},
-            })) continue;
+            if (!this.dataProvider.send(toMessageSendEvent(requestID, message.conversationId, message.clientMessageId, message.body, message.mentions || [], message.replyToMessageId))) continue;
             const timeout = window.setTimeout(() => this.markMessageUncertain(requestID), 10_000);
             this.pendingRequests.set(requestID, {clientMessageID: message.clientMessageId, timeout});
             this.messages = this.messages.map(item => item.clientMessageId === message.clientMessageId ? {...item, pending: true} : item);

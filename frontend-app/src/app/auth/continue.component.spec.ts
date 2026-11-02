@@ -1,11 +1,10 @@
-import {CommonModule} from '@angular/common';
 import {provideZonelessChangeDetection} from '@angular/core';
 import {TestBed} from '@angular/core/testing';
-import {RouterModule} from '@angular/router';
 import {of, Subject, throwError} from 'rxjs';
 import {AuthService} from './auth.service';
 import {BrowserSessionClient} from './browser-session.client';
 import {ContinueComponent} from './continue.component';
+import {AppModule} from '../app.module';
 import {HostService} from './host.service';
 
 describe('ContinueComponent', () => {
@@ -57,8 +56,7 @@ describe('ContinueComponent rendered discovery', () => {
     it('renders a saved session when discovery completes asynchronously', async () => {
         const discovery = new Subject<{candidates: {browser_id: string; generation: string; display_name: string}[]}>();
         await TestBed.configureTestingModule({
-            declarations: [ContinueComponent],
-            imports: [CommonModule, RouterModule.forRoot([])],
+            imports: [AppModule],
             providers: [
                 provideZonelessChangeDetection(),
                 {provide: BrowserSessionClient, useValue: {discover: () => discovery}},
@@ -74,5 +72,23 @@ describe('ContinueComponent rendered discovery', () => {
         await fixture.whenStable();
         expect(fixture.nativeElement.textContent).toContain('Continue as Alice');
         expect(fixture.nativeElement.textContent).not.toContain('Checking your session');
+    });
+
+    it('renders a recoverable discovery failure as an accessible persistent notice with retry', async () => {
+        await TestBed.configureTestingModule({
+            imports: [AppModule],
+            providers: [
+                provideZonelessChangeDetection(),
+                {provide: BrowserSessionClient, useValue: {discover: () => throwError(() => ({status: 503}))}},
+                {provide: AuthService, useValue: {}},
+                {provide: HostService, useValue: {browserSessionEndpoints: () => ({})}},
+            ],
+        }).compileComponents();
+        const fixture = TestBed.createComponent(ContinueComponent);
+        await fixture.whenStable();
+        const notice = fixture.nativeElement.querySelector('app-notice [role="alert"]') as HTMLElement;
+        expect(notice.textContent).toContain('Could not find saved sessions');
+        expect(notice.querySelector('button')?.textContent).toContain('Find saved sessions again');
+        fixture.destroy();
     });
 });

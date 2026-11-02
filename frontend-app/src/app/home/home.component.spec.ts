@@ -14,7 +14,7 @@ import { AuthService } from '../auth/auth.service';
 import { ConversationService, GroupProjectionFailureError, InvalidConversationProjectionError, InvalidGroupProjectionError } from './conversation.service';
 import { Conversation, GroupConversation, GroupMember } from './conversation.model';
 import { Message, MessageHistory } from './message.model';
-import { WEBSOCKET_PROTOCOL_VERSION } from './data-provider.service';
+import { ConnectionState, WEBSOCKET_PROTOCOL_VERSION } from './data-provider.service';
 import { DataProviderService } from './data-provider.service';
 import { CallFacade, CallState } from './call-facade.service';
 import { GroupCallFacade, GroupCallPeer, GroupCallState } from './group-call-facade.service';
@@ -50,6 +50,244 @@ describe('HomeComponent', () => {
         expect(component).toBeTruthy();
     });
 
+    it('renders people-search failures as actionable shared notices', () => {
+        fixture.detectChanges();
+        const search = vi.spyOn(TestBed.inject(ConversationService), 'searchUsers').mockReturnValue(throwError(() => new Error('search unavailable')));
+        component.searchQuery = 'al';
+        component.searchUsers();
+        fixture.detectChanges();
+
+        const notices = Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[];
+        const notice = notices.find(item => item.getAttribute('role') === 'alert' && item.querySelector('button')?.textContent?.trim() === 'Retry');
+        if (!notice) throw new Error('People-search failure notice was not rendered.');
+        expect(notice.getAttribute('role')).toBe('alert');
+        expect(notice.textContent).toContain('Could not search for people. Try again.');
+        const button = notice.querySelector('button') as HTMLButtonElement;
+        expect(button.textContent).toContain('Retry');
+        expect(search).toHaveBeenCalledTimes(1);
+        button.click();
+        expect(search).toHaveBeenCalledTimes(2);
+    });
+
+    it('renders GIPHY search failures as actionable shared notices', () => {
+        fixture.detectChanges();
+        component.selectedConversation = conversation('gif-notice');
+        component.socketReady = true;
+        component.giphyPickerOpen = true;
+        component.giphyEnabled = true;
+        component.giphyQuery = 'cats';
+        const search = vi.spyOn(TestBed.inject(GiphySearchService), 'search').mockReturnValue(throwError(() => new Error('GIPHY unavailable')));
+        component.searchGiphy();
+        fixture.detectChanges();
+
+        const searchNotice = (Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[])
+            .find(item => item.getAttribute('role') === 'alert' && item.querySelector('button')?.textContent?.trim() === 'Retry');
+        if (!searchNotice) throw new Error('GIPHY search failure notice was not rendered.');
+        expect(searchNotice.getAttribute('role')).toBe('alert');
+        const searchButton = searchNotice.querySelector('button') as HTMLButtonElement;
+        expect(searchButton.textContent).toContain('Retry');
+        expect(searchButton.disabled).toBe(true);
+        searchButton.click();
+        expect(search).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not offer retry for invalid GIPHY search input', () => {
+        fixture.detectChanges();
+        component.selectedConversation = conversation('gif-invalid-notice');
+        component.socketReady = true;
+        component.giphyPickerOpen = true;
+        component.giphyEnabled = true;
+        component.giphyQuery = 'x'.repeat(51);
+        component.searchGiphy();
+        fixture.detectChanges();
+
+        const invalidNotice = (Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[])
+            .find(item => item.textContent?.includes('Enter a search term of 1 to 50 characters.'));
+        if (!invalidNotice) throw new Error('Invalid GIPHY search notice was not rendered.');
+        expect(invalidNotice.querySelector('button')).toBeNull();
+    });
+
+    it('renders GIPHY pagination failures as actionable shared notices', () => {
+        fixture.detectChanges();
+        component.selectedConversation = conversation('gif-page-notice');
+        component.socketReady = true;
+        component.giphyPickerOpen = true;
+        component.giphyEnabled = true;
+        component.giphyQuery = 'cats';
+        const search = vi.spyOn(TestBed.inject(GiphySearchService), 'search')
+            .mockReturnValueOnce(of(giphyPage([{id: 'gif-1', title: 'Cats', url: 'https://media1.giphy.com/media/1/200.gif'}], 0, 1, 2)))
+            .mockReturnValue(throwError(() => new Error('GIPHY unavailable')));
+        component.searchGiphy();
+        component.loadMoreGiphy();
+        fixture.detectChanges();
+        const pageNotice = (Array.from(fixture.nativeElement.querySelectorAll('app-notice section.app-notice')) as HTMLElement[])
+            .find(item => item.getAttribute('role') === 'alert' && item.querySelector('button')?.textContent?.trim() === 'Retry loading more');
+        if (!pageNotice) throw new Error('GIPHY pagination failure notice was not rendered.');
+        expect(pageNotice.textContent).toContain('Could not load more GIFs.');
+        const pageButton = pageNotice.querySelector('button') as HTMLButtonElement;
+        expect(pageButton.textContent).toContain('Retry loading more');
+        pageButton.click();
+        expect(search).toHaveBeenCalledTimes(3);
+    });
+
+    it('closes only an eligible selected chat on a mobile edge swipe', () => {
+        const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+        Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
+        try {
+            fixture.detectChanges();
+            const panel = fixture.nativeElement.querySelector('.chat-panel') as Element;
+            const swipe = () => {
+                for (const [type, x] of [['touchstart', 25], ['touchmove', 100], ['touchend', 125]] as const) {
+                    const event = new Event(type, {bubbles: true});
+                    const point = {identifier: 1, clientX: x, clientY: 200};
+                    Object.defineProperties(event, {touches: {value: type === 'touchend' ? [] : [point]}, changedTouches: {value: [point]}});
+                    panel.dispatchEvent(event);
+                }
+            };
+            const close = vi.spyOn(component, 'closeConversation');
+            swipe();
+            expect(close).not.toHaveBeenCalled();
+            component.selectedConversation = conversation('swipe-chat');
+            component.showGroupManager = true;
+            fixture.changeDetectorRef.markForCheck(); fixture.detectChanges();
+            swipe();
+            expect(close).not.toHaveBeenCalled();
+            component.showGroupManager = false;
+            component.emojiPickerOpen = true;
+            fixture.changeDetectorRef.markForCheck(); fixture.detectChanges();
+            swipe();
+            expect(close).not.toHaveBeenCalled();
+            component.emojiPickerOpen = false;
+            const callState = vi.spyOn(component.call, 'state', 'get').mockReturnValue({...component.call.state, phase: 'incoming'});
+            fixture.changeDetectorRef.markForCheck(); fixture.detectChanges();
+            swipe();
+            expect(close).not.toHaveBeenCalled();
+            callState.mockRestore();
+            fixture.changeDetectorRef.markForCheck(); fixture.detectChanges();
+            swipe();
+            expect(close).toHaveBeenCalledTimes(1);
+            expect(component.selectedConversation).toBeUndefined();
+        } finally {
+            if (width) Object.defineProperty(window, 'innerWidth', width);
+        }
+    });
+
+    it('blocks swipes during direct and group calls, including minimized calls', async () => {
+        const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+        Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
+        try {
+            fixture.detectChanges();
+            await fixture.whenStable();
+            component.selectedConversation = conversation('active-chat');
+            const panel = fixture.nativeElement.querySelector('.chat-panel') as Element;
+            const swipe = () => {
+                for (const [type, x] of [['touchstart', 25], ['touchmove', 100], ['touchend', 125]] as const) {
+                    const event = new Event(type, {bubbles: true});
+                    const point = {identifier: 1, clientX: x, clientY: 200};
+                    Object.defineProperties(event, {touches: {value: type === 'touchend' ? [] : [point]}, changedTouches: {value: [point]}});
+                    panel.dispatchEvent(event);
+                }
+            };
+            const update = () => { component.cancelGroupCreation(); TestBed.tick(); };
+            const close = vi.spyOn(component, 'closeConversation');
+            const directEnd = vi.spyOn(component.call, 'end');
+            const directState = vi.spyOn(component.call, 'state', 'get');
+            const directIdle = component.call.state;
+            for (const phase of ['requesting', 'outgoing', 'incoming', 'connecting', 'active'] as const) {
+                directState.mockReturnValue({...directIdle, phase});
+                update(); swipe();
+                expect(component.selectedConversation?.id, phase).toBe('active-chat');
+            }
+            component.minimizeCall();
+            TestBed.tick();
+            expect(component.isCallMinimized()).toBe(true);
+            swipe();
+            expect(component.selectedConversation?.id, 'minimized direct').toBe('active-chat');
+            expect(directEnd).not.toHaveBeenCalled();
+            directState.mockRestore();
+
+            const group = component.groupCall;
+            if (!group) throw new Error('Group call facade missing');
+            const groupState = vi.spyOn(group, 'state', 'get');
+            const groupIdle = group.state;
+            const groupEnd = vi.spyOn(group, 'end');
+            const groupLeave = vi.spyOn(group, 'leave');
+            for (const phase of ['requesting', 'ringing', 'joining', 'active'] as const) {
+                groupState.mockReturnValue({...groupIdle, phase});
+                component.groupCallMinimized = false;
+                update(); swipe();
+                expect(component.selectedConversation?.id, phase).toBe('active-chat');
+            }
+            component.minimizeGroupCall();
+            TestBed.tick();
+            expect(component.groupCallMinimized).toBe(true);
+            swipe();
+            expect(component.selectedConversation?.id, 'minimized group').toBe('active-chat');
+            expect(groupEnd).not.toHaveBeenCalled();
+            expect(groupLeave).not.toHaveBeenCalled();
+            expect(close).not.toHaveBeenCalled();
+            groupState.mockRestore();
+        } finally {
+            if (width) Object.defineProperty(window, 'innerWidth', width);
+        }
+    });
+
+    it('minimizes an ongoing group call and shows its restore action on the chats rail', async () => {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        component.selectedConversation = groupConversation('group-active-call');
+        const groupCall = component.groupCall;
+        if (!groupCall) throw new Error('Group call facade missing');
+        const originalState = groupCall.state;
+        vi.spyOn(groupCall, 'state', 'get').mockReturnValue({
+            ...originalState,
+            phase: 'active',
+            room: {room_id: 'room-1', conversation_id: 'group-active-call', generation: 1, membership_revision: 1, state_revision: 1, status: 'active', expires_at: '2026-01-01T00:00:00Z', participants: []},
+            statusLabel: 'In group call',
+        } as GroupCallState);
+
+        component.closeConversation();
+        fixture.detectChanges();
+
+        expect(component.selectedConversation).toBeUndefined();
+        expect(component.groupCallMinimized).toBe(true);
+        const banner = fixture.nativeElement.querySelector('.call-minimized-banner-rail') as HTMLElement | null;
+        expect(banner).not.toBeNull();
+        expect(banner?.querySelector('[aria-label="Return to group call"]')).not.toBeNull();
+        expect(banner?.querySelector('[aria-label="End group call for everyone"]')).not.toBeNull();
+    });
+
+    it('cancels a swipe when a call begins before the touch ends', async () => {
+        const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+        Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
+        try {
+            fixture.detectChanges();
+            await fixture.whenStable();
+            component.selectedConversation = conversation('active-chat');
+            component.cancelGroupCreation();
+            TestBed.tick();
+            const panel = fixture.nativeElement.querySelector('.chat-panel') as Element;
+            const dispatch = (type: string, x: number) => {
+                const event = new Event(type, {bubbles: true});
+                const point = {identifier: 1, clientX: x, clientY: 200};
+                Object.defineProperties(event, {touches: {value: type === 'touchend' ? [] : [point]}, changedTouches: {value: [point]}});
+                panel.dispatchEvent(event);
+            };
+            const close = vi.spyOn(component, 'closeConversation');
+            dispatch('touchstart', 25);
+            const state = vi.spyOn(component.call, 'state', 'get').mockReturnValue({...component.call.state, phase: 'incoming'});
+            component.cancelGroupCreation();
+            TestBed.tick();
+            dispatch('touchmove', 100);
+            dispatch('touchend', 125);
+            expect(component.selectedConversation?.id).toBe('active-chat');
+            expect(close).not.toHaveBeenCalled();
+            state.mockRestore();
+        } finally {
+            if (width) Object.defineProperty(window, 'innerWidth', width);
+        }
+    });
+
     it('keeps rendered mention nodes connected across unrelated change detection', async () => {
         fixture.detectChanges();
         component.selectedConversation = groupConversation('mention-stability');
@@ -82,6 +320,100 @@ describe('HomeComponent', () => {
         home.ngOnDestroy();
     });
 
+    it('refreshes selected history without replacing the conversation or draft', () => {
+        const {home, snapshot, history} = pushIntentHome(new Subject<PushClickIntent>());
+        home.selectedConversation = snapshot;
+        home.draft = 'unsent draft';
+        home.messages = [ownMessage(snapshot.id, 1)];
+
+        home.refreshSelectedHistory();
+
+        expect(history).toHaveBeenCalledWith(snapshot.id, undefined);
+        expect(home.selectedConversation?.id).toBe(snapshot.id);
+        expect(home.draft).toBe('unsent draft');
+        expect(home.historyPullRefreshing).toBe(false);
+        expect(home.historyPullError).toBe(false);
+        home.ngOnDestroy();
+    });
+
+    it('keeps loaded history and exposes retry when a refresh fails', () => {
+        const {home, snapshot, history} = pushIntentHome(new Subject<PushClickIntent>());
+        const existing = ownMessage(snapshot.id, 1);
+        history.mockReturnValue(throwError(() => new Error('offline')));
+        home.selectedConversation = snapshot;
+        home.messages = [existing];
+        home.draft = 'unsent draft';
+
+        home.refreshSelectedHistory();
+
+        expect(home.messages).toEqual([existing]);
+        expect(home.draft).toBe('unsent draft');
+        expect(home.historyPullRefreshing).toBe(false);
+        expect(home.historyPullError).toBe(true);
+        home.ngOnDestroy();
+    });
+
+    it('shows a retry notice instead of an empty state when initial history loading fails', () => {
+        fixture.detectChanges();
+        const history = vi.spyOn(TestBed.inject(ConversationService), 'history')
+            .mockReturnValueOnce(throwError(() => new Error('server error')))
+            .mockReturnValueOnce(of({messages: []}));
+
+        component.selectConversation(conversation('initial-history-failure'));
+        fixture.detectChanges();
+
+        const notice = fixture.nativeElement.querySelector('app-notice section[role="alert"]') as HTMLElement | null;
+        expect(notice?.textContent).toContain('Could not load messages. Try again.');
+        expect(notice?.querySelector('button')?.textContent).toContain('Retry');
+        expect(fixture.nativeElement.querySelector('.empty-messages')).toBeNull();
+
+        (notice?.querySelector('button') as HTMLButtonElement).click();
+        fixture.detectChanges();
+
+        expect(history).toHaveBeenCalledTimes(2);
+        expect(fixture.nativeElement.querySelector('app-notice section[role="alert"]')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.empty-messages p')?.textContent).toContain('No messages yet.');
+    });
+
+    it('announces initial history loading until the first page succeeds', () => {
+        const pendingHistory = new Subject<MessageHistory>();
+        vi.spyOn(TestBed.inject(ConversationService), 'history').mockReturnValue(pendingHistory);
+        fixture.detectChanges();
+
+        component.selectConversation(conversation('initial-history-pending'));
+        fixture.detectChanges();
+
+        const loading = fixture.nativeElement.querySelector('.message-history .history-loading-state[role="status"]') as HTMLElement | null;
+        expect(loading?.textContent).toContain('Loading messages…');
+        expect(fixture.nativeElement.querySelector('.empty-messages')).toBeNull();
+
+        pendingHistory.next({messages: []});
+        pendingHistory.complete();
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.querySelector('.message-history .history-loading-state')).toBeNull();
+        expect(fixture.nativeElement.querySelector('.empty-messages p')?.textContent).toContain('No messages yet.');
+    });
+
+    it('keeps the loaded conversation list and reports retry when refresh fails', fakeAsync(async () => {
+        const snapshot = conversation('refresh-list');
+        const service = {listHomeSnapshot: vi.fn().mockReturnValue(throwError(() => new Error('offline')))} as unknown as ConversationService;
+        const home = createHomeComponent(service, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef,
+            {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService, {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        home.refreshChats();
+        expect(home.pullRefreshing).toBe(true);
+
+        await tick(500);
+
+        expect(home.conversations.getValue()).toEqual([snapshot]);
+        expect(home.conversationsError).toBe(false);
+        expect(home.pullRefreshing).toBe(false);
+        expect(home.pullRefreshError).toBe(true);
+        home.ngOnDestroy();
+    }));
+
     it('loads cursor pages until a pushed message is found and highlights it', () => {
         const intents = new Subject<PushClickIntent>();
         const snapshot = {...conversation('22222222-2222-4222-8222-222222222222'), kind: 'direct' as const};
@@ -102,6 +434,21 @@ describe('HomeComponent', () => {
 
         expect(history.mock.calls).toEqual([[snapshot.id, undefined], [snapshot.id, 'older-page']]);
         expect(home.messages.map(message => message.id)).toContain(targetID);
+        expect(home.highlightedMessageID).toBe(targetID);
+        home.ngOnDestroy();
+    });
+
+    it('preserves push navigation beyond 100 pages', () => {
+        const intents = new Subject<PushClickIntent>();
+        const snapshot = conversation('22222222-2222-4222-8222-222222222222');
+        const targetID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+        let page = 0;
+        const history = vi.fn().mockImplementation(() => { page++; return of(page === 102 ? {messages: [{...ownMessage(snapshot.id, 1), id: targetID}]} : {messages: [], nextCursor: `cursor-${page}`}); });
+        const home = createHomeComponent({history} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: vi.fn(), close: vi.fn()} as unknown as DataProviderService, {state: {phase: 'idle'}, close: vi.fn()} as unknown as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.conversations.next([snapshot]);
+        (home as unknown as {initialConversationLoadState: string}).initialConversationLoadState = 'ready';
+        intents.next({kind: 'message', conversationID: snapshot.id, messageID: targetID});
+        expect(history).toHaveBeenCalledTimes(102);
         expect(home.highlightedMessageID).toBe(targetID);
         home.ngOnDestroy();
     });
@@ -1100,6 +1447,49 @@ describe('HomeComponent', () => {
         home.ngOnDestroy();
     });
 
+    it('renders an ended group-call notice in the mobile chats rail without a duplicate in the hidden chat panel', async () => {
+        const width = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+        Object.defineProperty(window, 'innerWidth', {configurable: true, value: 390});
+        try {
+            const state: GroupCallState = {
+                phase: 'ended', conversationID: 'origin-group', peers: [], muted: false, sharing: false,
+                screenShareAudioEnabled: false, screenShareAudioActive: false, shareTransitioning: false,
+                inputDevices: [], outputDevices: [], audioPlaybackBlocked: false,
+                statusLabel: 'Group call ended.', supportRef: 'support-123',
+            };
+            component.groupCall = {
+                state,
+                state$: new BehaviorSubject(state),
+                isOngoing: false,
+                close: () => undefined,
+            } as unknown as GroupCallFacade;
+            component.selectedConversation = undefined;
+            fixture.detectChanges();
+            await fixture.whenStable();
+            fixture.detectChanges();
+
+            const railNotice = fixture.nativeElement.querySelector('.conversation-rail app-call-terminal-notice') as HTMLElement | null;
+            const chatPanel = fixture.nativeElement.querySelector('.chat-panel') as HTMLElement;
+            expect(getComputedStyle(chatPanel).display).toBe('none');
+            expect(component.selectedConversation).toBeUndefined();
+            expect(component.showGroupCallTerminalNotice(state)).toBe(true);
+            expect(railNotice).not.toBeNull();
+            expect(railNotice?.textContent || '').toContain('Group call ended.');
+            expect(railNotice?.querySelector('[aria-label="Copy support reference"]')).not.toBeNull();
+            expect(fixture.nativeElement.querySelectorAll('app-call-terminal-notice').length).toBe(1);
+            const noticeSurface = railNotice?.querySelector('.call-terminal-notice') as HTMLElement | null;
+            if (!railNotice || !noticeSurface) throw new Error('Rail terminal notice surface is missing');
+            const railRect = (fixture.nativeElement.querySelector('.conversation-rail') as HTMLElement).getBoundingClientRect();
+            const noticeRect = noticeSurface.getBoundingClientRect();
+            expect(noticeRect.width).toBeGreaterThan(0);
+            expect(noticeRect.left).toBeGreaterThanOrEqual(railRect.left);
+            expect(noticeRect.right).toBeLessThanOrEqual(railRect.right);
+            expect(noticeRect.right).toBeLessThanOrEqual(window.innerWidth);
+        } finally {
+            if (width) Object.defineProperty(window, 'innerWidth', width);
+        }
+    });
+
     it('renders the direct-call surface only before terminal phases', () => {
         expect(component.shouldRenderDirectCallSurface('idle')).toBe(false);
         expect(component.shouldRenderDirectCallSurface('ended')).toBe(false);
@@ -1553,7 +1943,10 @@ describe('HomeComponent', () => {
             vi.spyOn(service, 'getGroup').mockReturnValueOnce(preDepartureLookup.asObservable()).mockReturnValueOnce(lookup.asObservable()).mockReturnValueOnce(retry.asObservable());
             vi.spyOn(service, 'leaveGroup').mockReturnValue(response.asObservable());
             vi.spyOn(service, 'deleteGroup').mockReturnValue(response.asObservable());
-            vi.spyOn(fixture.debugElement.injector.get(DataProviderService), 'getObservable').mockReturnValue(NEVER);
+            const dataProvider = fixture.debugElement.injector.get(DataProviderService);
+            const connectionStates = new Subject<ConnectionState>();
+            vi.spyOn(dataProvider, 'getObservable').mockReturnValue(NEVER);
+            vi.spyOn(dataProvider, 'connectionStateChanges', 'get').mockReturnValue(connectionStates.asObservable());
             fixture.detectChanges();
             const historyComponent = component;
             vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -1592,15 +1985,15 @@ describe('HomeComponent', () => {
             expect(historyComponent.conversations.getValue()).toEqual([]);
             expect(historyComponent.selectedConversation).toBeUndefined();
             expect(historyComponent.departedGroupRefreshFailed).toBe(true);
-            const alert = fixture.debugElement.query(By.css('.group-settings-error[role="alert"]'));
+            const alert = fixture.debugElement.query(By.css('app-notice [role="alert"]'));
             expect(alert.nativeElement.textContent).toContain('hidden until access is verified');
             expect(fixture.debugElement.query(By.css('.workspace.conversation-open'))).not.toBeNull();
             expect((fixture.debugElement.query(By.css('.composer textarea')).nativeElement as HTMLTextAreaElement).disabled).toBe(true);
             (alert.query(By.css('button')).nativeElement as HTMLButtonElement).click();
             retry.next({ ...initial, membershipRevision: 2, name: 'Authorized again' });
             retry.complete();
-            historyComponent.socketReady = true;
             await new Promise<void>(resolve => setTimeout(resolve, 0));
+            connectionStates.next('ready');
             fixture.detectChanges();
             fixture.detectChanges();
             expect(historyComponent.conversations.getValue().map(item => item.id)).toEqual([initial.id]);
@@ -3000,6 +3393,256 @@ describe('HomeComponent', () => {
         ]);
         expect(close).toHaveBeenCalledTimes(1);
     });
+
+    it('preserves the reply target and draft on enqueue failure, and sends a correlated reply on retry', () => {
+        const send = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+        const target = {id: '00000000-0000-4000-8000-000000000001', conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const home = createHomeComponent({message: () => of(target)} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.profile = {id: 'user-1'} as Profile;
+        home.socketReady = true;
+        home.startReply(target);
+        home.draft = 'Answer';
+        home.sendMessage();
+        expect(home.replyTarget).toEqual(target);
+        expect(home.draft).toBe('Answer');
+        home.socketReady = true;
+        home.sendMessage();
+        expect(send).toHaveBeenLastCalledWith(expect.objectContaining({type: 'message.reply.send', payload: expect.objectContaining({reply_to_message_id: target.id, body: 'Answer'})}));
+        expect(home.messages[0].replyToMessageId).toBe(target.id);
+        expect(home.replyTarget).toBeUndefined();
+        home.ngOnDestroy();
+    });
+
+    it('keeps the target on an uncertain retry and cancels its timer after the original acknowledgement', fakeAsync(async () => {
+        const target: Message = {id: '00000000-0000-4000-8000-000000000001', conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const send = vi.fn().mockReturnValue(true);
+        const home = createHomeComponent({message: () => of(target)} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.profile = {id: 'user-1'} as Profile;
+        home.socketReady = true;
+        home.startReply(target);
+        home.draft = 'Answer';
+        home.sendMessage();
+        const first = send.mock.calls[0][0];
+        await tick(10000);
+        (home as unknown as {replayUncertainMessages(): void}).replayUncertainMessages();
+        const retry = send.mock.calls[1][0];
+        expect(retry).toMatchObject({type: 'message.reply.send', payload: {client_message_id: first.payload.client_message_id, reply_to_message_id: target.id}});
+        expect(retry.request_id).not.toBe(first.request_id);
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.accepted', request_id: first.request_id, payload: {...socketMessage('durable', first.payload.client_message_id, 'Answer'), reply_to_message_id: target.id}});
+        await tick(10000);
+        expect(home.messages[0]).toMatchObject({id: 'durable', replyToMessageId: target.id});
+        expect(home.messages[0].uncertain).toBeUndefined();
+        home.ngOnDestroy();
+    }));
+
+    it('cancels quote lookups and clears reply state when navigating away', () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const lookup = new Subject<Message>();
+        const service = {message: () => lookup, history: () => of({messages: []})} as unknown as ConversationService;
+        const home = createHomeComponent(service, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        expect(home.replyQuotes.get(targetID)?.state).toBe('loading');
+        home.selectConversation(conversation('other'));
+        lookup.next({id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Private', createdAt: '2026-01-01T00:00:00Z'});
+        expect(home.replyQuotes.size).toBe(0);
+        expect(home.replyTarget).toBeUndefined();
+        home.ngOnDestroy();
+    });
+
+    it.each([[404, 'unavailable'], [503, 'error']] as const)('distinguishes reply lookup %s from loading', (status, expected) => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const lookup = new Subject<Message>();
+        const home = createHomeComponent({message: () => lookup} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        expect(home.replyQuotes.get(targetID)?.state).toBe('loading');
+        lookup.error(new HttpErrorResponse({status}));
+        expect(home.replyQuotes.get(targetID)?.state).toBe(expected);
+        home.ngOnDestroy();
+    });
+
+    it('retries a rate-limited quote instead of retaining the error', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const lookup = vi.fn().mockReturnValueOnce(throwError(() => new HttpErrorResponse({status: 429}))).mockReturnValueOnce(of(target));
+        const home = createHomeComponent({message: lookup} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        expect(home.replyQuotes.get(targetID)?.state).toBe('error');
+        home.retryReplyQuote(targetID);
+        await tick(60_000);
+        expect(home.replyQuotes.get(targetID)?.message?.body).toBe('Original');
+        home.ngOnDestroy();
+    }));
+
+    it('loads older pages for a quote jump and highlights the target', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const history = vi.fn().mockReturnValueOnce(of({messages: [], nextCursor: 'older-2'})).mockReturnValueOnce(of({messages: [target]}));
+        const home = createHomeComponent({message: () => of(target), history} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.historyCursor = 'older-1';
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(history.mock.calls).toEqual([['selected', 'older-1'], ['selected', 'older-2']]);
+        expect(home.highlightedMessageID).toBe(targetID);
+        home.ngOnDestroy();
+    }));
+
+    it('revalidates a quote before jumping and removes expired text on 404', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Private', createdAt: '2026-01-01T00:00:00Z'};
+        const lookup = vi.fn().mockReturnValueOnce(of(target)).mockReturnValueOnce(throwError(() => new HttpErrorResponse({status: 404})));
+        const home = createHomeComponent({message: lookup} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.startReply(target);
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(home.replyQuotes.get(targetID)).toEqual({state: 'unavailable'});
+        expect(home.replyTarget).toBeUndefined();
+        expect(home.highlightedMessageID).toBeUndefined();
+        home.ngOnDestroy();
+    }));
+
+    it('does not let a deferred reply jump override a newer push intent', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const deferred = new Subject<Message>();
+        const lookup = vi.fn().mockReturnValueOnce(of(target)).mockReturnValueOnce(deferred);
+        const intents = new Subject<PushClickIntent>();
+        const home = createHomeComponent({message: lookup} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade, undefined, undefined, undefined, undefined, {intents} as unknown as PushClickService);
+        home.selectedConversation = conversation('selected');
+        home.messages = [target];
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.jumpToReply(targetID);
+        await tick(1000);
+        intents.next({kind: 'message', conversationID: 'selected', messageID: '00000000-0000-4000-8000-000000000002'});
+        deferred.next(target);
+        deferred.complete();
+        expect(home.highlightedMessageID).toBeUndefined();
+        home.ngOnDestroy();
+    }));
+
+    it('revalidates cached quotes when history reloads', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Private', createdAt: '2026-01-01T00:00:00Z'};
+        const reply: Message = {id: 'reply', conversationId: 'selected', senderId: 'peer', clientMessageId: 'reply-client', sequence: 2, body: 'Answer', createdAt: '2026-01-01T00:00:00Z', replyToMessageId: targetID};
+        const lookup = vi.fn().mockReturnValueOnce(of(target)).mockReturnValueOnce(throwError(() => new HttpErrorResponse({status: 404})));
+        const home = createHomeComponent({message: lookup, history: () => of({messages: [reply]})} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.selectConversation(conversation('selected'));
+        expect(home.replyQuotes.get(targetID)?.state).toBe('loading');
+        await tick(1000);
+        expect(home.replyQuotes.get(targetID)).toEqual({state: 'unavailable'});
+        home.ngOnDestroy();
+    }));
+
+    it('revalidates cached quotes during reconciliation', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Private', createdAt: '2026-01-01T00:00:00Z'};
+        const lookup = vi.fn().mockReturnValueOnce(of(target)).mockReturnValueOnce(throwError(() => new HttpErrorResponse({status: 404})));
+        const home = createHomeComponent({message: lookup} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined, finishRecovery: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        (home as unknown as {recoveryGeneration: number; reconciliationRequest: unknown}).recoveryGeneration = 1;
+        (home as unknown as {reconciliationRequest: unknown}).reconciliationRequest = {generation: 1, requestID: 'reconcile', conversationID: 'selected'};
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'conversation.reconciled', request_id: 'reconcile', payload: {...reconciliationPayload('selected', 2), messages: [{...socketMessage('reply', 'client', 'Answer'), reply_to_message_id: targetID}]}});
+        expect(home.replyQuotes.get(targetID)?.state).toBe('loading');
+        await tick(1000);
+        expect(home.replyQuotes.get(targetID)).toEqual({state: 'unavailable'});
+        home.ngOnDestroy();
+    }));
+
+    it('serializes many quote lookups and cancels queued work on navigation', fakeAsync(async () => {
+        const lookup = vi.fn().mockReturnValue(NEVER);
+        const home = createHomeComponent({message: lookup, history: () => of({messages: []})} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        for (let i = 1; i <= 130; i++) {
+            const id = `00000000-0000-4000-8000-${i.toString().padStart(12, '0')}`;
+            home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage(`reply-${i}`, `client-${i}`, 'Answer'), conversation_id: 'selected', reply_to_message_id: id}});
+        }
+        expect(lookup).toHaveBeenCalledTimes(1);
+        home.selectConversation(conversation('other'));
+        await tick(2000);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(home.replyQuotes.size).toBe(0);
+        home.ngOnDestroy();
+    }));
+
+    it('paces fast quote responses so a large history cannot exhaust the shared history limit', fakeAsync(async () => {
+        const target: Message = {id: 'target', conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const lookup = vi.fn().mockReturnValue(of(target));
+        const home = createHomeComponent({message: lookup} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        for (let i = 1; i <= 130; i++) {
+            const id = `00000000-0000-4000-8000-${i.toString().padStart(12, '0')}`;
+            home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage(`reply-${i}`, `client-${i}`, 'Answer'), conversation_id: 'selected', reply_to_message_id: id}});
+        }
+        expect(lookup).toHaveBeenCalledTimes(1);
+        await tick(10_000);
+        expect(lookup).toHaveBeenCalledTimes(11);
+        home.ngOnDestroy();
+    }));
+
+    it('continues a reply jump after the 10-page bound without reporting unavailable', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        let page = 0;
+        const history = vi.fn().mockImplementation(() => { page++; return of(page === 12 ? {messages: [target]} : {messages: [], nextCursor: `cursor-${page}`}); });
+        const home = createHomeComponent({message: () => of(target), history} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.historyCursor = 'start';
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(history).toHaveBeenCalledTimes(10);
+        expect(home.pushCallNotice).toContain('try again');
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(history).toHaveBeenCalledTimes(12);
+        expect(home.highlightedMessageID).toBe(targetID);
+        home.ngOnDestroy();
+    }));
+
+    it('stops a reply jump on a repeated cursor with a recoverable notice', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const history = vi.fn().mockReturnValue(of({messages: [], nextCursor: 'same'}));
+        const home = createHomeComponent({message: () => of(target), history} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.historyCursor = 'same';
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(history).toHaveBeenCalledTimes(1);
+        expect(home.pushCallNotice).toContain('try again');
+        home.ngOnDestroy();
+    }));
+
+    it('allows retrying a reply jump after history returns 429', fakeAsync(async () => {
+        const targetID = '00000000-0000-4000-8000-000000000001';
+        const target: Message = {id: targetID, conversationId: 'selected', senderId: 'peer', clientMessageId: 'target', sequence: 1, body: 'Original', createdAt: '2026-01-01T00:00:00Z'};
+        const history = vi.fn().mockReturnValueOnce(throwError(() => new HttpErrorResponse({status: 429}))).mockReturnValueOnce(of({messages: [target]}));
+        const home = createHomeComponent({message: () => of(target), history} as unknown as ConversationService, {} as AuthService, {markForCheck: vi.fn()} as unknown as ChangeDetectorRef, {send: () => true, close: () => undefined} as unknown as DataProviderService, {close: () => undefined} as CallFacade);
+        home.selectedConversation = conversation('selected');
+        home.handleSocketEvent({version: WEBSOCKET_PROTOCOL_VERSION, type: 'message.created', payload: {...socketMessage('reply', 'client', 'Answer'), conversation_id: 'selected', reply_to_message_id: targetID}});
+        home.historyCursor = 'older';
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(home.pushCallNotice).toContain('try again');
+        expect(home.historyCursor).toBe('older');
+        home.jumpToReply(targetID);
+        await tick(1000);
+        expect(history).toHaveBeenCalledTimes(2);
+        expect(home.highlightedMessageID).toBe(targetID);
+        home.ngOnDestroy();
+    }));
 
     it('keeps multiple sent messages pending until their matching acknowledgements arrive', () => {
         const historyComponent = createHomeComponent({} as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, {} as DataProviderService, { close: () => undefined } as CallFacade);

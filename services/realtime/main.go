@@ -191,7 +191,10 @@ func main() {
 }
 
 func registerWebSocketRoutes(mux *http.ServeMux, handler http.Handler) {
-	mux.Handle("GET /ws/v3", handler)
+	mux.Handle("GET /ws/v4", handler)
+	mux.HandleFunc("/ws/v3", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unsupported websocket protocol version", http.StatusUpgradeRequired)
+	})
 	mux.HandleFunc("/ws/v2", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unsupported websocket protocol version", http.StatusUpgradeRequired)
 	})

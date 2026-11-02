@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "status": "current",
+  "status": "historical",
   "compatibility": {"route": "/ws/v3"},
   "clientEvents": {
     "message.send": ["request_id", "payload.conversation_id", "payload.client_message_id", "payload.body", "payload.content_type"],

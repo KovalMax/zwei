@@ -15,6 +15,18 @@ describe('ConversationService group projection', () => {
 
     afterEach(() => http.verify());
 
+    it('maps an authorized message lookup and rejects a mismatched response', () => {
+        const received = vi.fn();
+        const rejected = vi.fn();
+        service.message('conversation', 'target').subscribe({next: received, error: rejected});
+        const wire = {id: 'target', conversation_id: 'conversation', sender_id: 'peer', client_message_id: 'client', sequence: 1, body: 'Original', created_at: '2026-01-01T00:00:00Z', reply_to_message_id: null};
+        http.expectOne(item => item.url.endsWith('/api/chat/conversations/conversation/messages/target')).flush(wire);
+        expect(received).toHaveBeenCalledWith(expect.objectContaining({id: 'target', body: 'Original'}));
+        service.message('conversation', 'target').subscribe({error: rejected});
+        http.expectOne(item => item.url.endsWith('/api/chat/conversations/conversation/messages/target')).flush({...wire, conversation_id: 'another'});
+        expect(rejected).toHaveBeenCalledOnce();
+    });
+
     for (const [name, payload] of [
         ['missing fields', { id: 'group-1' }],
         ['null response', null],

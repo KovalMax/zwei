@@ -8,7 +8,7 @@ import type {PeerReadCursorWire} from './wire.mapper';
 import {GroupIceCandidate, iceCandidateIdentity} from './group-ice-generation';
 
 // V3 retains per-account group cursors; the scalar remains the direct-chat contract.
-export const WEBSOCKET_PROTOCOL_VERSION = 3 as const;
+export const WEBSOCKET_PROTOCOL_VERSION = 4 as const;
 export type ConnectionState = 'offline' | 'connecting' | 'recovering' | 'ready' | 'failed';
 export type WebSocketFactory = <T>(config: WebSocketSubjectConfig<T>) => WebSocketSubject<T>;
 const defaultWebSocketFactory: WebSocketFactory = <T>(config: WebSocketSubjectConfig<T>) => webSocket(config);
@@ -25,6 +25,12 @@ export interface MessageSendEvent {
     type: 'message.send';
     request_id: string;
     payload: { conversation_id: string; client_message_id: string; body: string; content_type: 'text'; mentions?: {user_id: string; start: number; end: number}[] };
+}
+
+export interface MessageReplySendEvent {
+    type: 'message.reply.send';
+    request_id: string;
+    payload: MessageSendEvent['payload'] & {reply_to_message_id: string};
 }
 
 export interface TypingClientEvent {
@@ -86,7 +92,7 @@ export type CallSignal =
     | { type: 'screen-share-started' | 'screen-share-stopped' };
 export type GroupCallSignal = Exclude<CallSignal, {type: 'offer' | 'answer' | 'candidate'}> | {type: 'candidate'; candidate: GroupIceCandidate} | {type: 'offer' | 'answer'; sdp: string; negotiation_id: string};
 
-export type ClientSocketEvent = MessageSendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent | ConversationReconcileEvent | CallStartEvent | CallControlEvent | CallSignalEvent | CallRecoverEvent | GroupCallDiscoverEvent | GroupCallPrepareStartEvent | GroupCallCancelStartEvent | GroupCallStartEvent | GroupCallJoinEvent | GroupCallSyncEvent | GroupCallCredentialsEvent | GroupCallControlEvent | GroupCallSignalEvent;
+export type ClientSocketEvent = MessageSendEvent | MessageReplySendEvent | TypingClientEvent | PresenceRefreshEvent | ConversationReadEvent | ConversationReconcileEvent | CallStartEvent | CallControlEvent | CallSignalEvent | CallRecoverEvent | GroupCallDiscoverEvent | GroupCallPrepareStartEvent | GroupCallCancelStartEvent | GroupCallStartEvent | GroupCallJoinEvent | GroupCallSyncEvent | GroupCallCredentialsEvent | GroupCallControlEvent | GroupCallSignalEvent;
 
 export interface MessagePayload {
     id: string;
@@ -97,6 +103,7 @@ export interface MessagePayload {
     body: string;
     content_type?: 'text' | 'sticker';
     mentions?: {user_id: string; start: number; end: number}[];
+    reply_to_message_id?: string | null;
     created_at: string;
     kind?: 'user' | 'system';
 }
@@ -347,7 +354,8 @@ function isMessagePayload(value: unknown): value is MessagePayload {
         typeof value.sequence === 'number' && Number.isSafeInteger(value.sequence) && value.sequence > 0 &&
         (value.kind === undefined || value.kind === 'user' || value.kind === 'system') &&
         (value.content_type === undefined || value.content_type === 'text' || value.content_type === 'sticker') &&
-        (value.mentions === undefined || isValidMessageMentionWire(value.mentions, value.body));
+        (value.mentions === undefined || isValidMessageMentionWire(value.mentions, value.body)) &&
+        (value.reply_to_message_id == null || isUUID(value.reply_to_message_id));
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -512,8 +520,10 @@ export class DataProviderService {
     }
 
     public send(event: ClientSocketEvent): boolean {
-        if (event.type === 'message.send' && (!isRecord(event.payload) || typeof event.payload.body !== 'string' || event.payload.content_type !== 'text' ||
+        if ((event.type === 'message.send' || event.type === 'message.reply.send') && (!isRecord(event.payload) || typeof event.payload.body !== 'string' || event.payload.content_type !== 'text' ||
             (event.payload.mentions !== undefined && !isValidMessageMentionWire(event.payload.mentions, event.payload.body)))) return false;
+        if (event.type === 'message.send' && 'reply_to_message_id' in event.payload) return false;
+        if (event.type === 'message.reply.send' && !isUUID(event.payload.reply_to_message_id)) return false;
         if (event.type === 'call.signal' && (!isRecord(event.payload) || !isIdentifier(event.payload.call_id) || !isValidCallSignal(event.payload.signal))) return false;
         if (event.type === 'call.recover' && (!exactKeys(event, ['type', 'request_id', 'payload']) || !isUUID(event.request_id) || !isRecord(event.payload) || !exactKeys(event.payload, ['call_id']) || !isUUID(event.payload.call_id))) return false;
         if (isGroupCallClientType(event.type) && !isValidGroupCallClientEvent(event)) return false;

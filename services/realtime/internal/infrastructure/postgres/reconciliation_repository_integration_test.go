@@ -43,9 +43,11 @@ func TestReconciliationRepositoryReturnsAuthorizedForwardBoundedMessages(t *test
 	}
 
 	sender := messaging.NewSender(db, "reconciliation-test-key")
+	var targetID uuid.UUID
 	for index := 1; index <= 3; index++ {
 		request := messaging.SendRequest{SenderID: ownerID, ConversationID: conversationID, ClientMessageID: fmt.Sprintf("reconcile-%d", index), Body: fmt.Sprintf("message %d", index), ContentType: "text"}
 		if index == 2 {
+			request.ReplyToMessageID = &targetID
 			request.Body = "@message 2"
 			request.Mentions = []messaging.Mention{{UserID: peerID, Start: 0, End: 8}}
 		}
@@ -56,6 +58,9 @@ func TestReconciliationRepositoryReturnsAuthorizedForwardBoundedMessages(t *test
 		message, _, err := sender.Send(ctx, request)
 		if err != nil {
 			t.Fatalf("send message %d: %v", index, err)
+		}
+		if index == 1 {
+			targetID = message.ID
 		}
 		if index == 3 {
 			if _, err := db.Exec(ctx, `UPDATE messages SET content_type = 'sticker' WHERE id = $1`, message.ID); err != nil {
@@ -77,6 +82,9 @@ func TestReconciliationRepositoryReturnsAuthorizedForwardBoundedMessages(t *test
 	}
 	if len(result.Messages) != 1 || result.Messages[0].Sequence != 2 || result.Messages[0].Body != "@message 2" {
 		t.Fatalf("reconciliation messages = %+v", result.Messages)
+	}
+	if result.Messages[0].ReplyToMessageID == nil || *result.Messages[0].ReplyToMessageID != targetID {
+		t.Fatalf("reply lost: %+v", result.Messages[0])
 	}
 	if len(result.Messages[0].Mentions) != 1 || result.Messages[0].Mentions[0].UserID != peerID {
 		t.Fatalf("reconciliation mentions = %+v, want persisted peer mention", result.Messages[0].Mentions)

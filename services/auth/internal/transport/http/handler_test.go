@@ -237,6 +237,48 @@ func TestKYCAuthenticationRequiresAllowlistedAddress(t *testing.T) {
 	}
 }
 
+func TestAuthHostAllowedRequiresSupportedHost(t *testing.T) {
+	allowlist, err := NewIPAllowlist("203.0.113.10/32", "172.20.0.4/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		host    string
+		allowed bool
+	}{
+		{name: "local auth host", host: "auth.localhost", allowed: true},
+		{name: "local chat auth route", host: "chat.localhost", allowed: true},
+		{name: "local KYC host from allowed proxy", host: "kyc.localhost", allowed: true},
+		{name: "production auth host", host: "auth.chat.false.tel", allowed: true},
+		{name: "production KYC host from allowed proxy", host: "kyc.chat.false.tel", allowed: true},
+		{name: "supported host with port", host: "chat.localhost:443", allowed: true},
+		{name: "case-normalized host", host: "CHAT.LOCALHOST", allowed: true},
+		{name: "unknown host", host: "attacker.example", allowed: false},
+		{name: "trailing dot host", host: "chat.localhost.", allowed: false},
+		{name: "malformed port", host: "chat.localhost:invalid", allowed: false},
+		{name: "signed port", host: "chat.localhost:+443", allowed: false},
+		{name: "out of range port", host: "chat.localhost:70000", allowed: false},
+		{name: "whitespace", host: " chat.localhost", allowed: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/v2/activate/setup", nil)
+			request.Host = test.host
+			request.RemoteAddr = "172.20.0.4:43122"
+			request.Header.Set("X-Real-IP", "203.0.113.10")
+			response := httptest.NewRecorder()
+			allowed := (&Handler{adminIPs: allowlist}).authHostAllowed(response, request)
+			if allowed != test.allowed {
+				t.Fatalf("authHostAllowed(%q) = %t, want %t (status %d)", test.host, allowed, test.allowed, response.Code)
+			}
+			if !test.allowed && response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
 func TestAdminEndpointRejectsUnallowlistedForwardedAddress(t *testing.T) {
 	allowlist, err := NewIPAllowlist("203.0.113.10/32", "172.20.0.4/32")
 	if err != nil {

@@ -38,7 +38,7 @@ func TestReceiptCleanupUncertainty(t *testing.T) {
 			s := &receiptRetrySessions{expected: secret, subject: u, browser: b, generation: g, matchErr: tc.lookupErr}
 			h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), nil, nil, s, nil)
 			body := `{"subject":"` + u.String() + `","browser_id":"` + b.String() + `","generation":"` + g.String() + `","receipt":"` + secret + `"}`
-			r := httptest.NewRequest("POST", "/", strings.NewReader(body))
+			r := newAllowedAuthRequest("POST", "/", strings.NewReader(body))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
 			if tc.cookie != "" {
@@ -81,7 +81,7 @@ func TestInitialLogoutUsesRevokedHashNotDiscoverySnapshot(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s.matchErr = tc.lookupErr
-			r := httptest.NewRequest("POST", "/", strings.NewReader(`{"browser_id":"`+b.String()+`","generation":"`+g.String()+`","receipt":"`+secret+`"}`))
+			r := newAllowedAuthRequest("POST", "/", strings.NewReader(`{"browser_id":"`+b.String()+`","generation":"`+g.String()+`","receipt":"`+secret+`"}`))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Cookie", tc.cookie)
@@ -107,7 +107,7 @@ func TestLogoutReceiptRetryDeletesOnlyMatchingObservedCookie(t *testing.T) {
 	s := &receiptRetrySessions{expected: secret, subject: u, browser: b, generation: g}
 	h := NewBrowserV2Handler(NewHandler(nil, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, ""), nil, nil, s, nil)
 	body := `{"subject":"` + u.String() + `","browser_id":"` + b.String() + `","generation":"` + g.String() + `","receipt":"` + secret + `"}`
-	r := httptest.NewRequest("POST", "/api/auth/v2/logout/retry", strings.NewReader(body))
+	r := newAllowedAuthRequest("POST", "/api/auth/v2/logout/retry", strings.NewReader(body))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Cookie", uniqueRefreshCookieName("old-session")+"=old-session; "+uniqueRefreshCookieName("new-session")+"=new-session")
@@ -140,7 +140,7 @@ func TestLogoutReceiptRetryWithoutCookieDoesNotClearNewSession(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"subject":"` + u.String() + `","browser_id":"` + b.String() + `","generation":"` + tc.generation + `","receipt":"` + tc.receipt + `"}`
-			r := httptest.NewRequest("POST", "/api/auth/v2/logout/retry", strings.NewReader(body))
+			r := newAllowedAuthRequest("POST", "/api/auth/v2/logout/retry", strings.NewReader(body))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Cookie", uniqueRefreshCookieName("new-session")+"=new-session")
@@ -177,7 +177,7 @@ func TestLogoutRetryProofAndOrigin(t *testing.T) {
 		{"origin", "https://evil.invalid", uniqueRefreshCookieName("proof") + "=proof", 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/api/auth/v2/logout/retry", strings.NewReader(body))
+			r := newAllowedAuthRequest("POST", "/api/auth/v2/logout/retry", strings.NewReader(body))
 			r.Header.Set("Origin", tc.origin)
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Cookie", tc.cookie)

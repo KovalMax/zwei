@@ -41,7 +41,7 @@ type CallLogger interface {
 }
 
 const (
-	ProtocolVersion            = 3
+	ProtocolVersion            = 4
 	ReconciliationMessageLimit = 100
 	groupCallOperationTimeout  = 5 * time.Second
 	groupCallStartTimeout      = 3 * time.Second
@@ -554,29 +554,44 @@ func (h *Hub) Handle(ctx context.Context, client Client, payload []byte) error {
 }
 
 func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion int, payload []byte) (result error) {
+	if !unambiguousEnvelope(payload, false) {
+		return &RequestError{Err: messaging.ErrInvalidMessage}
+	}
 	var request struct {
 		Version   int    `json:"version"`
 		Type      string `json:"type"`
 		RequestID string `json:"request_id,omitempty"`
 		Payload   struct {
-			ConversationID  uuid.UUID           `json:"conversation_id"`
-			ClientMessageID string              `json:"client_message_id"`
-			Body            string              `json:"body"`
-			ContentType     string              `json:"content_type"`
-			Mentions        []messaging.Mention `json:"mentions,omitempty"`
-			Sequence        int64               `json:"sequence"`
-			AfterSequence   int64               `json:"after_sequence"`
-			CallID          uuid.UUID           `json:"call_id"`
-			RoomID          uuid.UUID           `json:"room_id"`
-			AttemptID       uuid.UUID           `json:"attempt_id"`
-			Generation      int64               `json:"generation"`
-			OwnershipStatus bool                `json:"ownership_status"`
-			TargetUserID    uuid.UUID           `json:"target_user_id"`
-			TargetDeviceID  string              `json:"target_device_id"`
-			Signal          json.RawMessage     `json:"signal"`
+			ConversationID   uuid.UUID           `json:"conversation_id"`
+			ClientMessageID  string              `json:"client_message_id"`
+			Body             string              `json:"body"`
+			ContentType      string              `json:"content_type"`
+			Mentions         []messaging.Mention `json:"mentions,omitempty"`
+			ReplyToMessageID json.RawMessage     `json:"reply_to_message_id"`
+			Sequence         int64               `json:"sequence"`
+			AfterSequence    int64               `json:"after_sequence"`
+			CallID           uuid.UUID           `json:"call_id"`
+			RoomID           uuid.UUID           `json:"room_id"`
+			AttemptID        uuid.UUID           `json:"attempt_id"`
+			Generation       int64               `json:"generation"`
+			OwnershipStatus  bool                `json:"ownership_status"`
+			TargetUserID     uuid.UUID           `json:"target_user_id"`
+			TargetDeviceID   string              `json:"target_device_id"`
+			Signal           json.RawMessage     `json:"signal"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(payload, &request); err != nil {
+		var envelope struct {
+			Version   int    `json:"version"`
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+		}
+		if json.Unmarshal(payload, &envelope) == nil && envelope.Type == "message.reply.send" && unambiguousEnvelope(payload, true) {
+			if protocolVersion != ProtocolVersion || envelope.Version != ProtocolVersion {
+				return &RequestError{RequestID: envelope.RequestID, Err: errors.New("unsupported protocol version")}
+			}
+			return &RequestError{RequestID: envelope.RequestID, Err: messaging.ErrInvalidMessage}
+		}
 		return &RequestError{Err: errors.New("unsupported event")}
 	}
 	if protocolVersion != ProtocolVersion || request.Version != ProtocolVersion {
@@ -737,8 +752,22 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 		}
 		return nil
 	}
-	if request.Type != "message.send" {
+	if request.Type != "message.send" && request.Type != "message.reply.send" {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("unsupported event")}
+	}
+	if !unambiguousEnvelope(payload, true) {
+		return &RequestError{Err: messaging.ErrInvalidMessage}
+	}
+	var replyTo *uuid.UUID
+	if request.Type == "message.send" && request.Payload.ReplyToMessageID != nil {
+		return &RequestError{RequestID: request.RequestID, Err: messaging.ErrInvalidMessage}
+	}
+	if request.Type == "message.reply.send" {
+		var id uuid.UUID
+		if len(request.Payload.ReplyToMessageID) == 0 || json.Unmarshal(request.Payload.ReplyToMessageID, &id) != nil || id == uuid.Nil {
+			return &RequestError{RequestID: request.RequestID, Err: messaging.ErrInvalidMessage}
+		}
+		replyTo = &id
 	}
 	if request.Payload.ContentType != "text" {
 		return &RequestError{RequestID: request.RequestID, Err: messaging.ErrInvalidMessage}
@@ -751,7 +780,7 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 	if err != nil || !allowed {
 		return &RequestError{RequestID: request.RequestID, Err: errors.New("message rate limit exceeded")}
 	}
-	message, created, err := h.sender.Send(ctx, messaging.SendRequest{SenderID: client.Identity().UserID, ConversationID: request.Payload.ConversationID, ClientMessageID: request.Payload.ClientMessageID, Body: request.Payload.Body, ContentType: request.Payload.ContentType, Mentions: request.Payload.Mentions})
+	message, created, err := h.sender.Send(ctx, messaging.SendRequest{SenderID: client.Identity().UserID, ConversationID: request.Payload.ConversationID, ClientMessageID: request.Payload.ClientMessageID, Body: request.Payload.Body, ContentType: request.Payload.ContentType, Mentions: request.Payload.Mentions, ReplyToMessageID: replyTo})
 	if err != nil {
 		return &RequestError{RequestID: request.RequestID, Err: err}
 	}
@@ -763,6 +792,43 @@ func (h *Hub) HandleVersion(ctx context.Context, client Client, protocolVersion 
 		h.DeliverMessageCreated(message)
 	}
 	return nil
+}
+
+// Inspect only the envelope and its immediate payload, leaving opaque signal
+// objects and other commands untouched. encoding/json otherwise merges objects
+// and matches struct fields case-insensitively.
+func unambiguousEnvelope(data []byte, inspectPayload bool) bool {
+	var check func([]byte, bool) bool
+	check = func(data []byte, envelope bool) bool {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		token, err := decoder.Token()
+		if err != nil || token != json.Delim('{') {
+			return false
+		}
+		seen := make(map[string]bool)
+		for decoder.More() {
+			token, err = decoder.Token()
+			if err != nil {
+				return false
+			}
+			key, ok := token.(string)
+			if !ok {
+				return false
+			}
+			key = strings.ToLower(key)
+			if seen[key] {
+				return false
+			}
+			seen[key] = true
+			var value json.RawMessage
+			if decoder.Decode(&value) != nil || (inspectPayload && envelope && key == "payload" && len(bytes.TrimSpace(value)) > 0 && bytes.TrimSpace(value)[0] == '{' && !check(value, false)) {
+				return false
+			}
+		}
+		_, err = decoder.Token()
+		return err == nil
+	}
+	return check(data, true)
 }
 
 func allowRealtimeCallCommand(ctx context.Context, limiter RealtimeRateCoordinator, userID uuid.UUID, eventType string) (bool, error) {

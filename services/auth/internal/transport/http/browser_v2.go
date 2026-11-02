@@ -30,20 +30,28 @@ type browserBearer interface {
 type browserRegistration interface {
 	Register(context.Context, application.Credentials, *application.BrowserCredential) (bool, application.BrowserSessionResult, error)
 }
+type browserPasswordSetup interface {
+	CompletePasswordSetup(context.Context, string, string, string, string) (application.BrowserSessionResult, error)
+}
 
 // BrowserV2Handler serves the opt-in browser session protocol.
 type BrowserV2Handler struct {
-	base         *Handler
-	login        browserLogin
-	discovery    application.BrowserHeadDiscovery
-	candidates   application.BrowserCandidateDiscovery
-	sessions     browserSessions
-	bearer       browserBearer
-	registration browserRegistration
+	base          *Handler
+	login         browserLogin
+	discovery     application.BrowserHeadDiscovery
+	candidates    application.BrowserCandidateDiscovery
+	sessions      browserSessions
+	bearer        browserBearer
+	registration  browserRegistration
+	passwordSetup browserPasswordSetup
 }
 
 func (h *BrowserV2Handler) SetRegistration(registration browserRegistration) {
 	h.registration = registration
+}
+
+func (h *BrowserV2Handler) SetPasswordSetup(setup browserPasswordSetup) {
+	h.passwordSetup = setup
 }
 
 func NewBrowserV2Handler(base *Handler, login browserLogin, discovery application.BrowserHeadDiscovery, sessions browserSessions, bearer browserBearer) *BrowserV2Handler {
@@ -60,12 +68,49 @@ type browserIdentityKey struct{}
 // Register installs only v2 routes; legacy routes retain their existing behavior.
 func (h *BrowserV2Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/v2/register", h.RegisterAccount)
+	mux.HandleFunc("POST /api/auth/v2/activate/setup", h.CompletePasswordSetup)
 	mux.HandleFunc("POST /api/auth/v2/login", h.Login)
 	mux.HandleFunc("POST /api/auth/v2/refresh", h.Refresh)
 	mux.HandleFunc("POST /api/auth/v2/discovery", h.Discover)
 	mux.HandleFunc("POST /api/auth/v2/continue", h.Continue)
 	mux.Handle("POST /api/auth/v2/logout", h.requireBearer(http.HandlerFunc(h.Logout)))
 	mux.HandleFunc("POST /api/auth/v2/logout/retry", h.LogoutRetry)
+}
+
+// CompletePasswordSetup always issues a new independent browser head. Ambient
+// refresh cookies are deliberately ignored and never selected, replaced, or revoked.
+func (h *BrowserV2Handler) CompletePasswordSetup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token      string `json:"token"`
+		Password   string `json:"password"`
+		DeviceID   string `json:"device_id"`
+		DeviceName string `json:"device_name"`
+	}
+	if !h.request(w, r, &req) {
+		return
+	}
+	if h.passwordSetup == nil {
+		errorJSON(w, http.StatusServiceUnavailable, "password setup unavailable")
+		return
+	}
+	result, err := h.passwordSetup.CompletePasswordSetup(r.Context(), req.Token, req.Password, req.DeviceID, req.DeviceName)
+	if err != nil {
+		if errors.Is(err, application.ErrInvalidInput) || errors.Is(err, application.ErrPasswordSetupInvalid) {
+			errorJSON(w, http.StatusBadRequest, "invalid or expired password setup link")
+			return
+		}
+		errorJSON(w, http.StatusInternalServerError, "could not set password")
+		return
+	}
+	writeRefreshCookie(w, uniqueRefreshCookieName(result.Tokens.RefreshToken), result.Tokens.RefreshToken, 30*24*60*60)
+	runtime.WriteJSON(w, http.StatusOK, struct {
+		Status      string `json:"status"`
+		BrowserID   string `json:"browser_id"`
+		Generation  string `json:"generation"`
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}{"password_set", result.BrowserID.String(), result.Generation.String(), result.Tokens.AccessToken, result.Tokens.TokenType, result.Tokens.ExpiresIn})
 }
 
 type browserRetryLogout interface {

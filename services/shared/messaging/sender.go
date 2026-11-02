@@ -63,9 +63,13 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	var result Message
 	var ciphertext, nonce, mentionsCiphertext, mentionsNonce []byte
 	var expiresAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, mentions_ciphertext, mentions_nonce, created_at, kind, content_type, expires_at FROM messages WHERE sender_id = $1 AND client_message_id = $2`, request.SenderID, request.ClientMessageID).Scan(&result.ID, &result.ConversationID, &result.SenderID, &result.ClientMessageID, &result.Sequence, &ciphertext, &nonce, &mentionsCiphertext, &mentionsNonce, &result.CreatedAt, &result.Kind, &result.ContentType, &expiresAt)
+	err = tx.QueryRow(ctx, `SELECT id, conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, mentions_ciphertext, mentions_nonce, created_at, kind, content_type, expires_at, reply_to_message_id FROM messages WHERE sender_id = $1 AND client_message_id = $2`, request.SenderID, request.ClientMessageID).Scan(&result.ID, &result.ConversationID, &result.SenderID, &result.ClientMessageID, &result.Sequence, &ciphertext, &nonce, &mentionsCiphertext, &mentionsNonce, &result.CreatedAt, &result.Kind, &result.ContentType, &expiresAt, &result.ReplyToMessageID)
 	if err == nil {
 		if result.ConversationID != request.ConversationID {
+			return Message{}, false, ErrClientMessageIDConflict
+		}
+		if (result.ReplyToMessageID == nil) != (request.ReplyToMessageID == nil) ||
+			(result.ReplyToMessageID != nil && request.ReplyToMessageID != nil && *result.ReplyToMessageID != *request.ReplyToMessageID) {
 			return Message{}, false, ErrClientMessageIDConflict
 		}
 		if expiresAt != nil && !expiresAt.After(s.now()) {
@@ -100,6 +104,16 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, false, ErrPersistence
 	}
+	if request.ReplyToMessageID != nil {
+		var valid bool
+		err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM messages target JOIN conversation_members member ON member.conversation_id = target.conversation_id AND member.user_id = $2 AND member.active AND target.sequence >= member.visible_from_sequence WHERE target.id = $1 AND target.conversation_id = $3 AND target.kind = 'user' AND (target.expires_at IS NULL OR target.expires_at > $4))`, *request.ReplyToMessageID, request.SenderID, request.ConversationID, s.now()).Scan(&valid)
+		if err != nil {
+			return Message{}, false, ErrPersistence
+		}
+		if !valid {
+			return Message{}, false, ErrInvalidReply
+		}
+	}
 	if err = tx.QueryRow(ctx, `UPDATE conversations SET next_sequence = next_sequence + 1, last_message_at = now() WHERE id = $1 RETURNING next_sequence - 1`, request.ConversationID).Scan(&result.Sequence); err != nil {
 		return Message{}, false, ErrPersistence
 	}
@@ -116,7 +130,7 @@ func (s *Sender) Send(ctx context.Context, request SendRequest) (Message, bool, 
 		value := s.now().Add(duration)
 		expires = &value
 	}
-	if err = tx.QueryRow(ctx, `INSERT INTO messages (conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, encryption_key_version, expires_at, content_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`, request.ConversationID, request.SenderID, request.ClientMessageID, result.Sequence, ciphertext, nonce, "v1", expires, request.ContentType).Scan(&result.ID, &result.CreatedAt); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO messages (conversation_id, sender_id, client_message_id, sequence, ciphertext, nonce, encryption_key_version, expires_at, content_type, reply_to_message_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, created_at, reply_to_message_id`, request.ConversationID, request.SenderID, request.ClientMessageID, result.Sequence, ciphertext, nonce, "v1", expires, request.ContentType, request.ReplyToMessageID).Scan(&result.ID, &result.CreatedAt, &result.ReplyToMessageID); err != nil {
 		return Message{}, false, ErrPersistence
 	}
 	if len(request.Mentions) > 0 {

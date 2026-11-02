@@ -1,6 +1,14 @@
 import { isValidMessageMentionWire, messageSenderDisplayName, toConversation, toGroup, toGroupPage, toGroupPeerReadCursor, toMessage, toMessageHistory, toMessageMentionWires } from './wire.mapper';
 
 describe('wire mapper', () => {
+    it('maps reply targets and rejects malformed reply identifiers', () => {
+        const message = {id: 'message-1', conversation_id: 'conversation-1', sender_id: 'user-1', client_message_id: 'client-1', sequence: 1, body: 'Hello', created_at: '2026-01-01T00:00:00Z'};
+        const target = '00000000-0000-4000-8000-000000000001';
+        expect(toMessage({...message, reply_to_message_id: target})?.replyToMessageId).toBe(target);
+        expect(toMessage({...message, reply_to_message_id: null})?.replyToMessageId).toBeUndefined();
+        expect(toMessage({...message, reply_to_message_id: 'bad'})).toBeNull();
+        expect(toMessage({...message, reply_to_message_id: 12 as unknown as string})).toBeNull();
+    });
     it('falls back to conversation creation time when last activity is omitted', () => {
         const conversation = toConversation({ id: 'conversation-1', other_user_id: 'user-2', other_display_name: 'Peer', other_email: 'peer@example.test', created_at: '2026-01-01T00:00:00Z' });
 
