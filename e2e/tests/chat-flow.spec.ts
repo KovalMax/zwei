@@ -16,6 +16,12 @@ type RenderedContrast = {foreground: string; background: string; ratio: number};
 type RenderedTextContrast = {foreground: string; background: string; ratio: number; opacity: number; disabled: boolean; visible: boolean};
 type Deferred = {promise: Promise<void>; resolve: () => void};
 
+// Material keeps tooltip overlays in the DOM during transitions, and its
+// aria-hidden attribute is also present on shown tooltips. Select its show
+// state so Playwright does not mistake a fading hide-state overlay for active.
+const visibleTooltipSurfaceSelector = '.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible';
+const activeTooltipSelector = '.mat-mdc-tooltip-panel .mat-mdc-tooltip-show .mat-mdc-tooltip-surface:visible';
+
 function createDeferred(): Deferred {
   let resolve: () => void = () => {};
   const promise = new Promise<void>(complete => { resolve = complete; });
@@ -761,7 +767,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   await assertSettingsBodyClearOfHeading('top');
   await page.mouse.move(0, 0);
   await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
-  await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px settings top has no detached action tooltip`).toHaveCount(0);
+  await expect(page.locator(visibleTooltipSurfaceSelector), `${theme} ${viewport.width}px settings top has no detached action tooltip`).toHaveCount(0);
   await page.screenshot({path: testInfo.outputPath(`group-settings-${theme}-${viewport.width}-top.png`), fullPage: false, timeout: 15_000});
 
   const inspectMemberEdge = async (edge: 'top' | 'end') => panel.evaluate(async (element, requestedEdge) => {
@@ -872,22 +878,22 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     {id: 'remove-member', label: 'Remove', ariaLabel: 'Remove Member 1', button: adminActionRow.getByRole('button', {name: 'Remove Member 1', exact: true})},
   ];
   const assertTooltipGeometry = async (action: typeof actionButtons[number]): Promise<void> => {
-    const tooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: action.label}).last();
+    const tooltip = page.locator(activeTooltipSelector).filter({hasText: action.label}).last();
     await expect(tooltip, `${theme} ${viewport.width}px tooltip: ${action.label}`).toBeVisible();
-    await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px must render only the active action tooltip`).toHaveCount(1);
+    await expect(page.locator(activeTooltipSelector), `${theme} ${viewport.width}px must render only the active action tooltip`).toHaveCount(1);
     await page.evaluate(() => new Promise<void>(resolve => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     }));
     const contrast = await waitForReadableTooltip(tooltip);
     expect(contrast.ratio, `${theme} ${viewport.width}px ${action.label} rendered contrast: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
     expect(contrast.opacity, `${theme} ${viewport.width}px ${action.label} tooltip should finish its show transition: ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(.95);
-    await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible'), `${theme} ${viewport.width}px should show only the focused or hovered action tooltip`).toHaveCount(1);
+    await expect(page.locator(activeTooltipSelector), `${theme} ${viewport.width}px should show only the focused or hovered action tooltip`).toHaveCount(1);
     const {tooltipRect, managerRect, tooltipClasses, panelClasses, tooltipStyle} = await page.evaluate(label => {
       const toRect = (element: Element | null) => {
         const rect = element?.getBoundingClientRect();
         return rect ? {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height} : undefined;
       };
-      const tooltipElements = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface'))
+      const tooltipElements = Array.from(document.querySelectorAll<HTMLElement>('.mat-mdc-tooltip-panel .mat-mdc-tooltip-show .mat-mdc-tooltip-surface'))
         .filter(element => element.textContent?.trim() === label);
       const surface = tooltipElements[tooltipElements.length - 1];
       const panel = surface?.closest<HTMLElement>('.mat-mdc-tooltip-panel');
@@ -980,7 +986,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await waitForFocusScroll();
     await cycleKeyboardFocus(button);
   };
-  const visibleTooltips = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible');
+  const visibleTooltips = page.locator(visibleTooltipSurfaceSelector);
   const scrollMemberListAwayFromCurrentEdge = async (): Promise<{before: number; targetScrollTop: number; scrollTop: number; scrollHeight: number; clientHeight: number; maxScroll: number; scrollEvents: number}> => memberScroller.evaluate(element => new Promise(resolve => {
     const list = element as HTMLElement;
     const before = list.scrollTop;
@@ -1020,13 +1026,13 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     }
   }
   if (viewport.width === 1440 && theme === 'dark') {
-    const resizeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: 'Remove'}).last();
+    const resizeTooltip = page.locator(activeTooltipSelector).filter({hasText: 'Remove'}).last();
     await page.mouse.move(1, viewport.height / 2);
     await actionButtons[2].button.hover();
     await expect(resizeTooltip).toBeVisible();
     await page.setViewportSize({width: 390, height: 844});
     await expect(resizeTooltip, 'resizing while a member tooltip is open must dismiss it').not.toBeVisible();
-    await expect(page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible')).toHaveCount(0);
+    await expect(page.locator(visibleTooltipSurfaceSelector)).toHaveCount(0);
     await page.setViewportSize(viewport);
     await expect(actionButtons[2].button, 'resizing should retain keyboard focus on the action').toBeFocused();
     await waitForFocusScroll();
@@ -1040,6 +1046,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     if (focusRecoveryScroll.targetScrollTop === 0) expect(focusRecoveryScroll.scrollTop).toBe(0);
     else expect(focusRecoveryScroll.scrollTop + focusRecoveryScroll.clientHeight).toBeGreaterThanOrEqual(focusRecoveryScroll.scrollHeight - 1);
     await expect(resizeTooltip, 'keyboard-recovered tooltip must dismiss on a subsequent list scroll').not.toBeVisible();
+    await expect(visibleTooltips, 'all tooltip surfaces must finish dismissing after a subsequent list scroll').toHaveCount(0);
     await page.mouse.move(1, viewport.height / 2);
     await expect(resizeTooltip, 'pointer movement outside after scroll must not resurrect the tooltip').not.toBeVisible();
     await actionButtons[2].button.evaluate(button => (button as HTMLButtonElement).blur());
@@ -1048,7 +1055,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     await panel.evaluate(element => { element.scrollTop = 0; });
     await page.mouse.move(0, 0);
   }
-  const removeTooltip = page.locator('.mat-mdc-tooltip-panel .mat-mdc-tooltip-surface:visible').filter({hasText: 'Remove'}).last();
+  const removeTooltip = page.locator(activeTooltipSelector).filter({hasText: 'Remove'}).last();
   await focusUsingKeyboard(actionButtons[2].button);
   await assertTooltipGeometry(actionButtons[2]);
   await page.mouse.move(0, 0);
@@ -1069,6 +1076,7 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
     // scroll event must dismiss tooltips, not race the subsequent focus event.
     await waitForFocusScroll();
     await expect(removeTooltip, `${context} repositioning alone must not resurrect the tooltip`).not.toBeVisible();
+    await expect(visibleTooltips, `${context} all tooltip surfaces must remain dismissed after repositioning`).toHaveCount(0);
     await expect(actionButtons[2].button, `${context} list scroll should retain keyboard focus`).toBeFocused();
     await cycleKeyboardFocus(actionButtons[2].button);
     await expect(actionButtons[2].button, `${context} keyboard focus should recover without pointer movement`).toBeFocused();
@@ -1082,12 +1090,15 @@ async function assertGroupSettingsOverlay(page: Page, testInfo: import('@playwri
   expect(dismissalScroll.targetScrollTop, JSON.stringify({theme, viewport, dismissalScroll})).not.toBe(dismissalScroll.before);
   expect(dismissalScroll.scrollEvents, JSON.stringify({theme, viewport, dismissalScroll})).toBeGreaterThan(0);
   await expect(removeTooltip, `${theme} ${viewport.width}px a following scroll must dismiss the recovered tooltip`).not.toBeVisible();
+  await expect(visibleTooltips, `${theme} ${viewport.width}px all tooltip surfaces must clear after the following scroll`).toHaveCount(0);
   await page.screenshot({path: testInfo.outputPath(`group-settings-${theme}-${viewport.width}-list-end-scrolled-away-no-tooltip.png`), fullPage: false});
   await page.mouse.move(1, viewport.height / 2);
   await expect(removeTooltip, `${theme} ${viewport.width}px pointer movement must not resurrect a dismissed tooltip`).not.toBeVisible();
+  await expect(visibleTooltips, `${theme} ${viewport.width}px pointer movement must not leave a residual tooltip surface`).toHaveCount(0);
   await actionButtons[2].button.scrollIntoViewIfNeeded();
   await waitForFocusScroll();
   await expect(removeTooltip, `${theme} ${viewport.width}px repositioning alone must not resurrect the tooltip`).not.toBeVisible();
+  await expect(visibleTooltips, `${theme} ${viewport.width}px repositioning alone must not leave a residual tooltip surface`).toHaveCount(0);
   // Let the component's bounded 250 ms post-scroll hide transition settle;
   // recovery still requires an explicit fresh pointer movement below.
   await page.waitForTimeout(275);
