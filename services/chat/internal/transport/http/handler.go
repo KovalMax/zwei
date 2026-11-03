@@ -49,11 +49,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/chat/conversations/{id}/archive", h.restoreConversation)
 	mux.HandleFunc("GET /api/chat/users/search", h.searchUsers)
 	mux.HandleFunc("GET /api/chat/conversations/{id}", h.getConversation)
-	mux.HandleFunc("POST /api/chat/conversations/{id}/messages", func(w http.ResponseWriter, _ *http.Request) {
-		errorJSON(w, http.StatusUpgradeRequired, "client update required")
-	})
 	mux.HandleFunc("POST /api/chat/v2/conversations/{id}/messages", h.sendMessage)
 	mux.HandleFunc("GET /api/chat/conversations/{id}/messages", h.historyMessages)
+	// Go's ServeMux reports 405 when a path exists for another method. Preserve
+	// the retired write endpoint's unsupported-path contract as a plain 404.
+	mux.HandleFunc("POST /api/chat/conversations/{id}/messages", http.NotFound)
 	mux.HandleFunc("GET /api/chat/conversations/{id}/messages/{messageID}", h.getHistoryMessage)
 	mux.HandleFunc("POST /api/chat/groups", h.createGroup)
 	mux.HandleFunc("GET /api/chat/groups", h.listGroups)

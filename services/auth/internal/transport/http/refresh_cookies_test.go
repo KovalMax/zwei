@@ -13,7 +13,7 @@ func TestRefreshCandidateCookiesBindingAndBounds(t *testing.T) {
 	name := uniqueRefreshCookieName("new-token")
 	r.Header.Add("Cookie", "unrelated=x; zwei_refresh=legacy; "+name+"=new-token")
 	cookies, err := refreshCandidateCookies(r)
-	if err != nil || len(cookies) != 2 || cookies[0].Name != "zwei_refresh" || cookies[1].Name != name {
+	if err != nil || len(cookies) != 1 || cookies[0].Name != name {
 		t.Fatalf("candidates = %#v, err %v", cookies, err)
 	}
 	r.Header.Set("Cookie", name+"=other-token")
@@ -21,10 +21,10 @@ func TestRefreshCandidateCookiesBindingAndBounds(t *testing.T) {
 		t.Fatal("accepted mismatched name")
 	}
 	r.Header.Set("Cookie", "zwei_refresh=a; zwei_refresh=b")
-	if _, err := refreshCandidateCookies(r); err == nil {
-		t.Fatal("accepted conflicting duplicate name")
+	if cookies, err := refreshCandidateCookies(r); err != nil || len(cookies) != 0 {
+		t.Fatalf("fixed-name cookie candidates=%v err=%v", cookies, err)
 	}
-	r.Header.Set("Cookie", strings.Repeat("zwei_refresh=a; ", application.MaxRefreshCandidates+1))
+	r.Header.Set("Cookie", strings.Repeat(name+"=new-token; ", application.MaxRefreshCandidates+1))
 	if _, err := refreshCandidateCookies(r); err == nil {
 		t.Fatal("accepted too many cookies")
 	}

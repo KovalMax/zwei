@@ -17,7 +17,6 @@ export class ActivationComponent implements OnInit {
     public error = false;
     public setupMode = false;
     public passwordSet = false;
-    public legacySetupComplete = false;
     public sessionAcceptanceFailed = false;
     public lockUnavailable = false;
     public setupToken: string | null = null;
@@ -61,13 +60,6 @@ export class ActivationComponent implements OnInit {
         this.lockUnavailable = false;
         this.auth.setupPassword(this.setupToken, this.password).pipe(finalize(() => { this.isLoading = false; this.changeDetector.markForCheck(); })).subscribe({
             next: session => {
-                if (session === null) {
-                    this.legacySetupComplete = true;
-                    this.passwordSet = true;
-                    this.setupToken = null;
-                    this.changeDetector.markForCheck();
-                    return;
-                }
                 try {
                     this.auth.acceptToken(session);
                     this.passwordSet = true;

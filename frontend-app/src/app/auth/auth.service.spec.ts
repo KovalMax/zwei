@@ -26,10 +26,10 @@ describe('AuthService', () => {
 
     afterEach(() => { http.verify(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-    it('sets a password through the credentialed v2 setup endpoint with device identity while preserving legacy activation transport', () => {
+    it('sets a password through the credentialed v2 setup endpoint with device identity while preserving admin activation transport', () => {
         const token = 'A'.repeat(43);
         let setupStatus = '';
-        service.setupPassword(token, 'password123').subscribe(response => setupStatus = response?.status ?? 'legacy');
+        service.setupPassword(token, 'password123').subscribe(response => setupStatus = response.status);
         const setup = http.expectOne(`${backends.auth}/api/auth/v2/activate/setup`);
         expect(setup.request.method).toBe('POST');
         expect(setup.request.body).toEqual({token, password: 'password123', device_id: expect.any(String), device_name: 'Browser'});
@@ -44,22 +44,9 @@ describe('AuthService', () => {
         legacy.flush({status: 'activated'});
     });
 
-    it('uses the legacy password-setup contract only when the v2 route is missing', () => {
-        const token = 'A'.repeat(43);
-        let legacyFallback = false;
-        service.setupPassword(token, 'password123').subscribe(response => legacyFallback = response === null);
-        const v2 = http.expectOne(`${backends.auth}/api/auth/v2/activate/setup`);
-        v2.flush({error: 'not found'}, {status: 404, statusText: 'Not Found'});
-        const legacy = http.expectOne(`${backends.auth}/api/auth/activate/setup`);
-        expect(legacy.request.method).toBe('POST');
-        expect(legacy.request.body).toEqual({token, password: 'password123'});
-        expect(legacy.request.withCredentials).toBe(false);
-        legacy.flush({status: 'password_set'});
-        expect(legacyFallback).toBe(true);
-    });
-
-    it('does not fall back or retry password setup after token errors, server errors, or malformed v2 responses', () => {
+    it('does not fall back or retry password setup after missing routes, token errors, server errors, or malformed v2 responses', () => {
         for (const failureCase of [
+            {name: 'missing v2 route', status: 404, statusText: 'Not Found', body: {error: 'not found'}},
             {name: 'invalid token', status: 400, statusText: 'Bad Request', body: {error: 'invalid token'}},
             {name: 'server error', status: 503, statusText: 'Unavailable', body: {error: 'temporarily unavailable'}},
             {name: 'malformed session', status: 200, statusText: 'OK', body: {status: 'password_set'}},

@@ -177,10 +177,6 @@ func (h *BrowserV2Handler) LogoutRetry(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	if cookie.Name == legacyRefreshCookie {
-		h.fail(w, errors.New("cookie cleanup unconfirmed"))
-		return
-	}
 	writeRefreshCookie(w, cookie.Name, "", -1)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -210,7 +206,7 @@ func (h *BrowserV2Handler) cleanupReceiptCookies(w http.ResponseWriter, r *http.
 	for _, cookie := range cookies {
 		cmd := application.LogoutBrowserSessionRetryCommand{UserID: subject, Current: application.BrowserCredential{BrowserID: browser, Generation: generation, RefreshToken: cookie.Value}, Receipt: receipt}
 		matches, err := matcher.ReceiptMatchesRefresh(r.Context(), cmd)
-		if err != nil || (matches && cookie.Name == legacyRefreshCookie) {
+		if err != nil {
 			return errors.New("cookie cleanup unconfirmed")
 		}
 		if matches {
@@ -269,7 +265,7 @@ func (h *BrowserV2Handler) RegisterAccount(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	for _, cookie := range obsolete {
-		if cookie.Name != legacyRefreshCookie && cookie.Name != uniqueRefreshCookieName(result.Tokens.RefreshToken) {
+		if cookie.Name != uniqueRefreshCookieName(result.Tokens.RefreshToken) {
 			writeRefreshCookie(w, cookie.Name, "", -1)
 		}
 	}
@@ -510,9 +506,7 @@ func (h *BrowserV2Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, cookie := range obsolete {
-		// The legacy name can be reused by another response; only token-bound
-		// names are safe to delete from a delayed response.
-		if cookie.Name != legacyRefreshCookie && cookie.Name != uniqueRefreshCookieName(result.Tokens.RefreshToken) {
+		if cookie.Name != uniqueRefreshCookieName(result.Tokens.RefreshToken) {
 			writeRefreshCookie(w, cookie.Name, "", -1)
 		}
 	}
@@ -641,7 +635,7 @@ func (h *BrowserV2Handler) write(w http.ResponseWriter, result application.Brows
 }
 func (h *BrowserV2Handler) writeStatus(w http.ResponseWriter, result application.BrowserSessionResult, old *http.Cookie, status int) {
 	name := uniqueRefreshCookieName(result.Tokens.RefreshToken)
-	if old != nil && old.Name != legacyRefreshCookie && old.Name != name {
+	if old != nil && old.Name != name {
 		writeRefreshCookie(w, old.Name, "", -1)
 	}
 	writeRefreshCookie(w, name, result.Tokens.RefreshToken, 30*24*60*60)

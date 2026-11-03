@@ -2,13 +2,11 @@ package httptransport
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/KovalMax/zwei/services/auth/internal/application"
 	"github.com/google/uuid"
@@ -40,7 +38,7 @@ func TestPasswordSetupV2IssuesNewSessionAndKeepsRefreshTokenOutOfJSON(t *testing
 	request.Host = "chat.localhost"
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://chat.localhost")
-	request.AddCookie(&http.Cookie{Name: legacyRefreshCookie, Value: "ambient-cookie"})
+	request.AddCookie(&http.Cookie{Name: "zwei_refresh", Value: "ambient-cookie"})
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
@@ -95,77 +93,13 @@ func TestPasswordSetupV2RequiresStrictJSONAndExactAllowedOrigin(t *testing.T) {
 	}
 }
 
-type legacySetupHTTPRepository struct {
-	application.Repository
-	calls    int
-	hash     []byte
-	password string
-}
-
-func (r *legacySetupHTTPRepository) SetPasswordFromSetup(_ context.Context, hash []byte, password string, now time.Time) error {
-	r.calls++
-	r.hash = append([]byte(nil), hash...)
-	r.password = password
-	return nil
-}
-
-type legacySetupHTTPHasher struct{}
-
-func (legacySetupHTTPHasher) Hash(string) (string, error)  { return "hashed-password", nil }
-func (legacySetupHTTPHasher) Compare(string, string) error { return nil }
-
-func TestLegacyPasswordSetupRoutePreservesPasswordOnlyContract(t *testing.T) {
-	repository := &legacySetupHTTPRepository{}
-	auth := application.NewService(repository, legacySetupHTTPHasher{}, nil, time.Minute, time.Hour)
-	base := NewHandler(auth, nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, "")
+func TestPasswordOnlySetupRouteIsNotInstalled(t *testing.T) {
 	mux := http.NewServeMux()
-	base.Register(mux)
-	token := strings.Repeat("t", 43)
-	r := httptest.NewRequest(http.MethodPost, "https://auth.localhost/api/auth/activate/setup", strings.NewReader(`{"token":"`+token+`","password":"newpassword"}`))
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Origin", "https://chat.localhost")
-	r.AddCookie(&http.Cookie{Name: legacyRefreshCookie, Value: "ambient-cookie"})
+	NewHandler(nil, nil, nil, nil, nil, "").Register(mux)
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/activate/setup", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || w.Header().Get("Upgrade") != "" || w.Header().Get("Cache-Control") != "no-store" || w.Body.String() != `{"status":"password_set"}`+"\n" {
-		t.Fatalf("legacy response status=%d cache=%q body=%s", w.Code, w.Header().Get("Cache-Control"), w.Body.String())
-	}
-	if len(w.Result().Cookies()) != 0 || strings.Contains(w.Body.String(), "access_token") || strings.Contains(w.Body.String(), "refresh_token") {
-		t.Fatalf("legacy setup unexpectedly issued credentials: cookies=%v body=%s", w.Result().Cookies(), w.Body.String())
-	}
-	expectedHash := sha256.Sum256([]byte(token))
-	if repository.calls != 1 || string(repository.hash) != string(expectedHash[:]) || repository.password != "hashed-password" {
-		t.Fatalf("legacy setup repository call: %+v", repository)
-	}
-}
-
-func TestLegacyPasswordSetupRejectsUntrustedOriginAndTrailingJSON(t *testing.T) {
-	repository := &legacySetupHTTPRepository{}
-	base := NewHandler(application.NewService(repository, legacySetupHTTPHasher{}, nil, time.Minute, time.Hour), nil, nil, nil, map[string]struct{}{"https://chat.localhost": {}}, "")
-	mux := http.NewServeMux()
-	base.Register(mux)
-	for _, test := range []struct {
-		name, origin, body string
-		status             int
-	}{
-		{name: "missing origin", body: `{"token":"` + strings.Repeat("t", 43) + `","password":"newpassword"}`, status: http.StatusForbidden},
-		{name: "untrusted origin", origin: "https://evil.test", body: `{"token":"` + strings.Repeat("t", 43) + `","password":"newpassword"}`, status: http.StatusForbidden},
-		{name: "trailing JSON", origin: "https://chat.localhost", body: `{"token":"` + strings.Repeat("t", 43) + `","password":"newpassword"}{}`, status: http.StatusBadRequest},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, "https://auth.localhost/api/auth/activate/setup", strings.NewReader(test.body))
-			request.Header.Set("Content-Type", "application/json")
-			if test.origin != "" {
-				request.Header.Set("Origin", test.origin)
-			}
-			response := httptest.NewRecorder()
-			mux.ServeHTTP(response, request)
-			if response.Code != test.status || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("status=%d want=%d cache=%q body=%s", response.Code, test.status, response.Header().Get("Cache-Control"), response.Body.String())
-			}
-		})
-	}
-	if repository.calls != 0 {
-		t.Fatalf("untrusted/malformed legacy requests reached repository: calls=%d", repository.calls)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("retired route status=%d, want 404", w.Code)
 	}
 }

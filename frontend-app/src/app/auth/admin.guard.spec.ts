@@ -2,6 +2,15 @@ import {of, Subject, throwError} from 'rxjs';
 import {AdminGuard} from './admin.guard';
 
 describe('AdminGuard', () => {
+    it('redirects an unauthenticated admin directly to sign in', () => {
+        const router = {createUrlTree: vi.fn(() => 'login')};
+        const guard = new AdminGuard({restore: () => of(null)} as never, {} as never, router as never);
+        let result: unknown;
+        guard.canActivate({} as never, {} as never).subscribe(value => result = value);
+        expect(result).toBe('login');
+        expect(router.createUrlTree).toHaveBeenCalledWith(['/login']);
+    });
+
     it('waits for local session cleanup before redirecting after access fails', () => {
         const cleanup = new Subject<void>();
         const auth = {restore: () => of({}), logout: vi.fn(() => cleanup)};

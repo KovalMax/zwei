@@ -6,9 +6,13 @@ close_edge() {
 }
 test -f "$KYC_BASIC_AUTH_FILE" && test -s "$KYC_BASIC_AUTH_FILE"
 docker compose --profile migration pull
-# Validate the bind mount inside Traefik before disturbing the running edge.
-docker compose run --rm --no-deps --entrypoint sh traefik -c 'test -f /run/secrets/kyc.htpasswd && test -s /run/secrets/kyc.htpasswd'
-# From this point a failed cutover must leave public routes closed.
+# Validate readability through the same read-only mount without attaching a
+# second Traefik to the live proxy's fixed edge IP.
+docker run --rm --network none \
+  --mount "type=bind,source=$KYC_BASIC_AUTH_FILE,target=/run/secrets/kyc.htpasswd,readonly" \
+  --entrypoint sh traefik:v3.5 \
+  -c 'test -f /run/secrets/kyc.htpasswd && test -r /run/secrets/kyc.htpasswd && test -s /run/secrets/kyc.htpasswd'
+# From this point a failed deployment must leave public routes closed.
 trap close_edge EXIT
 trap 'exit 1' HUP INT TERM
 docker compose stop traefik coturn

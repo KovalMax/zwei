@@ -144,57 +144,6 @@ CREATE TABLE browser_auth_heads (browser_id uuid PRIMARY KEY, generation uuid NO
 		}
 	}
 
-	// Cached clients use the legacy password-only route while current clients
-	// use v2. Both routes must contend on the same one-use setup credential.
-	legacyRaceToken := uuid.NewString()
-	legacyRaceHash := sha256.Sum256([]byte(legacyRaceToken))
-	legacyRaceDevice := "legacy-race-device-" + uuid.NewString()
-	if _, err := pool.Exec(ctx, `INSERT INTO users(email,password_hash,display_name,kyc_status,activation_token_hash,activation_expires_at,activation_token_purpose) VALUES($1,NULL,'legacy race',$2,$3,$4,'setup')`, uuid.NewString()+"@example.test", user.KYCPending, legacyRaceHash[:], now.Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	var legacyRaceUser uuid.UUID
-	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE activation_token_hash=$1`, legacyRaceHash[:]).Scan(&legacyRaceUser); err != nil {
-		t.Fatal(err)
-	}
-	results := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		results <- repository.SetPasswordFromSetup(ctx, legacyRaceHash[:], "legacy-password", now)
-	}()
-	go func() {
-		defer wg.Done()
-		results <- repository.CompletePasswordSetup(ctx, legacyRaceHash[:], "v2-password", legacyRaceDevice, "New browser", uuid.New(), uuid.New(), testRefreshHash(), now.Add(time.Hour), now, func(user.Session) error { return nil })
-	}()
-	wg.Wait()
-	close(results)
-	wins := 0
-	for err := range results {
-		if err == nil {
-			wins++
-		} else if !errors.Is(err, application.ErrPasswordSetupInvalid) {
-			t.Fatalf("cross-version setup consumption: %v", err)
-		}
-	}
-	if wins != 1 {
-		t.Fatalf("cross-version setup consumption successes=%d", wins)
-	}
-	var storedPassword string
-	var legacyRaceSessions int
-	if err := pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id=$1`, legacyRaceUser).Scan(&storedPassword); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1`, legacyRaceUser).Scan(&legacyRaceSessions); err != nil {
-		t.Fatal(err)
-	}
-	if storedPassword != "legacy-password" && storedPassword != "v2-password" {
-		t.Fatalf("cross-version password winner = %q", storedPassword)
-	}
-	if (storedPassword == "legacy-password" && legacyRaceSessions != 0) || (storedPassword == "v2-password" && legacyRaceSessions != 1) {
-		t.Fatalf("session ownership did not match consuming route: password=%q sessions=%d", storedPassword, legacyRaceSessions)
-	}
-
 	// A setup link may be opened in a different browser. The token remains the
 	// authority to finish setup; the new browser's device row is created atomically.
 	newDeviceToken := uuid.NewString()

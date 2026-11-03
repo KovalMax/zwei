@@ -7,7 +7,7 @@ import {BehaviorSubject, defer, merge, Observable, of, Subject, throwError} from
 import {catchError, filter, finalize, map, pairwise, shareReplay, switchMap, tap} from 'rxjs/operators';
 import {HostService} from './host.service';
 import {AuthCookieLockService, AuthCookieLockUnavailableError} from './auth-cookie-lock.service';
-import type {BrowserSessionSelector, ContinuedBrowserSession} from './browser-session.client';
+import type {BrowserSessionSelector, ContinuedBrowserSession} from './browser-session.model';
 import {getDeviceID} from '../login/login';
 
 export class LogoutCookieUnclearedError extends Error {
@@ -355,18 +355,11 @@ export class AuthService implements OnDestroy {
         return this.http.post<{status: string}>(this.host.authEndpoint('activate'), {}, {params: {token}});
     }
 
-    public setupPassword(token: string, password: string): Observable<ActivationSetupSession | null> {
+    public setupPassword(token: string, password: string): Observable<ActivationSetupSession> {
         return defer(() => {
             const request = {token, password, device_id: getDeviceID(), device_name: 'Browser'};
             return this.cookieLock.run(() => this.http.post<unknown>(this.host.activationSetupEndpoint(), request, {withCredentials: true}).pipe(
                 map(parseActivationSetupSession),
-                catchError(error => {
-                    if (!(error instanceof HttpErrorResponse) || error.status !== 404) return throwError(() => error);
-                    return this.http.post<unknown>(this.host.legacyActivationSetupEndpoint(), {token, password}, {withCredentials: false}).pipe(
-                        map(parseLegacyPasswordSetup),
-                        map(() => null),
-                    );
-                }),
             ));
         });
     }
@@ -457,11 +450,4 @@ function parseActivationSetupSession(value: unknown): ActivationSetupSession {
         throw new Error('Invalid activation setup response');
     }
     return {status: 'password_set', browser_id: value.browser_id, generation: value.generation, access_token: value.access_token, token_type: value.token_type, expires_in: value.expires_in};
-}
-
-function parseLegacyPasswordSetup(value: unknown): {status: 'password_set'} {
-    if (typeof value !== 'object' || value === null || !('status' in value) || value.status !== 'password_set') {
-        throw new Error('Invalid legacy password setup response');
-    }
-    return {status: 'password_set'};
 }

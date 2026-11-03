@@ -6,48 +6,43 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  verify:
-    name: Verify release artifact
+  resolve-source:
+    name: Resolve release source commit
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
     steps:
-      - name: Check out release tag
+      - name: Check out published release tag
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
+      - name: Resolve immutable commit
+        id: resolve
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+  verify-ci:
+    name: Run full CI for release source
+    uses: ./.github/workflows/ci.yml
+    needs: resolve-source
+    with:
+      source_ref: ${{ needs.resolve-source.outputs.commit }}
 
-      - name: Run Go tests
-        run: go test ./services/...
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend-app/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend-app
-        run: npm ci
-
-      - name: Build Angular production bundle
-        working-directory: frontend-app
-        run: |
-          npm run build -- --configuration production
-          test -s dist/messenger/browser/index.html
+  verify-security:
+    name: Run security checks for release source
+    uses: ./.github/workflows/security.yml
+    needs: resolve-source
+    with:
+      source_ref: ${{ needs.resolve-source.outputs.commit }}
 
   publish:
     name: Publish ${{ matrix.image }} image
-    needs: verify
+    needs: [resolve-source, verify-ci, verify-security]
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -73,10 +68,10 @@ jobs:
             target: ''
             build-args: ''
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -95,7 +90,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/zwei-${{ matrix.image }}
           tags: |
             type=raw,value=${{ github.event.release.tag_name }}
-            type=sha,format=long,prefix=sha-
+            type=raw,value=sha-${{ needs.resolve-source.outputs.commit }}
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -112,8 +107,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: Deploy release
-    needs: publish
+    name: Deploy release commit
+    needs: [resolve-source, publish]
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -125,12 +120,12 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-      IMAGE_TAG: ${{ github.event.release.tag_name }}
+      IMAGE_TAG: sha-${{ needs.resolve-source.outputs.commit }}
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Configure SSH
         run: |
@@ -138,6 +133,14 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Validate deployment path
+        run: sh infrastructure/scripts/validate-deploy-path.sh "$DEPLOY_PATH"
+
+      - name: Prepare deployment directory
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "install -d -m 750 '$DEPLOY_PATH' && test \"\$(realpath -m -- '$DEPLOY_PATH')\" = '$DEPLOY_PATH'"
 
       - name: Synchronize production configuration
         run: |
@@ -147,7 +150,7 @@ jobs:
             -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
             infrastructure/production/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
 
-      - name: Select immutable release tag
+      - name: Select immutable commit image tag
         run: |
           case "$IMAGE_TAG" in
             ''|*[!A-Za-z0-9._-]*)
@@ -171,44 +174,7 @@ jobs:
              set +a
              sh ./release-deploy.sh"
 
-      - name: Verify public HTTPS endpoints
-        run: |
-           chat_page="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://chat.false.tel/)"
-           printf '%s' "$chat_page" | grep -Fq '<app-root>'
-           kyc_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --output /dev/null --write-out '%{http_code}' https://kyc.chat.false.tel/)"
-           test "$kyc_status" = 401
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
-           activation_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --request POST --data '{}' --output /dev/null --write-out '%{http_code}' 'https://auth.chat.false.tel/api/auth/activate?token=invalid')"
-           test "$activation_status" = 400
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
-
-      - name: Verify public security headers
-        run: |
-          headers="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --dump-header - --output /dev/null https://chat.false.tel/ | tr -d '\r')"
-          printf '%s\n' "$headers" | grep -Fqi 'permissions-policy: geolocation=(), microphone=(self), camera=()'
-          printf '%s\n' "$headers" | grep -Fqi 'content-security-policy:'
-          csp="$(printf '%s\n' "$headers" | awk 'tolower($1) == "content-security-policy:" { $1=""; sub(/^[[:space:]]+/, ""); if (found) result=result "\n"; result=result $0; found=1 } END { print result }')"
-          connect_src="$(printf '%s' "$csp" | tr ';' '\n' | awk 'tolower($1) == "connect-src" { if (found) duplicate=1; found=1; $1=""; sub(/^[[:space:]]+/, ""); directive=$0 } END { if (!found || duplicate) exit 1; print directive }' || true)"
-          if [ -z "$connect_src" ]; then
-            echo 'The deployed CSP must contain exactly one connect-src directive.' >&2
-            exit 1
-          fi
-          for origin in https://media.giphy.com https://media0.giphy.com https://media1.giphy.com https://media2.giphy.com https://media3.giphy.com https://media4.giphy.com; do
-            case " $connect_src " in
-              *" $origin "*) ;;
-              *)
-              echo "The deployed CSP connect-src is missing $origin." >&2
-              exit 1
-              ;;
-            esac
-          done
-          if printf '%s\n' "$headers" | grep -Fqi 'fonts.googleapis.com'; then
-            echo 'The deployed CSP still permits the removed Google Fonts origin.' >&2
-            exit 1
-          fi
-
-      - name: Close edge after deployment or verification failure
+      - name: Close edge after deployment failure
         if: ${{ (failure() || cancelled()) && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != '' }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \

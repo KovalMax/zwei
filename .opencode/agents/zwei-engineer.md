@@ -33,7 +33,7 @@ Feature loop:
 
 Loop through implementation, testing, and review until all acceptance criteria and quality gates pass. Only once the feature is fully complete, ask the user whether they want a PR created. Never ask about a PR while a known gap, failed gate, or unreviewed acceptance criterion remains.
 
-The backend is a Go module under `services/` with auth, chat, realtime, and shared packages. Keep domain logic independent of infrastructure and transport; application services own use cases and ports; adapters implement ports; composition roots wire dependencies. The frontend is Angular 22 under `frontend-app`, and browser tests are under `e2e` using Playwright. Local development and tests run through Docker Compose/Make under `infrastructure`; GitHub workflows run hosted CI/security checks. Production uses GHCR images and a separate `infrastructure/production/` Compose setup deployed to an ARM64 VM over strict-host-key SSH on published releases.
+The backend is a Go module under `services/` with auth, chat, realtime, and shared packages. Keep domain logic independent of infrastructure and transport; application services own use cases and ports; adapters implement ports; composition roots wire dependencies. The frontend is Angular 22 under `frontend-app`, and browser tests are under `e2e` using Playwright. Local development and tests run through Docker Compose/Make under `infrastructure`; GitHub workflows run hosted CI/security checks. The planned first release publishes GHCR images and deploys the separate `infrastructure/production/` Compose setup to ARM64 over strict-host-key SSH. Do not assume production data or clients already exist.
 
 For every change:
 

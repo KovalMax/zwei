@@ -14,20 +14,6 @@ import (
 
 var _ application.BrowserSessionRepository = (*Repository)(nil)
 var _ application.PasswordSetupSessionRepository = (*Repository)(nil)
-var _ application.LegacyPasswordSetupRepository = (*Repository)(nil)
-
-// SetPasswordFromSetup is the compatibility path for cached pre-v2 clients.
-// It deliberately does not create or alter browser sessions.
-func (r *Repository) SetPasswordFromSetup(ctx context.Context, tokenHash []byte, passwordHash string, now time.Time) error {
-	result, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $1, email_verified_at = $2, activation_token_hash = NULL, activation_expires_at = NULL, activation_token_purpose = NULL, updated_at = $2 WHERE activation_token_hash = $3 AND activation_token_purpose = 'setup' AND activation_expires_at > $2 AND password_hash IS NULL AND kyc_status IN ($4, $5)`, passwordHash, now, tokenHash, user.KYCPending, user.KYCActive)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return application.ErrPasswordSetupInvalid
-	}
-	return nil
-}
 
 func (r *Repository) CompletePasswordSetup(ctx context.Context, tokenHash []byte, passwordHash, clientDeviceID, deviceName string, browser, generation uuid.UUID, refreshHash []byte, expiresAt, now time.Time, issue func(user.Session) error) error {
 	if len(tokenHash) != 32 || passwordHash == "" || clientDeviceID == "" || browser == uuid.Nil || generation == uuid.Nil || len(refreshHash) != 32 || issue == nil {

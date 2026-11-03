@@ -3,8 +3,6 @@ package httptransport
 import (
 	"encoding/json"
 	"errors"
-	"io"
-	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -51,7 +49,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/auth/push-subscription/current", h.deleteCurrentPushSubscription)
 	mux.HandleFunc("POST /api/auth/ws-ticket", h.websocketTicket)
 	mux.HandleFunc("POST /api/auth/activate", h.activate)
-	mux.HandleFunc("POST /api/auth/activate/setup", h.setPasswordFromSetup)
 	mux.HandleFunc("GET /api/auth/me", h.me)
 	mux.HandleFunc("PATCH /api/auth/me", h.updateMe)
 	mux.HandleFunc("GET /api/auth/media-policy", h.mediaPolicy)
@@ -220,42 +217,6 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runtime.WriteJSON(w, http.StatusOK, map[string]string{"status": "activated"})
-}
-
-func (h *Handler) setPasswordFromSetup(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if !h.refreshOriginAllowed(w, r) || !h.authHostAllowed(w, r) {
-		return
-	}
-	if h.auth == nil {
-		errorJSON(w, http.StatusServiceUnavailable, "password setup unavailable")
-		return
-	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		errorJSON(w, http.StatusUnsupportedMediaType, "JSON required")
-		return
-	}
-	var request struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
-	}
-	defer r.Body.Close()
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
-		errorJSON(w, http.StatusBadRequest, "invalid password setup request")
-		return
-	}
-	if err := h.auth.SetPasswordFromSetup(r.Context(), request.Token, request.Password); err != nil {
-		if errors.Is(err, application.ErrInvalidInput) || errors.Is(err, application.ErrPasswordSetupInvalid) {
-			errorJSON(w, http.StatusBadRequest, "invalid or expired password setup link")
-			return
-		}
-		errorJSON(w, http.StatusInternalServerError, "could not set password")
-		return
-	}
-	runtime.WriteJSON(w, http.StatusOK, map[string]string{"status": "password_set"})
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {

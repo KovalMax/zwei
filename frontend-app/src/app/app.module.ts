@@ -8,7 +8,6 @@ import {HeaderComponent} from './navigation/header/header.component';
 import {LoginComponent} from './login/login.component';
 import {RegistrationComponent} from './registration/registration.component';
 import {HTTP_INTERCEPTORS, HttpClientModule} from '@angular/common/http';
-import {ContinueComponent} from './auth/continue.component';
 import {AuthService} from './auth/auth.service';
 import {AuthInterceptorService} from './auth/auth-interceptor.service';
 import {RegistrationService} from './registration/registration.service';
@@ -30,7 +29,6 @@ import {SharedModule} from './shared/shared.module';
         PendingComponent,
         ActivationComponent,
         RootRedirectComponent,
-        ContinueComponent,
     ],
     imports: [
         BrowserModule,

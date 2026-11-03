@@ -926,8 +926,12 @@ export class HomeComponent implements OnInit, OnDestroy {
         if (!this.selectedConversation || !this.socketReady) return;
         if (!this.draft.trim()) { this.stopTyping(); return; }
         if (!this.isTyping || Date.now() - this.lastTypingStartAt >= 1_200) {
-            this.isTyping = this.dataProvider.send({type: 'typing.start', payload: {conversation_id: this.selectedConversation.id}});
-            if (this.isTyping) { this.typingTargetConversationID = this.selectedConversation.id; this.lastTypingStartAt = Date.now(); }
+            const sent = this.dataProvider.send({type: 'typing.start', payload: {conversation_id: this.selectedConversation.id}});
+            if (sent) {
+                this.isTyping = true;
+                this.typingTargetConversationID = this.selectedConversation.id;
+                this.lastTypingStartAt = Date.now();
+            }
         }
         window.clearTimeout(this.typingTimeout);
         this.typingTimeout = window.setTimeout(() => this.stopTyping(), 2_000);
