@@ -33,6 +33,12 @@ app-home .call-panel-full app-call-profile .call-presentation-avatar, app-home .
     app-home .call-minimized-end { min-height: 44px; padding: 0 8px; }
 }
 
+@media (max-width: 360px) {
+    app-home .call-minimized-banner:not(.call-minimized-banner-rail):not(.call-minimized-banner-chat) .call-minimized-summary > span { gap: 1px; }
+    app-home .call-minimized-banner:not(.call-minimized-banner-rail):not(.call-minimized-banner-chat) .call-minimized-summary strong { font-size: 11px; line-height: 1.2; }
+    app-home .call-minimized-banner:not(.call-minimized-banner-rail):not(.call-minimized-banner-chat) .call-minimized-summary small { gap: 1px 4px; font-size: 11px; line-height: 1.2; }
+}
+
 app-home .load-older { --mat-button-outlined-label-text-color: var(--chat-text); --mat-button-outlined-outline-color: var(--chat-line-strong); color: var(--chat-text); }
 app-home .load-older:hover:not(:disabled) { border-color: var(--chat-accent); background-color: color-mix(in srgb, var(--chat-accent) 12%, var(--chat-surface)); }
 app-home .load-older:focus-visible { outline: 3px solid var(--zwei-focus); outline-offset: 2px; }
