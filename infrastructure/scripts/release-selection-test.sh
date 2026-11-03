@@ -16,7 +16,13 @@ grep -q 'environment: production' "$workflow"
 grep -q 'rsync --archive --compress --delete' "$workflow"
 grep -q 'StrictHostKeyChecking=yes' "$workflow"
 grep -q 'sh ./release-deploy.sh' "$workflow"
-grep -q 'steps.deploy.outcome' "$workflow"
+grep -Fq "steps.ssh.outcome == 'success'" "$workflow"
+grep -Fq "sh ./release-deploy.sh cleanup" "$workflow"
+grep -Fq "sh ./release-deploy.sh verified" "$workflow"
+grep -Fq -- "--exclude '.release-verification-pending'" "$workflow"
+grep -q 'docker compose config --quiet' "$root/infrastructure/production/release-deploy.sh"
+grep -Fq 'docker run --rm --network none' "$root/infrastructure/production/release-deploy.sh"
+! grep -q 'docker compose run .*traefik' "$root/infrastructure/production/release-deploy.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir "$tmp/bin" "$tmp/deploy"
@@ -49,16 +55,37 @@ export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" PROBES="$tmp/probes" FAIL_POINT=
 cd "$tmp/deploy"
 KYC_BASIC_AUTH_FILE="$tmp/htpasswd"; export KYC_BASIC_AUTH_FILE
 sh "$root/infrastructure/production/release-deploy.sh" > "$tmp/output" 2>&1
-awk '/--profile migration pull$/ { pull=NR } /run --rm --no-deps --entrypoint sh traefik/ { credentials=NR } / stop traefik coturn$/ { edge=NR } / stop frontend auth chat realtime$/ { apps=NR } / ps -q --status running/ { stopped=NR } / run --rm --no-deps migrate$/ { migration=NR } / up .* frontend auth chat realtime$/ { start=NR } / up .* coturn traefik$/ { public=NR } END { exit !(pull && pull < credentials && credentials < edge && edge < apps && apps < stopped && stopped < migration && migration < start && start < public) }' "$CALLS"
-for point in 'migration pull' 'run --rm --no-deps --entrypoint sh traefik' ; do
+awk '/config --quiet$/ { config=NR } /--profile migration pull$/ { pull=NR } /run --rm --network none/ { credential=NR } / stop traefik coturn$/ { edge=NR } / stop frontend auth chat realtime$/ { apps=NR } / ps -q --status running/ { stopped=NR } / run --rm --no-deps migrate$/ { migration=NR } / up .* frontend auth chat realtime$/ { start=NR } / up .* coturn traefik$/ { public=NR } END { exit !(config && config < pull && pull < credential && credential < edge && edge < apps && apps < stopped && stopped < migration && migration < start && start < public) }' "$CALLS"
+test -f .release-verification-pending
+: > "$CALLS"
+sh "$root/infrastructure/production/release-deploy.sh" cleanup
+tail -1 "$CALLS" | grep -q ' stop traefik coturn$'
+test ! -e .release-verification-pending
+: > "$CALLS"
+sh "$root/infrastructure/production/release-deploy.sh" cleanup
+test ! -s "$CALLS"
+: > "$CALLS"
+sh "$root/infrastructure/production/release-deploy.sh" > "$tmp/output" 2>&1
+test -f .release-verification-pending
+: > "$CALLS"
+sh "$root/infrastructure/production/release-deploy.sh" verified
+test ! -e .release-verification-pending
+test ! -s "$CALLS"
+for point in 'config --quiet' 'migration pull' 'run --rm --network none' ; do
   : > "$CALLS"; FAIL_POINT=$point; export FAIL_POINT
   if sh "$root/infrastructure/production/release-deploy.sh" > "$tmp/output" 2>&1; then echo "release deployment failure accepted: $point" >&2; exit 1; fi
   ! grep -Eq ' stop | run .* migrate' "$CALLS"
+  test ! -e .release-verification-pending
 done
 for point in 'stop frontend auth chat realtime' 'ps -q --status running' 'run --rm --no-deps migrate' 'frontend auth chat realtime' 'coturn traefik'; do
   : > "$CALLS"; FAIL_POINT=$point; export FAIL_POINT
   if sh "$root/infrastructure/production/release-deploy.sh" > "$tmp/output" 2>&1; then echo "release deployment failure accepted: $point" >&2; exit 1; fi
   tail -1 "$CALLS" | grep -q ' stop traefik coturn$'
+  test -f .release-verification-pending
+  FAIL_POINT=; export FAIL_POINT; : > "$CALLS"
+  sh "$root/infrastructure/production/release-deploy.sh" cleanup
+  tail -1 "$CALLS" | grep -q ' stop traefik coturn$'
+  test ! -e .release-verification-pending
 done
 FAIL_POINT=; RUNNING=yes; export FAIL_POINT RUNNING
 : > "$CALLS"

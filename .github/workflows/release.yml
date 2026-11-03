@@ -133,6 +133,7 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
 
       - name: Configure SSH
+        id: ssh
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
@@ -144,6 +145,7 @@ jobs:
           rsync --archive --compress --delete \
             --exclude '.env' \
             --exclude '.deploy.env' \
+            --exclude '.release-verification-pending' \
             -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
             infrastructure/production/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
 
@@ -208,8 +210,13 @@ jobs:
             exit 1
           fi
 
-      - name: Close edge after deployment or verification failure
-        if: ${{ (failure() || cancelled()) && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != '' }}
+      - name: Confirm release verification
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; docker compose stop traefik coturn"
+            "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; sh ./release-deploy.sh verified"
+
+      - name: Close edge after deployment or verification failure
+        if: ${{ (failure() || cancelled()) && steps.ssh.outcome == 'success' }}
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "set -eu; cd '$DEPLOY_PATH'; if [ -f .release-verification-pending ]; then set -a; . ./.env; . ./.deploy.env; set +a; sh ./release-deploy.sh cleanup; fi"

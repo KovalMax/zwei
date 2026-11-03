@@ -80,6 +80,8 @@ make e2e
 
 `.github/workflows/release.yml` runs on published GitHub Releases, builds/publishes ARM64 images to GHCR, and deploys through strict-host-key SSH to a VM using the separate `infrastructure/production/` Compose setup. Preserve the distinction between local Compose and production Compose and never document secret values.
 
+The production release preflight must never start a second Traefik on its fixed edge IP; validate the KYC bind mount with an isolated `--network none` container after pulling the image. Keep preflight failures non-disruptive. Preserve `.release-verification-pending` through `rsync --delete` and until both public endpoint and security-header checks pass; on failure/cancellation, close the edge only when that marker exists. Test preflight, cutover, SSH-status ambiguity, and post-deploy verification paths with `infrastructure/scripts/release-selection-test.sh`.
+
 When npm advisories affect transitive build tooling, prefer a reviewed `overrides` entry pinned to a patched release and regenerate the lockfile. Do not suppress an advisory or lower `--audit-level=high`; document when an upstream package has no patched release and remove the vulnerable dependency path where possible.
 
 For production browser permissions and security headers, verify the public HTTPS response after deployment. The release gate must require `Permissions-Policy: geolocation=(), microphone=(self), camera=()` and reject stale CSP origins such as removed external font hosts; local configuration tests alone do not prove the deployed edge was synchronized.
