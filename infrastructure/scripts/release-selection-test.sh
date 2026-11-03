@@ -3,6 +3,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 # Published releases also deploy automatically; preserve that fact in this check.
 workflow="$root/.github/workflows/release.yml"
+ci_workflow="$root/.github/workflows/ci.yml"
 if grep -Eq 'AUTH_BROWSER_SESSIONS_V2|BROWSER_SESSION_V2_RELEASE' "$root/infrastructure/production/.env.example"; then
   echo 'Production environment example must not mention obsolete browser session flags' >&2
   exit 1
@@ -11,6 +12,8 @@ grep -q '^  release:$' "$workflow"
 grep -q '^  publish:$' "$workflow"
 grep -q 'push: true' "$workflow"
 grep -q '^  deploy:$' "$workflow"
+grep -q '^  release-workflow-tests:$' "$ci_workflow"
+grep -Fq 'run: sh infrastructure/scripts/release-selection-test.sh' "$ci_workflow"
 grep -q 'needs: publish' "$workflow"
 grep -q 'environment: production' "$workflow"
 grep -q 'rsync --archive --compress --delete' "$workflow"
