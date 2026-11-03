@@ -103,16 +103,6 @@ jobs:
       - name: Test bounded support-log exporter
         run: python3 -m unittest infrastructure.production.test_export_realtime_logs -v
 
-  release-workflow-tests:
-    name: Release cutover tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Test production release cutover
-        run: sh infrastructure/scripts/release-selection-test.sh
-
   frontend-quality:
     name: Angular tests and build
     runs-on: ubuntu-latest

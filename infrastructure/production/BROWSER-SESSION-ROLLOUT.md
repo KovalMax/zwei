@@ -42,13 +42,12 @@ reopen traffic until the backup and recovery consequences are approved.
 
 This is an operator procedure, not a local CI command. After image publication,
 the release workflow synchronizes files and writes `.deploy.env`; its
-`release-deploy.sh` preflights the KYC credential file and rendered Compose
-configuration, pulls images, and checks the read-only credential mount in an
-isolated container before marking verification pending. It then stops the public
-edge and application writers, migrates, recreates the applications, reopens the edge,
-then probes public endpoints and headers. The workflow clears the marker only
-after successful public checks; a pending marker causes failure cleanup to close
-the edge. The workflow does not take the manual script's `.cutover.lock` and does not roll back
+`release-deploy.sh` preflights the KYC credential file and pulls images, then
+checks the read-only credential mount in a network-isolated container to avoid
+colliding with the live proxy's fixed IP. It then stops the public edge and
+application writers, migrates, recreates the applications, reopens the edge,
+then probes public endpoints and headers. The workflow does not take the manual
+script's `.cutover.lock` and does not roll back
 on failure. **Before publishing**, coordinate and fence other operators and
 automation, including queued/running GitHub deployments and independent Compose
 commands, and take and verify the final backup. Do not assume the deployment
