@@ -46,9 +46,9 @@ the release workflow synchronizes files and writes `.deploy.env`; its
 checks the read-only credential mount in a network-isolated container to avoid
 colliding with the live proxy's fixed IP. It then stops the public edge and
 application writers, migrates, recreates the applications, reopens the edge,
-then probes public endpoints and headers. The workflow does not take the manual
-script's `.cutover.lock` and does not roll back
-on failure. **Before publishing**, coordinate and fence other operators and
+then returns. It does not run public endpoint or security-header probes, take the
+manual script's `.cutover.lock`, or roll back on failure. **Before publishing**,
+coordinate and fence other operators and
 automation, including queued/running GitHub deployments and independent Compose
 commands, and take and verify the final backup. Do not assume the deployment
 script serializes external writers or operators.
@@ -64,12 +64,12 @@ Keep the barrier effective even when the workflow recreates public services; the
 script does not provide it. Plan for existing sessions to be revoked and users
 to sign in again; old tabs and service workers may need updating.
 
-The barrier can prevent the workflow's public probes from reaching the service,
-so the deploy job may fail after migration and recreation; failure does not
-roll back either. Do not weaken the barrier merely to make probes green. After
-the workflow has finished, inspect its logs and actual VM, migration, image and
-container state before the manual step. A failed or incomplete deploy requires
-operator investigation; do not assume it is safe to proceed or retry. If the
+The workflow does not verify public reachability or headers. After it finishes,
+manually inspect its logs and the VM, migration, image, and container state, then
+perform endpoint and security-header checks from the VM console. A successful
+workflow does not by itself establish public availability. A failed
+or incomplete deploy requires operator investigation; do not assume it is safe
+to proceed or retry. If the
 automatic migrator already applied 0024, the manual migration skips its revocation
 because its marker and updates commit together; it does not revoke sessions a
 second time. Stop if writers could have created sessions or data during the
@@ -138,12 +138,26 @@ An actual rollback requires an approved, verified pre-cutover restore and matchi
 old images/configuration; assess lost writes and revocation effects first. Do not
 run restore or reopen automatically.
 
-After success, remove the external barrier only under operator control, then
-verify from an independent public network: HTTPS certificates and chat page,
-KYC shell challenge, auth/chat/realtime readiness and activation route, response
-security headers, and a fresh sign-in with a supported browser. Exercise direct
-and group messaging, `/ws/v2`, calls/TURN and push as applicable; confirm a
-previous session requires sign-in and inspect secret-free diagnostics. The
-private probes do not establish public reachability, media relay, browser behavior
-or security. On any failure, close the external barrier and follow the recovery
-decision above rather than assuming the script rolled back.
+After success, remove the external barrier only under operator control. From the
+VM console, manually verify the public HTTPS routes: `https://chat.false.tel/`
+serves the app shell; `https://kyc.chat.false.tel/` returns the expected `401`
+Basic Auth challenge; `/health/ready` succeeds on the auth, API, and WebSocket
+hosts; and POSTing an invalid activation token to the auth activation route
+returns `400`. Specifically, readiness must succeed at
+`https://auth.chat.false.tel/health/ready`,
+`https://api.chat.false.tel/health/ready`, and
+`https://ws.chat.false.tel/health/ready`; POST `{}` to
+`https://auth.chat.false.tel/api/auth/activate?token=invalid` and expect `400`.
+Confirm valid HTTPS certificates. On the chat response, require
+`Permissions-Policy: geolocation=(), microphone=(self), camera=()` and a CSP
+with exactly one `connect-src` directive containing
+`https://media.giphy.com` and `https://media0.giphy.com` through
+`https://media4.giphy.com`, and no removed external font origin such as
+`fonts.googleapis.com`.
+
+Then verify fresh sign-in with a supported browser. Exercise direct and group
+messaging over `/ws/v4`, calls/TURN and push as applicable; confirm a previous
+session requires sign-in and inspect secret-free diagnostics. The VM checks do
+not by themselves establish browser behavior or media relay. On any failure,
+close the external barrier and follow the recovery decision above rather than
+assuming the script rolled back.

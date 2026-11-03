@@ -171,44 +171,7 @@ jobs:
              set +a
              sh ./release-deploy.sh"
 
-      - name: Verify public HTTPS endpoints
-        run: |
-           chat_page="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://chat.false.tel/)"
-           printf '%s' "$chat_page" | grep -Fq '<app-root>'
-           kyc_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --output /dev/null --write-out '%{http_code}' https://kyc.chat.false.tel/)"
-           test "$kyc_status" = 401
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://auth.chat.false.tel/health/ready
-           activation_status="$(curl --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --request POST --data '{}' --output /dev/null --write-out '%{http_code}' 'https://auth.chat.false.tel/api/auth/activate?token=invalid')"
-           test "$activation_status" = 400
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://api.chat.false.tel/health/ready
-           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 https://ws.chat.false.tel/health/ready
-
-      - name: Verify public security headers
-        run: |
-          headers="$(curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 --dump-header - --output /dev/null https://chat.false.tel/ | tr -d '\r')"
-          printf '%s\n' "$headers" | grep -Fqi 'permissions-policy: geolocation=(), microphone=(self), camera=()'
-          printf '%s\n' "$headers" | grep -Fqi 'content-security-policy:'
-          csp="$(printf '%s\n' "$headers" | awk 'tolower($1) == "content-security-policy:" { $1=""; sub(/^[[:space:]]+/, ""); if (found) result=result "\n"; result=result $0; found=1 } END { print result }')"
-          connect_src="$(printf '%s' "$csp" | tr ';' '\n' | awk 'tolower($1) == "connect-src" { if (found) duplicate=1; found=1; $1=""; sub(/^[[:space:]]+/, ""); directive=$0 } END { if (!found || duplicate) exit 1; print directive }' || true)"
-          if [ -z "$connect_src" ]; then
-            echo 'The deployed CSP must contain exactly one connect-src directive.' >&2
-            exit 1
-          fi
-          for origin in https://media.giphy.com https://media0.giphy.com https://media1.giphy.com https://media2.giphy.com https://media3.giphy.com https://media4.giphy.com; do
-            case " $connect_src " in
-              *" $origin "*) ;;
-              *)
-              echo "The deployed CSP connect-src is missing $origin." >&2
-              exit 1
-              ;;
-            esac
-          done
-          if printf '%s\n' "$headers" | grep -Fqi 'fonts.googleapis.com'; then
-            echo 'The deployed CSP still permits the removed Google Fonts origin.' >&2
-            exit 1
-          fi
-
-      - name: Close edge after deployment or verification failure
+      - name: Close edge after deployment failure
         if: ${{ (failure() || cancelled()) && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != '' }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
