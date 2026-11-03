@@ -4,7 +4,6 @@
             <span class="eyebrow">{{ setupMode ? 'Email password setup' : 'Account activation' }}</span>
             <h1 id="activation-title">{{ title }}</h1>
             <p *ngIf="setupMode && !passwordSet && !error">Choose a password to finish activating your account.</p>
-            <app-notice *ngIf="legacySetupComplete" kind="info" message="Your password is set. An administrator must approve your account before you can sign in."></app-notice>
             <app-notice *ngIf="sessionAcceptanceFailed" kind="warning" message="Your password is set, but we could not sign you in automatically. Please sign in with your new password."></app-notice>
             <app-notice *ngIf="setupMode && error && lockUnavailable" kind="error" message="This browser cannot safely manage sign-in cookies. Use an up-to-date browser with Web Locks enabled, then try the setup link again."></app-notice>
             <app-notice *ngIf="setupMode && error && !lockUnavailable" kind="error" message="We could not set your password. This link may be invalid, expired, or already used. Request a new setup link from an administrator."></app-notice>
@@ -28,7 +27,6 @@
         </form>
         <div *ngIf="isLoading && setupMode" class="auth-loading" role="status" aria-live="polite">Saving your password…</div>
         <button *ngIf="!setupMode && activated" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Continue to sign in</button>
-        <button *ngIf="legacySetupComplete" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Back to login</button>
         <button *ngIf="sessionAcceptanceFailed" class="submit-button" mat-flat-button color="primary" type="button" (click)="goToLogin()">Continue to sign in</button>
     </section>
 </main>

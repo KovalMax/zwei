@@ -32,7 +32,7 @@ func TestReceiptCleanupUncertainty(t *testing.T) {
 		{"newer", uniqueRefreshCookieName("new-session") + "=new-session", nil, 204},
 		{"lookup failure", uniqueRefreshCookieName("old-session") + "=old-session", errors.New("unavailable"), 500},
 		{"malformed", uniqueRefreshCookieName("old-session") + "=wrong", nil, 500},
-		{"legacy match", "zwei_refresh=old-session", nil, 500},
+		{"fixed-name ignored", "zwei_refresh=old-session", nil, 204},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &receiptRetrySessions{expected: secret, subject: u, browser: b, generation: g, matchErr: tc.lookupErr}

@@ -98,31 +98,6 @@ func (s *Service) CompletePasswordSetup(ctx context.Context, sessions *BrowserSe
 	return result, err
 }
 
-// SetPasswordFromSetup retains the pre-v2 setup contract for cached clients.
-// New clients should use CompletePasswordSetup so account activation and the
-// new browser session are committed atomically.
-func (s *Service) SetPasswordFromSetup(ctx context.Context, token, password string) error {
-	if len(token) < 32 || len(token) > 128 || !validPassword(password) {
-		return ErrInvalidInput
-	}
-	repository, ok := s.repository.(LegacyPasswordSetupRepository)
-	if !ok {
-		return errors.New("legacy password setup unavailable")
-	}
-	hash, err := s.passwords.Hash(password)
-	if err != nil {
-		return err
-	}
-	tokenHash := sha256.Sum256([]byte(token))
-	if err := repository.SetPasswordFromSetup(ctx, tokenHash[:], hash, s.clock()); err != nil {
-		if errors.Is(err, ErrPasswordSetupInvalid) {
-			return ErrPasswordSetupInvalid
-		}
-		return err
-	}
-	return nil
-}
-
 type PasswordSetup interface {
 	CompletePasswordSetup(context.Context, string, string, string, string) (BrowserSessionResult, error)
 }

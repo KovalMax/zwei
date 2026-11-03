@@ -12,21 +12,16 @@ import (
 )
 
 func TestProtocolContractStatuses(t *testing.T) {
-	for _, tc := range []struct {
-		file, status string
-		version      int
-	}{{"v3.json", "historical", 3}, {"v4.json", "current", 4}} {
-		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", tc.file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var contract struct {
-			Version int    `json:"version"`
-			Status  string `json:"status"`
-		}
-		if err := json.Unmarshal(data, &contract); err != nil || contract.Version != tc.version || contract.Status != tc.status {
-			t.Fatalf("%s: contract = %+v, error = %v", tc.file, contract, err)
-		}
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "protocol", "websocket", "v4.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Version int    `json:"version"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &contract); err != nil || contract.Version != 4 || contract.Status != "current" {
+		t.Fatalf("v4.json: contract = %+v, error = %v", contract, err)
 	}
 }
 

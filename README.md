@@ -28,7 +28,7 @@ The Angular and TypeScript client communicates with Go authentication, chat, and
 
 ## Get started locally
 
-Local development uses Docker Compose and `make`; see the [development and operations guide](docs/operations.md) for prerequisites, testing, and deployment details.
+Local development uses Docker Compose and `make`; see the [development guide](docs/operations.md) for prerequisites and testing. The first production deployment path is documented in [`infrastructure/production/DEPLOYMENT.md`](infrastructure/production/DEPLOYMENT.md).
 
 ```sh
 make build

@@ -12,7 +12,7 @@ docker run --rm --network none \
   --mount "type=bind,source=$KYC_BASIC_AUTH_FILE,target=/run/secrets/kyc.htpasswd,readonly" \
   --entrypoint sh traefik:v3.5 \
   -c 'test -f /run/secrets/kyc.htpasswd && test -r /run/secrets/kyc.htpasswd && test -s /run/secrets/kyc.htpasswd'
-# From this point a failed cutover must leave public routes closed.
+# From this point a failed deployment must leave public routes closed.
 trap close_edge EXIT
 trap 'exit 1' HUP INT TERM
 docker compose stop traefik coturn

@@ -34,12 +34,6 @@ type Repository interface {
 	CreateAdmin(context.Context, string, string, string) error
 }
 
-// LegacyPasswordSetupRepository preserves setup completion for clients that have
-// not yet been updated to issue a browser session during password setup.
-type LegacyPasswordSetupRepository interface {
-	SetPasswordFromSetup(context.Context, []byte, string, time.Time) error
-}
-
 type PushSubscription struct {
 	Endpoint string
 	P256DH   string

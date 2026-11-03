@@ -3355,6 +3355,27 @@ describe('HomeComponent', () => {
         historyComponent.ngOnDestroy();
     }));
 
+    it('sends typing.stop when a refresh attempt fails after a successful start', fakeAsync(async () => {
+        const send = vi.fn().mockName('send').mockReturnValueOnce(true).mockReturnValueOnce(false).mockReturnValue(true);
+        const historyComponent = createHomeComponent({} as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, { send, close: () => undefined } as unknown as DataProviderService, { close: () => undefined } as CallFacade);
+        historyComponent.selectedConversation = conversation('typing-refresh-failure');
+        historyComponent.socketReady = true;
+        historyComponent.draft = 'First';
+
+        historyComponent.onDraftChange();
+        await tick(1200);
+        historyComponent.draft = 'First continued';
+        historyComponent.onDraftChange();
+        await tick(2000);
+
+        expect(vi.mocked(send).mock.calls.filter(([event]) => event.type === 'typing.start' || event.type === 'typing.stop')).toEqual([
+            [{ type: 'typing.start', payload: { conversation_id: 'typing-refresh-failure' } }],
+            [{ type: 'typing.start', payload: { conversation_id: 'typing-refresh-failure' } }],
+            [{ type: 'typing.stop', payload: { conversation_id: 'typing-refresh-failure' } }],
+        ]);
+        historyComponent.ngOnDestroy();
+    }));
+
     it('stops typing in the old group before switching and cancels its delayed stop', fakeAsync(async () => {
         const send = vi.fn().mockName('send').mockReturnValue(true);
         const historyComponent = createHomeComponent({ history: () => of({ messages: [] }) } as unknown as ConversationService, {} as AuthService, { markForCheck: vi.fn().mockName('markForCheck') } as unknown as ChangeDetectorRef, { send, close: () => undefined } as unknown as DataProviderService, { close: () => undefined } as CallFacade);

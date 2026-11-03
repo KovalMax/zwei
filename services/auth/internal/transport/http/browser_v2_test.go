@@ -46,7 +46,7 @@ func TestV2RefreshAndLogout(t *testing.T) {
 			r := newAllowedAuthRequest("POST", "/", strings.NewReader(tc.body))
 			r.Header.Set("Origin", "https://chat.localhost")
 			r.Header.Set("Content-Type", "application/json")
-			r.Header.Set("Cookie", "zwei_refresh=old-secret")
+			r.Header.Set("Cookie", ""+uniqueRefreshCookieName("old-secret")+"=old-secret")
 			w := httptest.NewRecorder()
 			tc.handler(w, r)
 			if w.Code != tc.status {
@@ -58,7 +58,7 @@ func TestV2RefreshAndLogout(t *testing.T) {
 			cookies := w.Result().Cookies()
 			if tc.name == "refresh" {
 				var data map[string]any
-				if json.Unmarshal(w.Body.Bytes(), &data) != nil || data["access_token"] != "access" || len(cookies) != 1 || cookies[0].Name != uniqueRefreshCookieName("secret") || !cookies[0].HttpOnly || !cookies[0].Secure {
+				if json.Unmarshal(w.Body.Bytes(), &data) != nil || data["access_token"] != "access" || len(cookies) != 2 || cookies[0].Name != uniqueRefreshCookieName("old-secret") || cookies[0].MaxAge >= 0 || cookies[1].Name != uniqueRefreshCookieName("secret") || !cookies[1].HttpOnly || !cookies[1].Secure {
 					t.Fatalf("unexpected refresh: %s cookies %v", w.Body.String(), cookies)
 				}
 			}
@@ -138,14 +138,14 @@ func TestV2LoginRecoversNoLiveHead(t *testing.T) {
 	r := newAllowedAuthRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Cookie", "zwei_refresh=unknown; "+uniqueRefreshCookieName("obsolete")+"=obsolete")
+	r.Header.Set("Cookie", ""+uniqueRefreshCookieName("unknown")+"=unknown; "+uniqueRefreshCookieName("obsolete")+"=obsolete")
 	w := httptest.NewRecorder()
 	h.Login(w, r)
 	if w.Code != http.StatusOK || s.creates != 1 || s.replaces != 0 {
 		t.Fatalf("status %d creates %d replaces %d", w.Code, s.creates, s.replaces)
 	}
 	cookies := w.Result().Cookies()
-	if len(cookies) != 2 || cookies[0].Name != uniqueRefreshCookieName("obsolete") || cookies[0].MaxAge >= 0 || cookies[1].Name != uniqueRefreshCookieName("secret") {
+	if len(cookies) != 3 || cookies[0].Name != uniqueRefreshCookieName("unknown") || cookies[0].MaxAge >= 0 || cookies[1].Name != uniqueRefreshCookieName("obsolete") || cookies[1].MaxAge >= 0 || cookies[2].Name != uniqueRefreshCookieName("secret") {
 		t.Fatalf("unexpected cookies: %v", cookies)
 	}
 }
@@ -156,7 +156,7 @@ func TestV2LoginAmbiguousProofFailsClosed(t *testing.T) {
 	r := newAllowedAuthRequest(http.MethodPost, "/", strings.NewReader(`{"email":"a","password":"b"}`))
 	r.Header.Set("Origin", "https://chat.localhost")
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Cookie", "zwei_refresh=unknown")
+	r.Header.Set("Cookie", ""+uniqueRefreshCookieName("unknown")+"=unknown")
 	w := httptest.NewRecorder()
 	h.Login(w, r)
 	if w.Code != http.StatusUnauthorized || s.creates != 0 || s.replaces != 0 || len(w.Result().Cookies()) != 0 {
@@ -164,7 +164,7 @@ func TestV2LoginAmbiguousProofFailsClosed(t *testing.T) {
 	}
 }
 
-func TestV2LoginReplacesLiveHeadWithoutClearingLegacyName(t *testing.T) {
+func TestV2LoginIgnoresFixedNameRefreshCookie(t *testing.T) {
 	proof := "live-proof"
 	hash := sha256.Sum256([]byte(proof))
 	s := &v2SessionsFake{}
@@ -177,7 +177,7 @@ func TestV2LoginReplacesLiveHeadWithoutClearingLegacyName(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Login(w, r)
 	cookies := w.Result().Cookies()
-	if w.Code != 200 || s.creates != 0 || s.replaces != 1 || len(cookies) != 1 || cookies[0].Name != uniqueRefreshCookieName("secret") {
+	if w.Code != 200 || s.creates != 1 || s.replaces != 0 || len(cookies) != 1 || cookies[0].Name != uniqueRefreshCookieName("secret") {
 		t.Fatalf("status %d creates %d replaces %d cookies %v", w.Code, s.creates, s.replaces, cookies)
 	}
 }

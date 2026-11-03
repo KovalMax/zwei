@@ -21,7 +21,7 @@ import (
 	"github.com/KovalMax/zwei/services/shared/pushcrypto"
 )
 
-func TestWebSocketRoutesCutOverToV4(t *testing.T) {
+func TestWebSocketRoutesUseV4Only(t *testing.T) {
 	mux := http.NewServeMux()
 	muxHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	registerWebSocketRoutes(mux, muxHandler)
@@ -29,8 +29,8 @@ func TestWebSocketRoutesCutOverToV4(t *testing.T) {
 		path string
 		want int
 	}{
-		{"/ws/v2", http.StatusUpgradeRequired},
-		{"/ws/v3", http.StatusUpgradeRequired},
+		{"/ws/v2", http.StatusNotFound},
+		{"/ws/v3", http.StatusNotFound},
 		{"/ws/v4", http.StatusNoContent},
 		{"/ws/v1", http.StatusNotFound},
 	} {
@@ -102,11 +102,6 @@ func TestV3RejectionDoesNotConsumeTicketBeforeV4Upgrade(t *testing.T) {
 	dial := func(path string) (*websocket.Conn, *http.Response, error) {
 		return websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+path+"?ticket="+url.QueryEscape(ticket), http.Header{"Origin": []string{"https://chat.localhost"}})
 	}
-	_, response, err := dial("/ws/v3")
-	if err == nil || response == nil || response.StatusCode != http.StatusUpgradeRequired || consumer.used.Load() {
-		t.Fatal("v3 did not reject before ticket consumption")
-	}
-	response.Body.Close()
 	conn, response, err := dial("/ws/v4")
 	if err != nil {
 		if response != nil {

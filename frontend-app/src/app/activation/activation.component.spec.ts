@@ -28,7 +28,7 @@ describe('ActivationComponent', () => {
 
     it('submits the fragment token and accepts the returned session before navigating home', () => {
         const auth = TestBed.inject(AuthService);
-        const request = new Subject<ActivationSetupSession | null>();
+        const request = new Subject<ActivationSetupSession>();
         const setup = vi.spyOn(auth, 'setupPassword').mockReturnValue(request);
         const acceptToken = vi.spyOn(auth, 'acceptToken');
         const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
@@ -55,28 +55,9 @@ describe('ActivationComponent', () => {
         expect(localStorage.getItem('zwei.intended-session')).not.toBeNull();
     });
 
-    it('explains legacy password setup without creating a session or claiming sign-in', () => {
-        const auth = TestBed.inject(AuthService);
-        const acceptToken = vi.spyOn(auth, 'acceptToken');
-        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
-        vi.spyOn(auth, 'setupPassword').mockReturnValue(of(null));
-        fixture.detectChanges();
-        component.passwordForm.setValue({password: 'password123', confirmPassword: 'password123'});
-        component.submitPassword();
-        fixture.detectChanges();
-        expect(component.legacySetupComplete).toBe(true);
-        expect(component.passwordSet).toBe(true);
-        expect(component.title).toBe('Password setup complete');
-        expect(fixture.nativeElement.textContent).toContain('Your password is set. An administrator must approve your account before you can sign in.');
-        expect(fixture.nativeElement.querySelector('app-notice .app-notice')?.classList.contains('app-notice-info')).toBe(true);
-        expect(fixture.nativeElement.querySelector('button')?.textContent).toContain('Back to login');
-        expect(acceptToken).not.toHaveBeenCalled();
-        expect(navigate).not.toHaveBeenCalled();
-    });
-
     it('distinguishes committed password setup from failure to accept its browser session', () => {
         const auth = TestBed.inject(AuthService);
-        const request = new Subject<ActivationSetupSession | null>();
+        const request = new Subject<ActivationSetupSession>();
         vi.spyOn(auth, 'setupPassword').mockReturnValue(request);
         vi.spyOn(auth, 'acceptToken').mockImplementation(() => { throw new Error('browser session storage unavailable'); });
         const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);

@@ -1,6 +1,6 @@
 import {getDeviceID} from '../login/login';
 import {Token} from '../auth/token';
-import type {ContinuedBrowserSession} from '../auth/browser-session.client';
+import type {ContinuedBrowserSession} from '../auth/browser-session.model';
 
 export interface RegistrationForm {
     email: string;

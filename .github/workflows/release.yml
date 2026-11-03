@@ -6,48 +6,43 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  verify:
-    name: Verify release artifact
+  resolve-source:
+    name: Resolve release source commit
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
     steps:
-      - name: Check out release tag
+      - name: Check out published release tag
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
+      - name: Resolve immutable commit
+        id: resolve
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+  verify-ci:
+    name: Run full CI for release source
+    uses: ./.github/workflows/ci.yml
+    needs: resolve-source
+    with:
+      source_ref: ${{ needs.resolve-source.outputs.commit }}
 
-      - name: Run Go tests
-        run: go test ./services/...
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend-app/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend-app
-        run: npm ci
-
-      - name: Build Angular production bundle
-        working-directory: frontend-app
-        run: |
-          npm run build -- --configuration production
-          test -s dist/messenger/browser/index.html
+  verify-security:
+    name: Run security checks for release source
+    uses: ./.github/workflows/security.yml
+    needs: resolve-source
+    with:
+      source_ref: ${{ needs.resolve-source.outputs.commit }}
 
   publish:
     name: Publish ${{ matrix.image }} image
-    needs: verify
+    needs: [resolve-source, verify-ci, verify-security]
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -73,10 +68,10 @@ jobs:
             target: ''
             build-args: ''
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -95,7 +90,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/zwei-${{ matrix.image }}
           tags: |
             type=raw,value=${{ github.event.release.tag_name }}
-            type=sha,format=long,prefix=sha-
+            type=raw,value=sha-${{ needs.resolve-source.outputs.commit }}
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -112,8 +107,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: Deploy release
-    needs: publish
+    name: Deploy release commit
+    needs: [resolve-source, publish]
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -125,12 +120,12 @@ jobs:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-      IMAGE_TAG: ${{ github.event.release.tag_name }}
+      IMAGE_TAG: sha-${{ needs.resolve-source.outputs.commit }}
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Configure SSH
         run: |
@@ -138,6 +133,14 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Validate deployment path
+        run: sh infrastructure/scripts/validate-deploy-path.sh "$DEPLOY_PATH"
+
+      - name: Prepare deployment directory
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "install -d -m 750 '$DEPLOY_PATH' && test \"\$(realpath -m -- '$DEPLOY_PATH')\" = '$DEPLOY_PATH'"
 
       - name: Synchronize production configuration
         run: |
@@ -147,7 +150,7 @@ jobs:
             -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
             infrastructure/production/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
 
-      - name: Select immutable release tag
+      - name: Select immutable commit image tag
         run: |
           case "$IMAGE_TAG" in
             ''|*[!A-Za-z0-9._-]*)

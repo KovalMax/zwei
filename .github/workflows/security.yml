@@ -1,6 +1,12 @@
 name: Security
 
 on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact source commit to verify when called by a release workflow
+        required: false
+        type: string
   pull_request:
   push:
     branches: [main]
@@ -14,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -33,10 +41,11 @@ jobs:
         working-directory: ${{ matrix.directory }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: ${{ matrix.directory }}/package-lock.json
-      - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high

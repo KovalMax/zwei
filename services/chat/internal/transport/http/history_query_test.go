@@ -131,16 +131,14 @@ func TestSendMessageRejectsMissingOrNonTextContentType(t *testing.T) {
 	}
 }
 
-func TestLegacyMessageWriteRequiresUpgrade(t *testing.T) {
+func TestRetiredMessageWriteRouteIsNotInstalled(t *testing.T) {
 	mux := http.NewServeMux()
 	(&Handler{}).Register(mux)
-	for _, body := range []string{`{"body":"hello"}`, `{"body":"hello","content_type":"text"}`, `{"body":"hello","content_type":"sticker"}`} {
-		request := httptest.NewRequest(http.MethodPost, "/api/chat/conversations/"+uuid.NewString()+"/messages", strings.NewReader(body))
-		recorder := httptest.NewRecorder()
-		mux.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusUpgradeRequired || !strings.Contains(recorder.Body.String(), "update required") {
-			t.Fatalf("body %s: status=%d response=%s", body, recorder.Code, recorder.Body)
-		}
+	request := httptest.NewRequest(http.MethodPost, "/api/chat/conversations/"+uuid.NewString()+"/messages", strings.NewReader(`{"body":"hello"}`))
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("retired route status=%d, want 404", recorder.Code)
 	}
 }
 

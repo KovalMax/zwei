@@ -33,7 +33,7 @@ func TestBrowserDiscoveryRouteUnavailable(t *testing.T) {
 	h.Register(mux)
 	req := newAllowedAuthRequest(http.MethodPost, "/api/auth/v2/discovery", nil)
 	req.Header.Set("Origin", "https://chat.localhost")
-	req.Header.Set("Cookie", "zwei_refresh=proof-secret")
+	req.Header.Set("Cookie", ""+uniqueRefreshCookieName("proof-secret")+"=proof-secret")
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusNotFound || repo.calls != 0 || len(res.Result().Cookies()) != 0 {
@@ -50,19 +50,19 @@ func TestBrowserDiscoveryHTTP(t *testing.T) {
 		status                     int
 		calls                      int
 	}{
-		{"success", "https://chat.localhost", "zwei_refresh=proof-secret", "", nil, 200, 1},
-		{"no origin", "", "zwei_refresh=proof-secret", "", nil, 403, 0},
-		{"foreign origin", "https://evil.example", "zwei_refresh=proof-secret", "", nil, 403, 0},
-		{"null origin", "null", "zwei_refresh=proof-secret", "", nil, 403, 0},
-		{"combined origins", "https://chat.localhost, https://evil.example", "zwei_refresh=proof-secret", "", nil, 403, 0},
+		{"success", "https://chat.localhost", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", nil, 200, 1},
+		{"no origin", "", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", nil, 403, 0},
+		{"foreign origin", "https://evil.example", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", nil, 403, 0},
+		{"null origin", "null", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", nil, 403, 0},
+		{"combined origins", "https://chat.localhost, https://evil.example", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", nil, 403, 0},
 		{"unbound cookie", "https://chat.localhost", "zwei_refresh_wrong=proof-secret", "", nil, 400, 0},
-		{"conflicting cookies", "https://chat.localhost", "zwei_refresh=proof-secret; zwei_refresh=other", "", nil, 400, 0},
+		{"fixed-name ignored", "https://chat.localhost", "zwei_refresh=other", "", nil, 401, 0},
 		{"no proof", "https://chat.localhost", "", "", nil, 401, 0},
-		{"signed out", "https://chat.localhost", "zwei_refresh=proof-secret; zwei_signed_out=1", "", nil, 401, 0},
+		{"signed out", "https://chat.localhost", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret; zwei_signed_out=1", "", nil, 401, 0},
 		{"body proof forbidden", "https://chat.localhost", "", `{"refresh_token":"proof-secret"}`, nil, 400, 0},
 		{"oversized cookies", "https://chat.localhost", "other=" + strings.Repeat("a", maxCookieHeaderBytes), "", nil, 400, 0},
-		{"unknown proof", "https://chat.localhost", "zwei_refresh=proof-secret", "", application.ErrRefreshToken, 401, 1},
-		{"database failure", "https://chat.localhost", "zwei_refresh=proof-secret", "", errors.New("sensitive details"), 500, 1},
+		{"unknown proof", "https://chat.localhost", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", application.ErrRefreshToken, 401, 1},
+		{"database failure", "https://chat.localhost", "" + uniqueRefreshCookieName("proof-secret") + "=proof-secret", "", errors.New("sensitive details"), 500, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &discoveryRepository{head: application.BrowserHead{BrowserID: browser, Generation: generation, RefreshHash: hash[:]}, err: tc.err}

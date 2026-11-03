@@ -34,4 +34,4 @@ Use this index to load project guidance deliberately. Skill files are internal a
 
 ## Maintenance
 
-When architecture, tooling, persistence, or workflow changes, update the affected skill(s) and this index in the same change. Keep operational commands aligned with `AGENTS.md` and repository Make targets.
+When architecture, tooling, persistence, or workflow changes, update the affected skill(s) and this index in the same change. Keep local commands aligned with `AGENTS.md` and repository Make targets; the published-release workflow reuses CI/security checks and the first-launch operator procedure lives in `infrastructure/production/DEPLOYMENT.md`.

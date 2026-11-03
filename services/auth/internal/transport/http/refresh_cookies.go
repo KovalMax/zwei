@@ -10,7 +10,6 @@ import (
 	"github.com/KovalMax/zwei/services/auth/internal/application"
 )
 
-const legacyRefreshCookie = "zwei_refresh"
 const uniqueRefreshPrefix = "zwei_refresh_"
 const signedOutCookie = "zwei_signed_out"
 const maxCookieHeaderBytes = 16 * 1024
@@ -42,14 +41,14 @@ func parseRefreshCandidateCookies(r *http.Request, maxCandidates int) ([]*http.C
 	seen := make(map[string]string)
 	count := 0
 	for _, cookie := range r.Cookies() {
-		if cookie.Name != legacyRefreshCookie && !strings.HasPrefix(cookie.Name, uniqueRefreshPrefix) {
+		if !strings.HasPrefix(cookie.Name, uniqueRefreshPrefix) {
 			continue
 		}
 		count++
 		if count > maxCandidates || cookie.Value == "" || len(cookie.Value) > 4096 {
 			return nil, errors.New("invalid refresh cookies")
 		}
-		if cookie.Name != legacyRefreshCookie && cookie.Name != uniqueRefreshCookieName(cookie.Value) {
+		if cookie.Name != uniqueRefreshCookieName(cookie.Value) {
 			return nil, errors.New("invalid refresh cookie binding")
 		}
 		if old, ok := seen[cookie.Name]; ok {

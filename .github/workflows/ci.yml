@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact source commit to verify when called by a release workflow
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -16,6 +22,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -34,11 +42,12 @@ jobs:
 
   go-test:
     name: Go unit tests
-    needs: go-quality
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -99,6 +108,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Test bounded support-log exporter
         run: python3 -m unittest infrastructure.production.test_export_realtime_logs -v
@@ -112,6 +123,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -149,6 +162,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Prepare local Compose files
         run: make -C infrastructure check_dist_files
