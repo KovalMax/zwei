@@ -14,12 +14,13 @@ TCP/UDP 3478, and UDP 49160–49200. The app uses `chat.false.tel`,
 `ws.chat.false.tel`, and `turn.chat.false.tel`; change the deployment
 configuration and edge policy together if using other hostnames.
 
-Choose `/opt/zwei` or a dedicated directory below `/opt/zwei` for `DEPLOY_PATH`;
-the release workflow rejects paths outside that deployment root and unsafe path
-syntax before running its destructive sync. The directory must be owned by the
-deploy user and must be provisioned before the first release (the deploy user
-must be able to create a child directory when one is selected). The
-release workflow synchronizes `infrastructure/production/` there with
+Set `DEPLOY_PATH` to the absolute path of a dedicated deployment directory; it
+may be outside `/opt/zwei`. The release workflow rejects relative paths and
+unsafe path syntax, then verifies the remote canonical path before running its
+destructive sync. The directory must be owned by the deploy user and must be
+provisioned before the first release (the deploy user must be able to create a
+child directory when one is selected). The release workflow synchronizes
+`infrastructure/production/` there with
 `rsync --delete`, excluding only `.env` and `.deploy.env`; do not store unrelated
 files or data in that directory. Create a VM-owned `.env` from `.env.example`
 and keep the KYC htpasswd file at an absolute path outside `DEPLOY_PATH`.
@@ -43,9 +44,11 @@ configuration.
 ## Publish and deploy
 
 Publish a GitHub Release for the intended source commit. The release workflow
-runs the full CI and security workflows against that exact commit before
-publishing the five ARM64 images (Auth, Chat, Realtime, Frontend, and Migrator).
-It deploys the commit-SHA image tag through strict-host-key SSH and the protected
+runs Go tests and Angular tests/production build against that exact commit
+before publishing the five ARM64 images (Auth, Chat, Realtime, Frontend, and
+Migrator). Full CI and Security workflows remain enabled on pull requests and
+pushes to `main`; the release does not repeat them. It deploys the commit-SHA
+image tag through strict-host-key SSH and the protected
 `production` environment. The deploy is serialized with other release jobs.
 
 The VM must be able to pull the published images. The deployment script checks

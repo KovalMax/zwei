@@ -10,12 +10,37 @@ grep -Fq 'ref: ${{ github.event.release.tag_name }}' "$workflow"
 grep -Fq 'commit=$(git rev-parse HEAD)' "$workflow"
 grep -Fq 'source_ref: ${{ needs.resolve-source.outputs.commit }}' "$workflow"
 grep -q 'workflow_call:' "$root/.github/workflows/ci.yml"
-grep -q 'workflow_call:' "$root/.github/workflows/security.yml"
 grep -Fq 'ref: ${{ inputs.source_ref || github.sha }}' "$root/.github/workflows/ci.yml"
-grep -Fq 'ref: ${{ inputs.source_ref || github.sha }}' "$root/.github/workflows/security.yml"
+grep -A5 '^      release_validation:' "$root/.github/workflows/ci.yml" | grep -Fq 'default: false'
+grep -Fq 'release_validation: true' "$workflow"
+test "$(grep -Fc 'if: inputs.release_validation != true' "$root/.github/workflows/ci.yml")" -eq 3
+ci="$root/.github/workflows/ci.yml"
+for excluded_job in go-quality exporter-tests e2e; do
+  sed -n "/^  $excluded_job:/,/^  [a-z-]*:/p" "$ci" | head -n 3 | grep -Fq 'if: inputs.release_validation != true'
+done
+grep -A8 '^  go-test:' "$ci" | grep -q 'name: Go unit tests'
+sed -n '/^  go-test:/,/^  exporter-tests:/p' "$ci" | grep -Fq 'run: go test -race ./services/...'
+sed -n '/^  go-test:/,/^  exporter-tests:/p' "$ci" | grep -Fq 'ref: ${{ inputs.source_ref || github.sha }}'
+if sed -n '/^  go-test:/,/^  exporter-tests:/p' "$ci" | grep -q 'release_validation'; then
+  echo 'Go tests must run in release-validation mode' >&2
+  exit 1
+fi
+grep -A8 '^  frontend-quality:' "$ci" | grep -q 'name: Angular tests and build'
+sed -n '/^  frontend-quality:/,/^  e2e:/p' "$ci" | grep -Fq 'run: npm test -- --coverage'
+sed -n '/^  frontend-quality:/,/^  e2e:/p' "$ci" | grep -Fq 'run: npm run build -- --configuration production'
+sed -n '/^  frontend-quality:/,/^  e2e:/p' "$ci" | grep -Fq 'ref: ${{ inputs.source_ref || github.sha }}'
+if sed -n '/^  frontend-quality:/,/^  e2e:/p' "$ci" | grep -q 'release_validation'; then
+  echo 'Angular tests/build must run in release-validation mode' >&2
+  exit 1
+fi
+grep -q '^  pull_request:$' "$ci"
+grep -q '^  push:$' "$ci"
+grep -Fq 'branches:' "$ci"
+grep -q '^  pull_request:$' "$root/.github/workflows/security.yml"
+grep -q '^  push:' "$root/.github/workflows/security.yml"
 grep -Fq 'uses: ./.github/workflows/ci.yml' "$workflow"
-grep -Fq 'uses: ./.github/workflows/security.yml' "$workflow"
-grep -Fq 'needs: [resolve-source, verify-ci, verify-security]' "$workflow"
+! grep -Fq 'uses: ./.github/workflows/security.yml' "$workflow"
+grep -Fq 'needs: [resolve-source, verify-ci]' "$workflow"
 grep -Fq 'needs: [resolve-source, publish]' "$workflow"
 grep -q '^  publish:$' "$workflow"
 grep -q '^  deploy:$' "$workflow"
@@ -36,10 +61,10 @@ sed -n '/^  publish:/,/^  deploy:/p' "$workflow" | grep -q 'packages: write'
 test ! -e "$root/infrastructure/production/deploy-cutover.sh"
 test ! -e "$root/infrastructure/production/docker-compose.private.yml"
 ! grep -Eq '/home/[^ ]+/(zwei|zwei-secrets)' "$root/infrastructure/production/.env.example"
-for valid_path in /opt/zwei /opt/zwei/live-1 /opt/zwei/initial_1.0; do
+for valid_path in /opt/zwei /opt/zwei/live-1 /opt/zwei/initial_1.0 /srv/apps/zwei /var/lib/zwei/releases/release_1.0; do
   sh "$root/infrastructure/scripts/validate-deploy-path.sh" "$valid_path"
 done
-for invalid_path in '' relative / /home/deploy /opt/zwei/.. /opt/zwei/live/../other /opt/zwei/live/ '/opt/zwei/with space'; do
+for invalid_path in '' relative / /home/deploy/../other /srv/apps/zwei/.. /srv/apps/zwei/releases/../other /srv/apps/zwei/ '/srv/apps/zwei/with space' '/srv/apps/zwei/$unsafe'; do
   if sh "$root/infrastructure/scripts/validate-deploy-path.sh" "$invalid_path" >/dev/null 2>&1; then
     echo "unsafe deployment path accepted: $invalid_path" >&2
     exit 1
