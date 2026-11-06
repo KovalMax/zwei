@@ -1,6 +1,6 @@
 ---
 name: zwei-go
-description: Use when writing, refactoring, testing, or reviewing Go code in Zwei services; apply idiomatic Go 1.26 practices, concurrency safety, error handling, and maintainable service layering.
+description: Use when writing, refactoring, testing, or reviewing Go code in Zwei services; apply idiomatic Go 1.27 practices, concurrency safety, error handling, and maintainable service layering.
 ---
 
 # Zwei Go

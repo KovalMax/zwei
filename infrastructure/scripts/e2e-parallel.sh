@@ -109,7 +109,7 @@ fi
 PIDS=()
 EXIT_STATUS=0
 LOCK_ACQUIRED=0
-COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml -f docker-compose.e2e-parallel.yml)
+COMPOSE_FILES=(--env-file .env.dist --env-file .env -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.test.yml -f docker-compose.e2e-parallel.yml)
 if [[ "$MODE" == turn ]]; then COMPOSE_FILES+=(-f docker-compose.e2e-turn.yml); fi
 ASSIGNED_SPECS=("${E2E_CHAT_SPECS[@]}" "${E2E_OTHER_SPECS[@]}")
 

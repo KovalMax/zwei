@@ -1,11 +1,50 @@
 package runtime
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunHealthcheckUsesReadinessEndpoint(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health/ready" {
+			t.Errorf("path = %q, want /health/ready", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	if err := RunHealthcheck(strings.TrimPrefix(server.URL, "http://127.0.0.1:")); err != nil {
+		t.Fatalf("RunHealthcheck() error = %v", err)
+	}
+}
+
+func TestRunHealthcheckRejectsUnreadyStatus(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	if err := RunHealthcheck(strings.TrimPrefix(server.URL, "http://127.0.0.1:")); err == nil {
+		t.Fatal("RunHealthcheck() accepted HTTP 503")
+	}
+}
 
 func TestConfigureHTTPServerSetsBoundedTimeouts(t *testing.T) {
 	server := &http.Server{}

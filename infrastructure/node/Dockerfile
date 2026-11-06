@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim
+FROM node:26.13.0-bookworm-slim
 
 ENV CHROME_BIN=/usr/local/bin/chromium-no-sandbox
 
@@ -21,7 +21,7 @@ RUN groupmod -og $GID $NODE_USER_NAME \
 
 COPY package*.json ./
 
-RUN npm i
+RUN npm ci
 
 COPY --chown=$UID:$GID . .
 

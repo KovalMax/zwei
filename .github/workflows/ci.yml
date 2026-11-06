@@ -136,7 +136,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.13.0
           cache: npm
           cache-dependency-path: frontend-app/package-lock.json
 

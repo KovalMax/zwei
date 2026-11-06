@@ -16,6 +16,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := runtime.RunHealthcheck(getenv("CHAT_PORT", "8082")); err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := runtime.SignalContext()
 	defer cancel()
 	secret := os.Getenv("JWT_SECRET")

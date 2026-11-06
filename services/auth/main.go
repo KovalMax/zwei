@@ -27,6 +27,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := runtime.RunHealthcheck(getenv("AUTH_PORT", "8081")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := runtime.SignalContext()
 	defer cancel()
 	cfg, err := config.Load()

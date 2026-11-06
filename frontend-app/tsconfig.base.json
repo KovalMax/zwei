@@ -15,6 +15,7 @@
         "target": "es2022",
         "lib": [
             "es2018",
+            "es2022",
             "es2020.intl",
             "es2022.intl",
             "dom"

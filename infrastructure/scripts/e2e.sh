@@ -6,7 +6,7 @@ NAME_PREFIX="$1"
 TEST_SCRIPT="${2:-test}"
 SPEC="${3:-}"
 TEST_TITLE="${4:-}"
-COMPOSE=(docker compose -p "$NAME_PREFIX" -f docker-compose.yml -f docker-compose.override.yml)
+COMPOSE=(docker compose --env-file .env.dist --env-file .env -p "$NAME_PREFIX" -f docker-compose.yml -f docker-compose.override.yml)
 TEST_COMPOSE=("${COMPOSE[@]}" -f docker-compose.test.yml)
 MIGRATION_OVERLAY=""
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -24,13 +24,6 @@ case "$TEST_SCRIPT" in
     ;;
   *) printf '%s\n' 'Unsupported E2E script' >&2; exit 2 ;;
 esac
-
-dotenv_value() {
-  local key="$1"
-  local env_file="$SCRIPT_DIR/../.env"
-  [[ -f "$env_file" ]] || return 0
-  awk -F= -v key="$key" '$1 == key { value = substr($0, index($0, "=") + 1); gsub(/^"|"$/, "", value); print value; exit }' "$env_file"
-}
 
 if [[ -n "$SPEC" || -n "$TEST_TITLE" ]]; then
   if [[ "$TEST_SCRIPT" == parallel-group ]]; then
@@ -112,15 +105,7 @@ mkdir -p "$ROOT_DIR/e2e/test-results" "$ROOT_DIR/e2e/visual-baselines"
 
 # Protect the disposable test namespace from custom settings that point the
 # development services at the same database or Redis DB 1.
-development_db_name="${APP_DB_NAME:-$(dotenv_value APP_DB_NAME)}"
-development_database_url="${DATABASE_URL:-$(dotenv_value DATABASE_URL)}"
-development_redis_url="${REDIS_URL:-$(dotenv_value REDIS_URL)}"
-if [[ "${development_db_name:-messenger_db}" == "messenger_test" || "${development_database_url:-}" =~ /messenger_test([?]|$) ]]; then
-  printf '%s\n' 'Refusing E2E run: APP_DB_NAME must not be messenger_test' >&2
-  exit 2
-fi
-if e2e_uses_redis_db_one "${development_redis_url:-}"; then
-  printf '%s\n' 'Refusing E2E run: development REDIS_URL must not use Redis DB 1' >&2
+if ! validate_development_e2e_targets "$SCRIPT_DIR/../.env"; then
   exit 2
 fi
 

@@ -1,4 +1,5 @@
-FROM golang:1.26.10-alpine AS base
+FROM golang:1.27.3-alpine AS base
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Do not rebuild C libs, no need to use gcc for building Go code
 ENV CGO_ENABLED=0
@@ -9,7 +10,7 @@ ENV GOOS=linux
 
 WORKDIR /app
 
-COPY go.mod go.work ./
+COPY go.mod go.sum go.work go.work.sum ./
 COPY services ./services
 
 RUN go mod download
@@ -21,10 +22,7 @@ FROM base AS dev
 
 CMD ["/usr/bin/service"]
 
-FROM alpine:3.22 AS prod
-RUN apk --no-cache add ca-certificates wget
-
-WORKDIR /usr/bin
-COPY --from=base /usr/bin/service .
+FROM gcr.io/distroless/base-debian13:nonroot AS prod
+COPY --from=base /usr/bin/service /usr/bin/service
 
 CMD ["/usr/bin/service"]

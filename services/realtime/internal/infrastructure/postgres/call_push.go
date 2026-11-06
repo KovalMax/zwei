@@ -57,30 +57,17 @@ func (r *CallPushRepository) Resolve(ctx context.Context, job callpush.Job, reci
 	if !job.ExpiresAt.After(r.now()) {
 		return "", nil, false, nil
 	}
+	var room application.GroupRoom
 	if job.Group {
 		if r.rooms == nil || r.authorizer == nil {
 			return "", nil, false, errors.New("call state unavailable")
 		}
-		room, err := r.rooms.GetGroupRoomForConversation(ctx, job.ConversationID)
+		var err error
+		room, err = r.rooms.GetGroupRoomForConversation(ctx, job.ConversationID)
 		if err != nil {
 			return "", nil, false, err
 		}
-		if room.ID != job.CallID || room.ConversationID != job.ConversationID || (room.Status != application.GroupRoomRinging && room.Status != application.GroupRoomActive) || room.MembershipRevision <= 0 || !room.RingExpiresAt.Equal(job.ExpiresAt) {
-			return "", nil, false, nil
-		}
-		lease, err := r.authorizer.BeginGroupCall(ctx, job.ConversationID, recipient)
-		if err != nil {
-			if errors.Is(err, application.ErrCallNotAllowed) {
-				return "", nil, false, nil
-			}
-			return "", nil, false, err
-		}
-		defer func() {
-			rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-			defer cancel()
-			_ = lease.Rollback(rollback)
-		}()
-		if lease.MembershipRevision() != room.MembershipRevision || !containsCallRecipient(lease.ActiveMemberIDs(), recipient) {
+		if !groupCallRoomMatches(room, job) {
 			return "", nil, false, nil
 		}
 	} else {
@@ -133,7 +120,41 @@ func (r *CallPushRepository) Resolve(ctx context.Context, job callpush.Job, reci
 	if err := rows.Err(); err != nil {
 		return "", nil, false, err
 	}
+	if job.Group {
+		// Fetch pool-backed display and subscription data before acquiring the
+		// membership transaction. With a one-connection pool, querying while the
+		// lease owns its connection deadlocks. The fetched values remain local
+		// until the lease confirms the current revision and recipient membership.
+		currentRoom, err := r.rooms.GetGroupRoomForConversation(ctx, job.ConversationID)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if !groupCallRoomMatches(currentRoom, job) || !job.ExpiresAt.After(r.now()) {
+			return "", nil, false, nil
+		}
+		lease, err := r.authorizer.BeginGroupCall(ctx, job.ConversationID, recipient)
+		if err != nil {
+			if errors.Is(err, application.ErrCallNotAllowed) {
+				return "", nil, false, nil
+			}
+			return "", nil, false, err
+		}
+		defer func() {
+			rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancel()
+			_ = lease.Rollback(rollback)
+		}()
+		if lease.MembershipRevision() != currentRoom.MembershipRevision || !containsCallRecipient(lease.ActiveMemberIDs(), recipient) {
+			return "", nil, false, nil
+		}
+	}
 	return name, subscriptions, true, nil
+}
+
+func groupCallRoomMatches(room application.GroupRoom, job callpush.Job) bool {
+	return room.ID == job.CallID && room.ConversationID == job.ConversationID &&
+		(room.Status == application.GroupRoomRinging || room.Status == application.GroupRoomActive) &&
+		room.MembershipRevision > 0 && room.RingExpiresAt.Equal(job.ExpiresAt)
 }
 
 func (r *CallPushRepository) DeleteSubscription(ctx context.Context, id uuid.UUID, fingerprint []byte) error {
