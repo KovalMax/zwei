@@ -5,6 +5,10 @@ set -Eeuo pipefail
 E2E_PHASE="script initialization"
 report_e2e_failure() {
   local status=$?
+  if ((BASH_SUBSHELL > 0)); then
+    trap - ERR
+    return "$status"
+  fi
   printf 'E2E command failed during %s (exit %s)\n' "$E2E_PHASE" "$status" >&2
   exit "$status"
 }
@@ -203,12 +207,15 @@ E2E_PHASE="Redis test reset and application startup"
 "${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 --force-recreate auth chat realtime >/dev/null
 E2E_PHASE="browser route readiness"
 wait_for_browser_routes
+E2E_PHASE="TURN service validation"
 if [[ "$SPEC" == turn ]] && [[ -z "$("${TEST_COMPOSE[@]}" ps -q --status running coturn)" ]]; then
   printf '%s\n' 'Isolated coturn is not running' >&2
   exit 1
 fi
 
+E2E_PHASE="E2E administrator setup"
 printf '%s\n' 'Password123!' | "${TEST_COMPOSE[@]}" run -T --rm --no-deps auth /usr/bin/service admin create --email e2e-admin@example.test --display-name "E2E Admin"
+E2E_PHASE="Playwright command preparation"
 baseline_mount="$ROOT_DIR/e2e/visual-baselines:/e2e/visual-baselines:ro"
 if [[ "$TEST_SCRIPT" == baseline ]]; then
   baseline_mount="$ROOT_DIR/e2e/visual-baselines:/e2e/visual-baselines:rw"

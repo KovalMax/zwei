@@ -176,6 +176,9 @@ jobs:
       - name: Prepare local Compose files
         run: make -C infrastructure check_dist_files
 
+      - name: Test serial E2E validation without host resolver override
+        run: bash infrastructure/scripts/test-e2e-env.sh
+
       - name: Start application stack
         run: >-
           docker compose -p messenger

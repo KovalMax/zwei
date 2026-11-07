@@ -3,7 +3,7 @@
 # Browser tests must never receive credentials or traffic aimed at a
 # non-local service when environment overrides are present.
 e2e_dotenv_value() {
-  local key="$1" env_file="$2" infrastructure_dir defaults_file
+  local key="$1" env_file="$2" infrastructure_dir defaults_file environment value
   infrastructure_dir="$(CDPATH= cd -- "$(dirname -- "$env_file")" && pwd)"
   defaults_file="$infrastructure_dir/.env.dist"
   local -a compose=(docker compose --env-file "$defaults_file")
@@ -11,7 +11,14 @@ e2e_dotenv_value() {
     compose+=(--env-file "$env_file")
   fi
   compose+=(-f "$infrastructure_dir/docker-compose.yml" -f "$infrastructure_dir/docker-compose.override.yml" config --environment)
-  "${compose[@]}" | awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); found = 1; exit } END { if (!found) exit 1 }'
+  if ! environment="$("${compose[@]}")"; then
+    return 2
+  fi
+  if value="$(printf '%s\n' "$environment" | awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); found = 1; exit } END { if (!found) exit 1 }')"; then
+    printf '%s' "$value"
+    return 0
+  fi
+  return 1
 }
 
 e2e_effective_value() {
@@ -20,7 +27,17 @@ e2e_effective_value() {
     printf '%s' "${!key}"
     return 0
   fi
-  e2e_dotenv_value "$key" "$env_file"
+  local value status
+  if value="$(e2e_dotenv_value "$key" "$env_file")"; then
+    printf '%s' "$value"
+    return 0
+  else
+    status=$?
+  fi
+  if ((status != 1)); then
+    printf 'Unable to read Compose environment value for %s\n' "$key" >&2
+  fi
+  return "$status"
 }
 
 e2e_reject_duplicate_keys() {
@@ -136,7 +153,17 @@ validate_local_e2e_targets() {
     else
       expected_resolver='MAP *.localhost host.docker.internal'
     fi
-    resolver_rules="$(e2e_effective_value PLAYWRIGHT_HOST_RESOLVER_RULES "$env_file")"
+    # Compose may omit the default host resolver from --environment. This
+    # variable is optional for serial E2E; parallel harnesses provide it.
+    if resolver_rules="$(e2e_effective_value PLAYWRIGHT_HOST_RESOLVER_RULES "$env_file")"; then
+      :
+    else
+      local resolver_status=$?
+      if ((resolver_status != 1)); then
+        return "$resolver_status"
+      fi
+      resolver_rules=""
+    fi
     if [[ -n "$resolver_rules" && "$resolver_rules" != "$expected_resolver" ]]; then
       printf '%s\n' 'Refusing E2E run: PLAYWRIGHT_HOST_RESOLVER_RULES must use the harness-managed local gateway mapping' >&2
       return 1
