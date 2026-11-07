@@ -2,16 +2,29 @@
 
 set -Eeuo pipefail
 
+E2E_PHASE="script initialization"
+report_e2e_failure() {
+  local status=$?
+  if ((BASH_SUBSHELL > 0)); then
+    trap - ERR
+    return "$status"
+  fi
+  printf 'E2E command failed during %s (exit %s)\n' "$E2E_PHASE" "$status" >&2
+  exit "$status"
+}
+trap report_e2e_failure ERR
+
 NAME_PREFIX="$1"
 TEST_SCRIPT="${2:-test}"
 SPEC="${3:-}"
 TEST_TITLE="${4:-}"
-COMPOSE=(docker compose -p "$NAME_PREFIX" -f docker-compose.yml -f docker-compose.override.yml)
+COMPOSE=(docker compose --env-file .env.dist --env-file .env -p "$NAME_PREFIX" -f docker-compose.yml -f docker-compose.override.yml)
 TEST_COMPOSE=("${COMPOSE[@]}" -f docker-compose.test.yml)
 MIGRATION_OVERLAY=""
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 source "$SCRIPT_DIR/e2e-env.sh"
+E2E_PHASE="local E2E target validation"
 validate_local_e2e_targets "$SCRIPT_DIR/../.env"
 
 case "$TEST_SCRIPT" in
@@ -24,13 +37,6 @@ case "$TEST_SCRIPT" in
     ;;
   *) printf '%s\n' 'Unsupported E2E script' >&2; exit 2 ;;
 esac
-
-dotenv_value() {
-  local key="$1"
-  local env_file="$SCRIPT_DIR/../.env"
-  [[ -f "$env_file" ]] || return 0
-  awk -F= -v key="$key" '$1 == key { value = substr($0, index($0, "=") + 1); gsub(/^"|"$/, "", value); print value; exit }' "$env_file"
-}
 
 if [[ -n "$SPEC" || -n "$TEST_TITLE" ]]; then
   if [[ "$TEST_SCRIPT" == parallel-group ]]; then
@@ -92,6 +98,7 @@ fi
 
 # Docker creates a missing bind-mount source as root. Validate the workspace
 # before creating either host directory; never mount a different checkout.
+E2E_PHASE="workspace validation"
 if [[ "$(pwd -P)" != "$ROOT_DIR/infrastructure" ]]; then
   printf '%s\n' 'Run E2E from the repository infrastructure directory' >&2
   exit 2
@@ -101,6 +108,7 @@ if [[ ! -d "$ROOT_DIR/e2e" || "$(CDPATH= cd -- "$ROOT_DIR/e2e" && pwd -P)" != "$
   exit 2
 fi
 # Keep local push encryption/fingerprint secrets stable and available to auth in both E2E modes.
+E2E_PHASE="local secret preparation"
 python3 "$SCRIPT_DIR/ensure-local-push-secrets.py"
 for directory in test-results visual-baselines; do
   if [[ -L "$ROOT_DIR/e2e/$directory" || ( -e "$ROOT_DIR/e2e/$directory" && ! -d "$ROOT_DIR/e2e/$directory" ) ]]; then
@@ -112,15 +120,8 @@ mkdir -p "$ROOT_DIR/e2e/test-results" "$ROOT_DIR/e2e/visual-baselines"
 
 # Protect the disposable test namespace from custom settings that point the
 # development services at the same database or Redis DB 1.
-development_db_name="${APP_DB_NAME:-$(dotenv_value APP_DB_NAME)}"
-development_database_url="${DATABASE_URL:-$(dotenv_value DATABASE_URL)}"
-development_redis_url="${REDIS_URL:-$(dotenv_value REDIS_URL)}"
-if [[ "${development_db_name:-messenger_db}" == "messenger_test" || "${development_database_url:-}" =~ /messenger_test([?]|$) ]]; then
-  printf '%s\n' 'Refusing E2E run: APP_DB_NAME must not be messenger_test' >&2
-  exit 2
-fi
-if e2e_uses_redis_db_one "${development_redis_url:-}"; then
-  printf '%s\n' 'Refusing E2E run: development REDIS_URL must not use Redis DB 1' >&2
+E2E_PHASE="development target validation"
+if ! validate_development_e2e_targets "$SCRIPT_DIR/../.env"; then
   exit 2
 fi
 
@@ -179,33 +180,42 @@ if [[ "$TEST_SCRIPT" != parallel-group ]]; then
   trap restore_application_services EXIT
 fi
 
+E2E_PHASE="Compose service startup"
 if [[ "$TEST_SCRIPT" == parallel-group ]]; then
   "${TEST_COMPOSE[@]}" up -d database frontend traefik mailpit redis coturn >/dev/null
 else
   "${TEST_COMPOSE[@]}" up -d database frontend traefik mailpit redis >/dev/null
 fi
+E2E_PHASE="database and Redis readiness"
 "${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 database redis >/dev/null
 if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts ]] && [[ "${E2E_SKIP_FRONTEND_BUILD:-0}" != 1 ]]; then
   # Build the exact production artifact in the running frontend container. The
   # frontend source bind mount makes this output available to the E2E container.
+  E2E_PHASE="production frontend build"
   "${TEST_COMPOSE[@]}" exec -T frontend npm run build -- --configuration production
   bash "$SCRIPT_DIR/e2e-pwa-build.sh" "${TEST_COMPOSE[@]}"
 fi
+E2E_PHASE="application service stop and test migration"
 "${COMPOSE[@]}" stop auth chat realtime >/dev/null || true
 if [[ -n "$MIGRATION_OVERLAY" ]]; then
   bash "$SCRIPT_DIR/migrate-test.sh" "$NAME_PREFIX" "$MIGRATION_OVERLAY"
 else
   bash "$SCRIPT_DIR/migrate-test.sh" "$NAME_PREFIX"
 fi
+E2E_PHASE="Redis test reset and application startup"
 "${TEST_COMPOSE[@]}" exec -T redis redis-cli -n 1 FLUSHDB >/dev/null
 "${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 --force-recreate auth chat realtime >/dev/null
+E2E_PHASE="browser route readiness"
 wait_for_browser_routes
+E2E_PHASE="TURN service validation"
 if [[ "$SPEC" == turn ]] && [[ -z "$("${TEST_COMPOSE[@]}" ps -q --status running coturn)" ]]; then
   printf '%s\n' 'Isolated coturn is not running' >&2
   exit 1
 fi
 
+E2E_PHASE="E2E administrator setup"
 printf '%s\n' 'Password123!' | "${TEST_COMPOSE[@]}" run -T --rm --no-deps auth /usr/bin/service admin create --email e2e-admin@example.test --display-name "E2E Admin"
+E2E_PHASE="Playwright command preparation"
 baseline_mount="$ROOT_DIR/e2e/visual-baselines:/e2e/visual-baselines:ro"
 if [[ "$TEST_SCRIPT" == baseline ]]; then
   baseline_mount="$ROOT_DIR/e2e/visual-baselines:/e2e/visual-baselines:rw"
@@ -237,4 +247,5 @@ if [[ "$TEST_SCRIPT" == parallel-group ]]; then
     run_args+=("${E2E_OTHER_SPECS[@]}")
   fi
 fi
+E2E_PHASE="Playwright execution"
 "${TEST_COMPOSE[@]}" run "${run_args[@]}"

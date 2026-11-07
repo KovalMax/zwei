@@ -1,9 +1,10 @@
 # Dedicated test-only image. No production/development Dockerfile uses this tag.
-FROM golang:1.26.10-alpine
+FROM golang:1.27.3-alpine
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 ENV CGO_ENABLED=0 GOOS=linux GOTRACEBACK=system
 WORKDIR /app
-COPY go.mod go.work ./
+COPY go.mod go.sum go.work go.work.sum ./
 COPY services ./services
 RUN go mod download
 RUN go build -tags e2e_turn -trimpath -ldflags="-s -w" -o /usr/bin/service ./services/realtime

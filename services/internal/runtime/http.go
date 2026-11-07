@@ -4,11 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"time"
 )
+
+// RunHealthcheck probes this service's existing readiness endpoint. It is
+// intended for direct invocation by container healthchecks, before normal
+// startup configuration and infrastructure connections are initialized.
+func RunHealthcheck(port string) error {
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://127.0.0.1:" + port + "/health/ready")
+	if err != nil {
+		return fmt.Errorf("readiness probe: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("readiness probe returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
 
 type HealthResponse struct {
 	Service string `json:"service"`

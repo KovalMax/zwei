@@ -299,8 +299,8 @@ test('production service worker renders the login app shell offline without cach
       persistedOfflineSignal: sessionStorage.getItem('zwei.pwa.offline'),
     }));
     expect(offlineBeforeReload.persistedOfflineSignal).toBe('true');
-    // Seed the restored-document case before app bootstrap; Chromium may emit
-    // an online signal while replacing the offline document during reload.
+    // Seed the restored-document case before app bootstrap so the offline UI
+    // survives navigation while the browser remains in offline emulation.
     await page.addInitScript(() => sessionStorage.setItem('zwei.pwa.offline', 'true'));
     await page.reload();
     await expect.poll(() => page.evaluate(previousTime => performance.timeOrigin !== previousTime, previousDocumentTime)).toBe(true);
@@ -320,7 +320,7 @@ test('production service worker renders the login app shell offline without cach
       };
     });
     console.log('offline reload state', {beforeReload: offlineBeforeReload, afterReload: offlineState});
-    expect(offlineState.navigatorOnline).toBe(true);
+    expect(offlineState.navigatorOnline).toBe(false);
     expect(offlineState.bannerVisible).toBe(true);
     expect(offlineState.bounds).not.toBeNull();
     expect(offlineState.bounds?.width).toBeGreaterThan(0);
