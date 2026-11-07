@@ -2,6 +2,14 @@
 
 set -Eeuo pipefail
 
+E2E_PHASE="script initialization"
+report_e2e_failure() {
+  local status=$?
+  printf 'E2E command failed during %s (exit %s)\n' "$E2E_PHASE" "$status" >&2
+  exit "$status"
+}
+trap report_e2e_failure ERR
+
 NAME_PREFIX="$1"
 TEST_SCRIPT="${2:-test}"
 SPEC="${3:-}"
@@ -12,6 +20,7 @@ MIGRATION_OVERLAY=""
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 source "$SCRIPT_DIR/e2e-env.sh"
+E2E_PHASE="local E2E target validation"
 validate_local_e2e_targets "$SCRIPT_DIR/../.env"
 
 case "$TEST_SCRIPT" in
@@ -85,6 +94,7 @@ fi
 
 # Docker creates a missing bind-mount source as root. Validate the workspace
 # before creating either host directory; never mount a different checkout.
+E2E_PHASE="workspace validation"
 if [[ "$(pwd -P)" != "$ROOT_DIR/infrastructure" ]]; then
   printf '%s\n' 'Run E2E from the repository infrastructure directory' >&2
   exit 2
@@ -94,6 +104,7 @@ if [[ ! -d "$ROOT_DIR/e2e" || "$(CDPATH= cd -- "$ROOT_DIR/e2e" && pwd -P)" != "$
   exit 2
 fi
 # Keep local push encryption/fingerprint secrets stable and available to auth in both E2E modes.
+E2E_PHASE="local secret preparation"
 python3 "$SCRIPT_DIR/ensure-local-push-secrets.py"
 for directory in test-results visual-baselines; do
   if [[ -L "$ROOT_DIR/e2e/$directory" || ( -e "$ROOT_DIR/e2e/$directory" && ! -d "$ROOT_DIR/e2e/$directory" ) ]]; then
@@ -105,6 +116,7 @@ mkdir -p "$ROOT_DIR/e2e/test-results" "$ROOT_DIR/e2e/visual-baselines"
 
 # Protect the disposable test namespace from custom settings that point the
 # development services at the same database or Redis DB 1.
+E2E_PHASE="development target validation"
 if ! validate_development_e2e_targets "$SCRIPT_DIR/../.env"; then
   exit 2
 fi
@@ -164,26 +176,32 @@ if [[ "$TEST_SCRIPT" != parallel-group ]]; then
   trap restore_application_services EXIT
 fi
 
+E2E_PHASE="Compose service startup"
 if [[ "$TEST_SCRIPT" == parallel-group ]]; then
   "${TEST_COMPOSE[@]}" up -d database frontend traefik mailpit redis coturn >/dev/null
 else
   "${TEST_COMPOSE[@]}" up -d database frontend traefik mailpit redis >/dev/null
 fi
+E2E_PHASE="database and Redis readiness"
 "${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 database redis >/dev/null
 if [[ -z "$SPEC" || "$SPEC" == tests/pwa-offline.spec.ts ]] && [[ "${E2E_SKIP_FRONTEND_BUILD:-0}" != 1 ]]; then
   # Build the exact production artifact in the running frontend container. The
   # frontend source bind mount makes this output available to the E2E container.
+  E2E_PHASE="production frontend build"
   "${TEST_COMPOSE[@]}" exec -T frontend npm run build -- --configuration production
   bash "$SCRIPT_DIR/e2e-pwa-build.sh" "${TEST_COMPOSE[@]}"
 fi
+E2E_PHASE="application service stop and test migration"
 "${COMPOSE[@]}" stop auth chat realtime >/dev/null || true
 if [[ -n "$MIGRATION_OVERLAY" ]]; then
   bash "$SCRIPT_DIR/migrate-test.sh" "$NAME_PREFIX" "$MIGRATION_OVERLAY"
 else
   bash "$SCRIPT_DIR/migrate-test.sh" "$NAME_PREFIX"
 fi
+E2E_PHASE="Redis test reset and application startup"
 "${TEST_COMPOSE[@]}" exec -T redis redis-cli -n 1 FLUSHDB >/dev/null
 "${TEST_COMPOSE[@]}" up -d --wait --wait-timeout 60 --force-recreate auth chat realtime >/dev/null
+E2E_PHASE="browser route readiness"
 wait_for_browser_routes
 if [[ "$SPEC" == turn ]] && [[ -z "$("${TEST_COMPOSE[@]}" ps -q --status running coturn)" ]]; then
   printf '%s\n' 'Isolated coturn is not running' >&2
@@ -222,4 +240,5 @@ if [[ "$TEST_SCRIPT" == parallel-group ]]; then
     run_args+=("${E2E_OTHER_SPECS[@]}")
   fi
 fi
+E2E_PHASE="Playwright execution"
 "${TEST_COMPOSE[@]}" run "${run_args[@]}"
