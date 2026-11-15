@@ -1,31 +1,6 @@
 name: zwei
 
 services:
-  traefik:
-    image: traefik:v3.5
-    command:
-      - --api.dashboard=false
-      - --entrypoints.web.address=:80
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
-      - --providers.file.filename=/etc/traefik/dynamic.yml
-      - --providers.file.watch=true
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}
-      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
-      - ${KYC_BASIC_AUTH_FILE:?KYC_BASIC_AUTH_FILE is required}:/run/secrets/kyc.htpasswd:ro
-      - traefik-acme:/acme
-    networks:
-      edge:
-        ipv4_address: 172.31.0.250
-    restart: unless-stopped
-
   coturn:
     image: coturn/coturn:4.6.3
     command:
@@ -54,7 +29,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    networks: [edge]
+    networks:
+      edge:
+        aliases: [zwei-frontend]
     restart: unless-stopped
 
   auth:
@@ -89,7 +66,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    networks: [edge, backend]
+    networks:
+      edge:
+        aliases: [zwei-auth]
+      backend: {}
     restart: unless-stopped
 
   chat:
@@ -111,7 +91,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    networks: [edge, backend]
+    networks:
+      edge:
+        aliases: [zwei-chat]
+      backend: {}
     restart: unless-stopped
 
   realtime:
@@ -142,7 +125,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    networks: [edge, backend]
+    networks:
+      edge:
+        aliases: [zwei-realtime]
+      backend: {}
     restart: unless-stopped
     logging:
       driver: json-file
@@ -191,9 +177,8 @@ services:
 
 networks:
   edge:
-    ipam:
-      config:
-        - subnet: 172.31.0.0/24
+    external: true
+    name: public-edge
   backend:
     internal: true
   turn:
@@ -201,4 +186,3 @@ networks:
 volumes:
   postgres-data:
   redis-data:
-  traefik-acme:
