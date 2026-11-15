@@ -144,6 +144,15 @@ jobs:
             -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
             infrastructure/production/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
 
+      - name: Install Zwei routes for shared Traefik
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            'set -eu
+             install -d -m 750 "$HOME/traefik/dynamic"
+             cat > "$HOME/traefik/dynamic/zwei.yml.next"
+             mv "$HOME/traefik/dynamic/zwei.yml.next" "$HOME/traefik/dynamic/zwei.yml"' \
+            < infrastructure/production/traefik/dynamic.yml
+
       - name: Select immutable commit image tag
         run: |
           case "$IMAGE_TAG" in
@@ -168,8 +177,8 @@ jobs:
              set +a
              sh ./release-deploy.sh"
 
-      - name: Close edge after deployment failure
+      - name: Stop Zwei application services after deployment failure
         if: ${{ (failure() || cancelled()) && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != '' }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; docker compose stop traefik coturn"
+            "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; docker compose stop frontend auth chat realtime"

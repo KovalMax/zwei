@@ -1,6 +1,6 @@
 http:
   middlewares:
-    security-headers:
+    zwei-security-headers:
       headers:
         contentTypeNosniff: true
         frameDeny: true
@@ -10,105 +10,105 @@ http:
           Content-Security-Policy: "default-src 'self'; connect-src 'self' https://auth.chat.false.tel https://api.chat.false.tel https://api.giphy.com https://media.giphy.com https://media0.giphy.com https://media1.giphy.com https://media2.giphy.com https://media3.giphy.com https://media4.giphy.com wss://ws.chat.false.tel; img-src 'self' data: https://media.giphy.com https://media0.giphy.com https://media1.giphy.com https://media2.giphy.com https://media3.giphy.com https://media4.giphy.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
           Cross-Origin-Opener-Policy: same-origin
           X-Permitted-Cross-Domain-Policies: none
-    auth-rate-limit:
+    zwei-auth-rate-limit:
       rateLimit:
         average: 30
         period: 1m
         burst: 100
-    search-rate-limit:
+    zwei-search-rate-limit:
       rateLimit:
         average: 30
         period: 1m
         burst: 40
-    chat-rate-limit:
+    zwei-chat-rate-limit:
       rateLimit:
         average: 120
         period: 1m
         burst: 40
-    realtime-rate-limit:
+    zwei-realtime-rate-limit:
       rateLimit:
         average: 30
         period: 1m
         burst: 20
-    kyc-basic-auth:
+    zwei-kyc-basic-auth:
       basicAuth:
         realm: Zwei KYC
         usersFile: /run/secrets/kyc.htpasswd
   routers:
-    frontend:
+    zwei-frontend:
       rule: Host(`chat.false.tel`)
       entryPoints: [websecure]
-      service: frontend
+      service: zwei-frontend
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers]
-    admin-frontend:
+      middlewares: [zwei-security-headers]
+    zwei-admin-frontend:
       rule: Host(`kyc.chat.false.tel`)
       entryPoints: [websecure]
-      service: frontend
+      service: zwei-frontend
       priority: 10
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers, kyc-basic-auth]
-    auth:
+      middlewares: [zwei-security-headers, zwei-kyc-basic-auth]
+    zwei-auth:
       rule: Host(`auth.chat.false.tel`)
       entryPoints: [websecure]
-      service: auth
+      service: zwei-auth
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers, auth-rate-limit]
-    admin-auth:
+      middlewares: [zwei-security-headers, zwei-auth-rate-limit]
+    zwei-admin-auth:
       rule: Host(`kyc.chat.false.tel`) && PathPrefix(`/api/auth`)
       entryPoints: [websecure]
-      service: auth
+      service: zwei-auth
       priority: 110
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers, auth-rate-limit]
-    admin-api:
+      middlewares: [zwei-security-headers, zwei-auth-rate-limit]
+    zwei-admin-api:
       rule: Host(`kyc.chat.false.tel`) && PathPrefix(`/api/admin`)
       entryPoints: [websecure]
-      service: auth
+      service: zwei-auth
       priority: 110
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers]
-    user-search:
+      middlewares: [zwei-security-headers]
+    zwei-user-search:
       rule: Host(`api.chat.false.tel`) && Path(`/api/chat/users/search`)
       entryPoints: [websecure]
-      service: chat
+      service: zwei-chat
       priority: 110
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers, search-rate-limit]
-    chat-api:
+      middlewares: [zwei-security-headers, zwei-search-rate-limit]
+    zwei-chat-api:
       rule: Host(`api.chat.false.tel`)
       entryPoints: [websecure]
-      service: chat
+      service: zwei-chat
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers, chat-rate-limit]
-    realtime:
+      middlewares: [zwei-security-headers, zwei-chat-rate-limit]
+    zwei-realtime:
       rule: Host(`ws.chat.false.tel`)
       entryPoints: [websecure]
-      service: realtime
+      service: zwei-realtime
       tls:
         certResolver: letsencrypt
-      middlewares: [security-headers, realtime-rate-limit]
+      middlewares: [zwei-security-headers, zwei-realtime-rate-limit]
   services:
-    frontend:
+    zwei-frontend:
       loadBalancer:
         servers:
-          - url: http://frontend:80
-    auth:
+          - url: http://zwei-frontend:80
+    zwei-auth:
       loadBalancer:
         servers:
-          - url: http://auth:8081
-    chat:
+          - url: http://zwei-auth:8081
+    zwei-chat:
       loadBalancer:
         servers:
-          - url: http://chat:8082
-    realtime:
+          - url: http://zwei-chat:8082
+    zwei-realtime:
       loadBalancer:
         servers:
-          - url: http://realtime:8083
+          - url: http://zwei-realtime:8083
