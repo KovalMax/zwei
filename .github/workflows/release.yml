@@ -148,8 +148,10 @@ jobs:
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
             'set -eu
-             install -d -m 750 "$HOME/traefik/dynamic"
+             install -d -m 755 "$HOME/traefik/dynamic"
+             chmod 755 "$HOME/traefik/dynamic"
              cat > "$HOME/traefik/dynamic/zwei.yml.next"
+             chmod 644 "$HOME/traefik/dynamic/zwei.yml.next"
              mv "$HOME/traefik/dynamic/zwei.yml.next" "$HOME/traefik/dynamic/zwei.yml"' \
             < infrastructure/production/traefik/dynamic.yml
 
