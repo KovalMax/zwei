@@ -1,4 +1,4 @@
-FROM golang:1.27.3-alpine AS base
+FROM golang:1.27.4-alpine AS base
 ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Do not rebuild C libs, no need to use gcc for building Go code

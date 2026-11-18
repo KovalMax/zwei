@@ -15,9 +15,10 @@ jobs:
       commit: ${{ steps.resolve.outputs.commit }}
     steps:
       - name: Check out published release tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
       - name: Resolve immutable commit
         id: resolve
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -30,9 +31,16 @@ jobs:
       source_ref: ${{ needs.resolve-source.outputs.commit }}
       release_validation: true
 
+  verify-security:
+    name: Run release security checks
+    uses: ./.github/workflows/security.yml
+    needs: resolve-source
+    with:
+      source_ref: ${{ needs.resolve-source.outputs.commit }}
+
   publish:
     name: Publish ${{ matrix.image }} image
-    needs: [resolve-source, verify-ci]
+    needs: [resolve-source, verify-ci, verify-security]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -63,15 +71,16 @@ jobs:
             build-args: ''
     steps:
       - name: Check out release commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.resolve-source.outputs.commit }}
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -79,7 +88,7 @@ jobs:
 
       - name: Generate image metadata
         id: metadata
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/zwei-${{ matrix.image }}
           tags: |
@@ -87,7 +96,8 @@ jobs:
             type=raw,value=sha-${{ needs.resolve-source.outputs.commit }}
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -100,6 +110,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Save build digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          test -n "$IMAGE_DIGEST"
+          mkdir -p "$RUNNER_TEMP/release-image-digest"
+          printf '%s\n' "$IMAGE_DIGEST" > "$RUNNER_TEMP/release-image-digest/digest.txt"
+
+      - name: Upload build digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-image-digest-${{ matrix.image }}
+          path: ${{ runner.temp }}/release-image-digest/digest.txt
+          if-no-files-found: error
+          retention-days: 90
+
   deploy:
     name: Deploy release commit
     needs: [resolve-source, publish]
@@ -108,45 +134,78 @@ jobs:
     concurrency:
       group: production-deploy
       cancel-in-progress: false
-    env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-      IMAGE_TAG: sha-${{ needs.resolve-source.outputs.commit }}
     steps:
       - name: Check out release commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.resolve-source.outputs.commit }}
+          persist-credentials: false
 
-      - name: Configure SSH
+      - name: Download release image digests
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-image-digest-*
+          path: ${{ runner.temp }}/release-image-digests
+          merge-multiple: false
+
+      - name: Validate and assemble deployment image references
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          sh infrastructure/scripts/write-release-image-manifest.sh \
+            "$RUNNER_TEMP/release-image-digests" \
+            "$RUNNER_TEMP/.deploy.env"
 
       - name: Validate deployment path
+        env:
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: sh infrastructure/scripts/validate-deploy-path.sh "$DEPLOY_PATH"
 
-      - name: Prepare deployment directory
+      - name: Deploy verified image digests
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
         run: |
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "install -d -m 750 '$DEPLOY_PATH' && test \"\$(realpath -m -- '$DEPLOY_PATH')\" = '$DEPLOY_PATH'"
+          set -eu
+          umask 077
+          case "$DEPLOY_HOST" in ''|*[!A-Za-z0-9.-]*) echo 'Invalid deployment host.' >&2; exit 1 ;; esac
+          case "$DEPLOY_USER" in ''|*[!A-Za-z0-9._-]*) echo 'Invalid deployment user.' >&2; exit 1 ;; esac
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/zwei-ssh.XXXXXX")
+          deployment_started=0
+          cleanup() {
+            rm -rf "$ssh_dir"
+          }
+          remote_stop() {
+            ssh -F "$ssh_dir/config" release-host \
+              "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; docker compose stop frontend auth chat realtime" || \
+              echo 'Could not stop all Zwei application services after deployment failure.' >&2
+          }
+          on_signal() {
+            if [ "$deployment_started" -eq 1 ]; then
+              remote_stop
+            fi
+            exit 1
+          }
+          trap cleanup EXIT
+          trap on_signal HUP INT TERM
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$ssh_dir/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
+          printf 'Host release-host\n  HostName %s\n  User %s\n  IdentityFile %s/id_ed25519\n  IdentitiesOnly yes\n  UserKnownHostsFile %s/known_hosts\n  StrictHostKeyChecking yes\n  BatchMode yes\n' \
+            "$DEPLOY_HOST" "$DEPLOY_USER" "$ssh_dir" "$ssh_dir" > "$ssh_dir/config"
+          chmod 600 "$ssh_dir/config"
 
-      - name: Synchronize production configuration
-        run: |
+          ssh -F "$ssh_dir/config" release-host \
+            "install -d -m 750 '$DEPLOY_PATH' && test \"\$(realpath -m -- '$DEPLOY_PATH')\" = '$DEPLOY_PATH'"
           rsync --archive --compress --delete \
             --exclude '.env' \
             --exclude '.deploy.env' \
-            -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes' \
-            infrastructure/production/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
-
-      - name: Install Zwei routes for shared Traefik
-        run: |
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            -e "ssh -F $ssh_dir/config" \
+            infrastructure/production/ "release-host:$DEPLOY_PATH/"
+          ssh -F "$ssh_dir/config" release-host \
             'set -eu
              install -d -m 755 "$HOME/traefik/dynamic"
              chmod 755 "$HOME/traefik/dynamic"
@@ -154,33 +213,19 @@ jobs:
              chmod 644 "$HOME/traefik/dynamic/zwei.yml.next"
              mv "$HOME/traefik/dynamic/zwei.yml.next" "$HOME/traefik/dynamic/zwei.yml"' \
             < infrastructure/production/traefik/dynamic.yml
-
-      - name: Select immutable commit image tag
-        run: |
-          case "$IMAGE_TAG" in
-            ''|*[!A-Za-z0-9._-]*)
-              echo 'Release tag contains unsupported characters.' >&2
-              exit 1
-              ;;
-          esac
-          printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" | \
-            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-              "umask 077 && cat > '$DEPLOY_PATH/.deploy.env'"
-
-      - name: Pull, migrate, and start services
-        id: deploy
-        run: |
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+          ssh -F "$ssh_dir/config" release-host \
+            "umask 077 && cat > '$DEPLOY_PATH/.deploy.env.next' && mv -f '$DEPLOY_PATH/.deploy.env.next' '$DEPLOY_PATH/.deploy.env'" \
+            < "$RUNNER_TEMP/.deploy.env"
+          deployment_started=1
+          if ! ssh -F "$ssh_dir/config" release-host \
             "set -eu
              cd '$DEPLOY_PATH'
              set -a
              . ./.env
              . ./.deploy.env
              set +a
-             sh ./release-deploy.sh"
-
-      - name: Stop Zwei application services after deployment failure
-        if: ${{ (failure() || cancelled()) && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != '' }}
-        run: |
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "set -eu; cd '$DEPLOY_PATH'; set -a; . ./.env; . ./.deploy.env; set +a; docker compose stop frontend auth chat realtime"
+             sh ./release-deploy.sh"; then
+            remote_stop
+            exit 1
+          fi
+          deployment_started=0

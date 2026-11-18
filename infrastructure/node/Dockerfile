@@ -1,4 +1,4 @@
-FROM node:26.13.0-bookworm-slim
+FROM node:26.13.1-bookworm-slim
 
 ENV CHROME_BIN=/usr/local/bin/chromium-no-sandbox
 

@@ -60,27 +60,29 @@ go fmt ./services/...
 go vet ./services/...
 go test -race ./services/...
 go mod verify
-GOTOOLCHAIN=go1.27.3 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./services/...
+GOTOOLCHAIN=go1.27.4 go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./services/...
 
 # Angular CI (Node 26)
 cd frontend-app && npm run build -- --configuration production
 cd frontend-app && npm test -- --coverage
 
-# npm security audits on a GitHub-hosted runner (frontend-app and e2e lockfiles)
+# npm security audits on a GitHub-hosted runner (all package lockfiles)
 cd frontend-app && npm audit --audit-level=high
 cd e2e && npm audit --audit-level=high
+cd .opencode && npm audit --audit-level=high
 
 # Playwright is executed against the Compose stack
 make e2e
+make e2e-turn
 ```
 
 ## Security CI
 
-`.github/workflows/security.yml` runs module verification, a pinned Go vulnerability scan, and npm audits on pull requests and pushes to `main`. `.github/workflows/ci.yml` runs Go formatting/vet/race tests with migrated PostgreSQL/Redis integration dependencies, Angular headless coverage tests and production build, then Playwright E2E with artifacts. On PRs and pushes to `main`, both complete workflows remain enabled. Release calls CI in focused mode: only Go tests and Angular tests/production build run against the resolved release commit before publishing/deployment; Security is not repeated. Angular coverage is enabled in `angular.json`; CI must fail if the artifact is absent. Keep scanner/toolchain versions explicit and consistent; scan `./services/...` so frontend dependency fixtures are not treated as Go packages.
+`.github/workflows/security.yml` runs module verification, a pinned Go vulnerability scan, and npm audits for `frontend-app`, `e2e`, and `.opencode` on pull requests and pushes to `main`. `.github/workflows/ci.yml` runs Go formatting/vet/race tests with migrated PostgreSQL/Redis integration dependencies, Angular headless coverage tests and production build, then Playwright E2E with artifacts. Its release-contract job also runs `release-deploy-test.sh`, `release-image-manifest-test.sh`, and `coturn-config-test.sh`. On PRs and pushes to `main`, both complete workflows remain enabled. A published release resolves its tag once and calls both CI and Security against that exact SHA; publishing waits for both. Release-mode CI runs Go tests and Angular tests/build plus the contract checks, while skipping the main-only broad quality and E2E jobs. Security is not skipped. Angular coverage is enabled in `angular.json`; CI must fail if the artifact is absent. Keep scanner/toolchain versions explicit and consistent; scan `./services/...` so frontend dependency fixtures are not treated as Go packages.
 
-`.github/workflows/release.yml` is the planned first-launch path: on a published GitHub Release it runs Go tests and Angular tests/production build for the exact resolved source commit, publishes ARM64 images to GHCR, and deploys through strict-host-key SSH using the separate `infrastructure/production/` Compose setup. Deploy the full commit-SHA image tag, not a movable release label. `DEPLOY_PATH` may be any absolute path but must target a dedicated directory because `rsync --delete` removes destination files not present in the deployment source. Preserve the distinction between local Compose and production Compose and never document secret values.
+`.github/workflows/release.yml` is the first-launch path: on a published GitHub Release it publishes ARM64 images to GHCR only after exact-SHA CI and Security pass. Each matrix build uploads its Buildx digest; deploy accepts exactly one digest for each of Auth, Chat, Realtime, Frontend, and Migrator, then production Compose consumes the validated `repository@sha256:...` references. Release and commit-SHA tags remain discovery aliases, never deployment identity. External Actions use reviewed full-SHA pins. Checkout credentials are not persisted, and SSH key material is scoped to the deployment step with strict host verification and temporary-file cleanup. `DEPLOY_PATH` may be any absolute path but must target a dedicated directory because `rsync --delete` removes destination files not present in the deployment source. Preserve the distinction between local Compose and production Compose and never document secret values.
 
-The release preflight must never start a second Traefik on its fixed edge IP; validate the KYC bind mount with an isolated `--network none` container after pulling the image. Keep the published-release path automated and use one deployment script; do not add a parallel manual deployment path or release-only live probes. Public endpoint and security-header verification is a manual operator task after deployment, not a release-workflow step. `infrastructure/scripts/release-deploy-test.sh` is a focused local regression aid, not a required hosted Actions job.
+The release path must not start a second Traefik on its fixed edge IP. Keep the published-release path automated and use one deployment script; do not add a parallel manual deployment path or release-only live probes. Public endpoint and security-header verification is a manual operator task after deployment, not a release-workflow step. The release, digest-manifest, and Coturn contract scripts are run locally during development and by the hosted CI contract job. Coturn disables anonymous STUN and applies the user-approved provisional cap of 100 UDP 401 responses per source per second. Its fixed one-second windows mean a sub-second test burst can span two windows; test this separately from browser wrong-credential behavior. For the isolated relay flow, assert the wrong-password 401 and absence of a relay candidate; do not require Chromium to complete ICE gathering after an authentication error.
 
 When npm advisories affect transitive build tooling, prefer a reviewed `overrides` entry pinned to a patched release and regenerate the lockfile. Do not suppress an advisory or lower `--audit-level=high`; document when an upstream package has no patched release and remove the vulnerable dependency path where possible.
 

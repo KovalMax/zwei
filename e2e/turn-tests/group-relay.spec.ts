@@ -1,3 +1,5 @@
+import {randomBytes} from 'node:crypto';
+import {createSocket, type Socket} from 'node:dgram';
 import {expect, Page, request, test} from '@playwright/test';
 
 const password = 'Password123!';
@@ -6,8 +8,8 @@ const admin = 'https://kyc.localhost';
 
 // Test output contains only status, counters, expiry timestamps and booleans.
 // Never expose credentials, SDP, candidate addresses/IDs, or WebSocket URLs.
-async function installRelayObserver(page: Page, coordinateOffers: boolean): Promise<void> {
-  await page.addInitScript(coordinate => {
+async function installRelayObserver(page: Page, coordinateOffers: boolean, transport: 'udp' | 'tcp'): Promise<void> {
+  await page.addInitScript(({coordinate, transport: relayTransport}: {coordinate: boolean; transport: 'udp' | 'tcp'}) => {
     type SourceSnapshot = {duration: number; reports: number; sent: number; sameSender: boolean; sameTrack: boolean; sameTransceiver: boolean};
     type Peer = {connection: RTCPeerConnection; initialServers: RTCIceServer[]; initialExpiry: number; configured: boolean; restarted: boolean; beforeLocal: string; beforeRemote: string; events: string[]; sourceSteps: {step: string; snapshot: SourceSnapshot}[]; rollbackBefore?: SourceSnapshot; rollbackAfter?: SourceSnapshot; senderBefore?: RTCRtpSender; trackBefore?: MediaStreamTrack | null; transceiverBefore?: RTCRtpTransceiver};
     type Room = {conversation_id?: string; room_id?: string; generation?: number};
@@ -17,6 +19,12 @@ async function installRelayObserver(page: Page, coordinateOffers: boolean): Prom
     const gate: Gate = {enabled: coordinate, ready: false, committed: false, released: false, timedOut: false, failed: false, offers: 0, forceInitialRetry: false, droppedInitialOffer: false, retriedInitialOffer: false, frames: [], bytes: 0};
     const observer: Observer = {peers: [], nativePeer: NativePeer, pending: new WeakMap(), refreshedExpiry: 0, refreshedAt: 0, correlated: false, iceErrors: [], lastRtpIDs: '', rtpIDChanges: 0, gate, drain: () => {}};
     Object.defineProperty(window, '__relayObserver', {value: observer});
+    const serversForTransport = (servers: RTCIceServer[] | undefined): RTCIceServer[] =>
+      (servers ?? []).flatMap(server => {
+        const urls = typeof server.urls === 'string' ? [server.urls] : server.urls ?? [];
+        const selected = urls.filter(url => url.includes(`?transport=${relayTransport}`));
+        return selected.length ? [{...server, urls: selected}] : [];
+      });
     const NativeSocket = window.WebSocket;
     const send = NativeSocket.prototype.send;
     NativeSocket.prototype.send = function(data): void {
@@ -74,15 +82,16 @@ async function installRelayObserver(page: Page, coordinateOffers: boolean): Prom
           try {
             const message = JSON.parse(event.data) as {type?: string; request_id?: string; payload?: Room & {ice_expires_at?: string; ice_servers?: RTCIceServer[]}};
             const expiry = Date.parse(message.payload?.ice_expires_at ?? '');
+            const responseServers = serversForTransport(message.payload?.ice_servers);
             const pending = observer.pending.get(socket);
             const request = message.request_id ? pending?.get(message.request_id) : undefined;
             if (message.type === 'group.call.credentials' && request && message.request_id && message.payload
               && request.room_id === message.payload.room_id && request.conversation_id === message.payload.conversation_id && request.generation === message.payload.generation
-              && !observer.correlated && Number.isFinite(expiry) && message.payload.ice_servers?.length
+              && !observer.correlated && Number.isFinite(expiry) && responseServers.length
               && Number(message.payload.ice_servers[0].username?.split(':')[0]) * 1000 === expiry) {
               pending?.delete(message.request_id);
               observer.correlated = true;
-              observer.responseServers = message.payload.ice_servers;
+              observer.responseServers = responseServers;
               observer.refreshedExpiry = expiry;
               observer.refreshedAt = Date.now();
             }
@@ -100,8 +109,9 @@ async function installRelayObserver(page: Page, coordinateOffers: boolean): Prom
     window.RTCPeerConnection = new Proxy(NativePeer, {
       construct(target, args, newTarget) {
         const configuration = (args[0] ?? {}) as RTCConfiguration;
-        const connection = Reflect.construct(target, [{...configuration, iceTransportPolicy: 'relay'}], newTarget) as RTCPeerConnection;
-        const initialServers = structuredClone(configuration.iceServers ?? []);
+        const selectedServers = serversForTransport(configuration.iceServers);
+        const connection = Reflect.construct(target, [{...configuration, iceServers: selectedServers, iceTransportPolicy: 'relay'}], newTarget) as RTCPeerConnection;
+        const initialServers = structuredClone(selectedServers);
         const initialExpiry = Number(initialServers[0]?.username?.split(':')[0]) * 1000;
         const peer: Peer = {connection, initialServers, initialExpiry, configured: false, restarted: false, beforeLocal: '', beforeRemote: '', events: [], sourceSteps: []};
         const record = (operation: string): void => { if (observer.refreshedAt && peer.events.length < 32) peer.events.push(`${operation}/${connection.signalingState}`); };
@@ -136,11 +146,12 @@ async function installRelayObserver(page: Page, coordinateOffers: boolean): Prom
         };
         const configure = connection.setConfiguration.bind(connection);
         connection.setConfiguration = next => {
-          const matched = observer.correlated && !!observer.responseServers && identity(next?.iceServers) === identity(observer.responseServers);
+          const selectedServers = serversForTransport(next?.iceServers);
+          const matched = observer.correlated && !!observer.responseServers && identity(selectedServers) === identity(observer.responseServers);
           // This synchronous native snapshot is taken immediately before applying
           // the matched response to this exact peer, not from a polling cache.
           const pair = matched && !peer.configured ? selected(connection) : null;
-          configure({...next, iceTransportPolicy: 'relay'});
+          configure({...next, iceServers: selectedServers, iceTransportPolicy: 'relay'});
           if (pair?.local?.type === 'relay' && pair.remote?.type === 'relay' && pair.local.candidate && pair.remote.candidate) {
             record('configuration');
             peer.beforeLocal = pair.local.candidate;
@@ -155,7 +166,70 @@ async function installRelayObserver(page: Page, coordinateOffers: boolean): Prom
         return connection;
       },
     });
-  }, coordinateOffers);
+  }, {coordinate: coordinateOffers, transport});
+}
+
+function turnErrorCode(response: Buffer): number | undefined {
+  if (response.length < 20 || response.readUInt16BE(0) !== 0x0113) return undefined;
+  for (let offset = 20; offset + 4 <= response.length;) {
+    const type = response.readUInt16BE(offset);
+    const length = response.readUInt16BE(offset + 2);
+    const valueOffset = offset + 4;
+    if (valueOffset + length > response.length) return undefined;
+    if (type === 0x0009 && length >= 4) {
+      const code = response[valueOffset + 2];
+      return (code & 0x07) * 100 + response[valueOffset + 3];
+    }
+    offset = valueOffset + Math.ceil(length / 4) * 4;
+  }
+  return undefined;
+}
+
+async function coturnUdpResponses(messageType: number, count: number, waitMs: number): Promise<{count: number; errorCodes: number[]; sendDurationMs: number}> {
+  const socket: Socket = createSocket('udp4');
+  return new Promise((resolve, reject) => {
+    const responses: Buffer[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sent = 0;
+    let settled = false;
+    const startedAt = Date.now();
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      socket.close();
+      reject(error);
+    };
+    const finishWhenSent = (): void => {
+      if (sent !== count || timer) return;
+      const sendDurationMs = Date.now() - startedAt;
+      timer = setTimeout(() => {
+        settled = true;
+        socket.close(() => resolve({
+          count: responses.length,
+          errorCodes: responses.map(turnErrorCode).filter((code): code is number => code !== undefined),
+          sendDurationMs,
+        }));
+      }, waitMs);
+    };
+    socket.on('error', fail);
+    socket.on('message', response => responses.push(response));
+    socket.bind(0, () => {
+      for (let index = 0; index < count; index++) {
+        const request = Buffer.alloc(20);
+        request.writeUInt16BE(messageType, 0);
+        request.writeUInt32BE(0x2112a442, 4);
+        randomBytes(12).copy(request, 8);
+        socket.send(request, 3478, 'turn.chat.localhost', error => {
+          if (error) fail(error);
+          else {
+            sent++;
+            finishWhenSent();
+          }
+        });
+      }
+    });
+  });
 }
 
 async function createAccount(email: string, name: string): Promise<void> {
@@ -182,7 +256,7 @@ async function login(page: Page, email: string): Promise<void> {
 }
 
 type SourceSnapshot = {duration: number; reports: number; sent: number; sameSender: boolean; sameTrack: boolean; sameTransceiver: boolean};
-type Sample = {relay: boolean; sent: number; received: number; sentBytes: number; receivedBytes: number; pairSentBytes: number; pairReceivedBytes: number; sourceDuration: number; sourceReports: number; lost: number; outboundReports: number; inboundReports: number; newLocal: boolean; newPair: boolean; correlated: boolean; configured: boolean; restarted: boolean; currentMatches: boolean; rtpIDChanges: number; initialExpiry: number; refreshedExpiry: number; refreshedAt: number; now: number; states: string[]; iceErrors: number[]; relayCandidates: number; tracks: string[]; transceivers: string[]; events: string[]; sourceSteps: {step: string; snapshot: SourceSnapshot}[]; rollbackBefore?: SourceSnapshot; rollbackAfter?: SourceSnapshot};
+type Sample = {relay: boolean; sent: number; received: number; sentBytes: number; receivedBytes: number; pairSentBytes: number; pairReceivedBytes: number; sourceDuration: number; sourceReports: number; lost: number; outboundReports: number; inboundReports: number; newLocal: boolean; newPair: boolean; correlated: boolean; configured: boolean; restarted: boolean; currentMatches: boolean; configuredTurnTransports: string[]; rtpIDChanges: number; initialExpiry: number; refreshedExpiry: number; refreshedAt: number; now: number; states: string[]; iceErrors: number[]; relayCandidates: number; tracks: string[]; transceivers: string[]; events: string[]; sourceSteps: {step: string; snapshot: SourceSnapshot}[]; rollbackBefore?: SourceSnapshot; rollbackAfter?: SourceSnapshot};
 function safeDiagnostics({initialExpiry, refreshedExpiry, refreshedAt, now, ...state}: Sample) {
   return {...state, elapsedAfterExpiry: initialExpiry ? now - initialExpiry : undefined, renewalLead: refreshedAt && initialExpiry ? initialExpiry - refreshedAt : undefined, refreshedRemaining: refreshedExpiry ? refreshedExpiry - now : undefined};
 }
@@ -223,7 +297,11 @@ async function sample(page: Page): Promise<Sample> {
     }
     const identity = (servers: RTCIceServer[] | undefined): string => JSON.stringify((servers ?? []).map(server => ({urls: typeof server.urls === 'string' ? [server.urls] : server.urls, username: server.username, credential: server.credential})));
     const currentMatches = !!o.responseServers && identity(reportingConnection?.getConfiguration().iceServers) === identity(o.responseServers);
-    return {relay, sent, received, sentBytes, receivedBytes, pairSentBytes, pairReceivedBytes, sourceDuration, sourceReports, lost, outboundReports: outboundIDs.length, inboundReports: inboundIDs.length, newLocal, newPair, correlated: o.correlated, configured: !!peer?.configured, restarted: !!peer?.restarted, currentMatches, rtpIDChanges: o.rtpIDChanges, initialExpiry: peer?.initialExpiry ?? 0, refreshedExpiry: o.refreshedExpiry, refreshedAt: o.refreshedAt, now: Date.now(), states: o.peers.map(({connection: c}) => `${c.connectionState}/${c.iceConnectionState}/${c.iceGatheringState}/${c.signalingState}/local:${c.localDescription?.type ?? 'none'}/remote:${c.remoteDescription?.type ?? 'none'}/servers:${c.getConfiguration().iceServers?.length ?? 0}`), tracks: [...(reportingConnection?.getSenders().map(s => `send/${s.track?.kind ?? 'none'}/${s.track?.readyState ?? 'none'}/${s.track?.enabled ?? false}`) ?? []), ...(reportingConnection?.getReceivers().map(r => `receive/${r.track.kind}/${r.track.readyState}/${r.track.muted}`) ?? [])], transceivers: reportingConnection?.getTransceivers().map(t => `${t.direction}/${t.currentDirection ?? 'none'}/${t.sender.track?.kind ?? 'none'}/${t.sender.getParameters().encodings.map(e => e.active).join(',')}`) ?? [], events: peer?.events ?? [], sourceSteps: peer?.sourceSteps ?? [], rollbackBefore: peer?.rollbackBefore, rollbackAfter: peer?.rollbackAfter, iceErrors: o.iceErrors, relayCandidates};
+    const configuredTurnTransports = (reportingConnection?.getConfiguration().iceServers ?? []).flatMap(server => {
+      const urls = typeof server.urls === 'string' ? [server.urls] : server.urls ?? [];
+      return urls.flatMap(url => /[?&]transport=(udp|tcp)(?:&|$)/.exec(url)?.[1] ?? []);
+    });
+    return {relay, sent, received, sentBytes, receivedBytes, pairSentBytes, pairReceivedBytes, sourceDuration, sourceReports, lost, outboundReports: outboundIDs.length, inboundReports: inboundIDs.length, newLocal, newPair, correlated: o.correlated, configured: !!peer?.configured, restarted: !!peer?.restarted, currentMatches, configuredTurnTransports, rtpIDChanges: o.rtpIDChanges, initialExpiry: peer?.initialExpiry ?? 0, refreshedExpiry: o.refreshedExpiry, refreshedAt: o.refreshedAt, now: Date.now(), states: o.peers.map(({connection: c}) => `${c.connectionState}/${c.iceConnectionState}/${c.iceGatheringState}/${c.signalingState}/local:${c.localDescription?.type ?? 'none'}/remote:${c.remoteDescription?.type ?? 'none'}/servers:${c.getConfiguration().iceServers?.length ?? 0}`), tracks: [...(reportingConnection?.getSenders().map(s => `send/${s.track?.kind ?? 'none'}/${s.track?.readyState ?? 'none'}/${s.track?.enabled ?? false}`) ?? []), ...(reportingConnection?.getReceivers().map(r => `receive/${r.track.kind}/${r.track.readyState}/${r.track.muted}`) ?? [])], transceivers: reportingConnection?.getTransceivers().map(t => `${t.direction}/${t.currentDirection ?? 'none'}/${t.sender.track?.kind ?? 'none'}/${t.sender.getParameters().encodings.map(e => e.active).join(',')}`) ?? [], events: peer?.events ?? [], sourceSteps: peer?.sourceSteps ?? [], rollbackBefore: peer?.rollbackBefore, rollbackAfter: peer?.rollbackAfter, iceErrors: o.iceErrors, relayCandidates};
   });
 }
 
@@ -253,6 +331,48 @@ async function freshAllocation(page: Page, useOriginal: boolean): Promise<boolea
       return await allocated;
     } finally { probe.close(); }
   }, useOriginal);
+}
+
+// A successful peer connection establishes that this transport reaches Coturn.
+// With the same TURN username but a deliberately wrong password, the server
+// must reject allocation; report only candidate/gathering booleans, error codes,
+// and the transport parsed from the error URL (never the URL itself).
+async function invalidCredentialAllocation(page: Page): Promise<{relayCandidate: boolean; errorCodes: number[]; errorTransports: string[]}> {
+  return page.evaluate(async () => {
+    type Peer = {initialServers: RTCIceServer[]};
+    type Observer = {peers: Peer[]; nativePeer: typeof RTCPeerConnection};
+    const o = (window as unknown as {__relayObserver: Observer}).__relayObserver;
+    const peer = o.peers.length === 1 ? o.peers[0] : undefined;
+    if (!peer?.initialServers.length) return {relayCandidate: false, errorCodes: [], errorTransports: []};
+    const servers = peer.initialServers.map(server => ({...server, credential: `${server.credential ?? ''}-invalid`}));
+    const probe = new o.nativePeer({iceServers: servers, iceTransportPolicy: 'relay'});
+    const errorCodes = new Set<number>();
+    const errorTransports = new Set<string>();
+    try {
+      // A TURN auth error can leave Chromium gathering pending. Bound the
+      // observation, but assert the authentication outcome and absence of relay
+      // allocation rather than treating ICE gathering completion as auth behavior.
+      const allocation = new Promise<boolean>(resolve => {
+        const timer = window.setTimeout(() => resolve(false), 8_000);
+        const finish = (relayCandidate: boolean): void => {
+          window.clearTimeout(timer);
+          resolve(relayCandidate);
+        };
+        probe.addEventListener('icecandidate', event => {
+          if (event.candidate?.type === 'relay') finish(true);
+          else if (!event.candidate) finish(false);
+        });
+        probe.addEventListener('icecandidateerror', event => {
+          errorCodes.add(event.errorCode);
+          const transport = /[?&]transport=(udp|tcp)(?:&|$)/.exec(event.url ?? '')?.[1];
+          if (transport) errorTransports.add(transport);
+        });
+      });
+      probe.createDataChannel('invalid-auth-probe');
+      await probe.setLocalDescription(await probe.createOffer());
+      return {relayCandidate: await allocation, errorCodes: [...errorCodes], errorTransports: [...errorTransports]};
+    } finally { probe.close(); }
+  });
 }
 
 type BarrierStatus = {ready: boolean; outstanding: boolean; committed: boolean; released: boolean; timedOut: boolean; failed: boolean; offers: number; forceInitialRetry: boolean; droppedInitialOffer: boolean; retriedInitialOffer: boolean; queued: number};
@@ -290,9 +410,10 @@ async function coordinateRestartOffers(pages: Page[]): Promise<void> {
 }
 
 for (const scenario of [
-  {name: 'group audio renews actual relay credentials across their original expiry', coordinated: false, retry: false},
-  {name: 'simultaneous group relay restart offers preserve audio after original expiry', coordinated: true, retry: false},
-  {name: 'group relay retries a lost restart offer without losing audio', coordinated: false, retry: true},
+  {name: 'group audio renews UDP relay credentials across their original expiry', coordinated: false, retry: false, verifyAuthentication: true, transport: 'udp' as const},
+  {name: 'simultaneous UDP relay restart offers preserve audio after original expiry', coordinated: true, retry: false, verifyAuthentication: false, transport: 'udp' as const},
+  {name: 'UDP relay retries a lost restart offer without losing audio', coordinated: false, retry: true, verifyAuthentication: false, transport: 'udp' as const},
+  {name: 'authenticated TURN over TCP carries group audio over UDP relay', coordinated: false, retry: false, verifyAuthentication: true, transport: 'tcp' as const},
 ]) test(scenario.name, async ({browser}) => {
   const ownerEmail = `turn-owner-${Date.now()}@example.test`;
   const memberEmail = `turn-member-${Date.now()}@example.test`;
@@ -300,7 +421,7 @@ for (const scenario of [
   const memberContext = await browser.newContext({baseURL: base, ignoreHTTPSErrors: true});
   try {
     const owner = await ownerContext.newPage(), member = await memberContext.newPage();
-    await Promise.all([installRelayObserver(owner, scenario.coordinated), installRelayObserver(member, scenario.coordinated)]);
+    await Promise.all([installRelayObserver(owner, scenario.coordinated, scenario.transport), installRelayObserver(member, scenario.coordinated, scenario.transport)]);
     await createAccount(ownerEmail, 'Relay Owner');
     await createAccount(memberEmail, 'Relay Member');
     await Promise.all([login(owner, ownerEmail), login(member, memberEmail)]);
@@ -325,11 +446,23 @@ for (const scenario of [
     }
     const before = await Promise.all([sample(owner), sample(member)]);
     for (const s of before) {
+      expect(s.configuredTurnTransports, 'only the selected TURN transport is configured').toEqual([scenario.transport]);
       expect(s.initialExpiry - s.now, 'initial credential still has time to exercise before expiry').toBeGreaterThan(5_000);
       expect(s.initialExpiry - s.now).toBeLessThanOrEqual(45_000);
     }
     for (const [index, page] of [owner, member].entries()) {
       await expect.poll(async () => { const s = await sample(page); return s.relay && s.sent > before[index].sent && s.received > before[index].received && s.now < before[index].initialExpiry; }, {timeout: 10_000, message: 'audio RTP must increase before original expiry'}).toBe(true);
+    }
+    if (scenario.verifyAuthentication) {
+      const result = await invalidCredentialAllocation(owner);
+      expect(result.relayCandidate, 'a wrong TURN password must not allocate a relay candidate').toBe(false);
+      expect(result.errorCodes, 'Coturn should report an authentication rejection').toContain(401);
+      expect(result.errorTransports, 'the authentication rejection must come from the selected TURN transport').toContain(scenario.transport);
+    }
+    if (scenario.transport === 'tcp') {
+      await owner.getByRole('button', {name: 'End group call for everyone'}).click();
+      await expect(member.locator('.group-call-terminal')).toContainText('Group call ended.');
+      return;
     }
     if (scenario.retry) {
       const selected = await Promise.all([owner, member].map(page => page.evaluate(() => {
@@ -396,4 +529,20 @@ for (const scenario of [
   } finally {
     await Promise.all([ownerContext.close(), memberContext.close()]);
   }
+});
+
+test('Coturn ignores anonymous STUN and rate-limits unauthenticated UDP allocations', async () => {
+  const bindingResponses = await coturnUdpResponses(0x0001, 1, 300);
+  expect(bindingResponses.count, 'anonymous STUN Binding must not receive a response').toBe(0);
+
+  // Coturn uses fixed one-second windows. A burst shorter than one second may
+  // straddle at most two windows, so allow two full per-window budgets.
+  const allocationResponses = await coturnUdpResponses(0x0003, 240, 1_000);
+  expect(allocationResponses.sendDurationMs, 'the request burst must fit within one second').toBeLessThan(1_000);
+  expect(allocationResponses.count, 'unauthenticated TURN Allocate requests must receive authentication challenges').toBeGreaterThan(0);
+  expect(allocationResponses.errorCodes, 'Coturn must return only 401 authentication challenges').toEqual(
+    Array(allocationResponses.count).fill(401),
+  );
+  expect(allocationResponses.count, 'the 401 limiter must suppress part of the 240-request burst').toBeLessThan(240);
+  expect(allocationResponses.count, 'UDP 401 responses must stay within two fixed-window per-source limits').toBeLessThanOrEqual(200);
 });

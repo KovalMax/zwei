@@ -19,15 +19,15 @@ jobs:
     name: Go vulnerabilities
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref || github.sha }}
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
       - run: go mod verify
-      - run: GOTOOLCHAIN=go1.27.3 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./services/...
+      - run: GOTOOLCHAIN=go1.27.4 go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./services/...
 
   npm-vulnerabilities:
     name: npm vulnerabilities (${{ matrix.directory }})
@@ -35,17 +35,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        directory: [frontend-app, e2e]
+        directory: [frontend-app, e2e, .opencode]
     defaults:
       run:
         working-directory: ${{ matrix.directory }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref || github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 26.13.0
+          node-version: 26.13.1
           cache: npm
           cache-dependency-path: ${{ matrix.directory }}/package-lock.json
       - run: npm audit --audit-level=high

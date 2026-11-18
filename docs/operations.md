@@ -29,7 +29,7 @@ make e2e-turn
 
 ## GitHub checks and first release
 
-Pull requests and pushes to `main` run `.github/workflows/ci.yml` and `.github/workflows/security.yml`. A published GitHub Release calls those same workflows against the release commit; image publishing and automated deployment wait for both to pass. The deployment publishes ARM64 images to GHCR and uses the separate production Compose setup. It does not probe public endpoints or security headers; those checks and browser acceptance are manual operator steps described in [`infrastructure/production/DEPLOYMENT.md`](../infrastructure/production/DEPLOYMENT.md).
+Pull requests and pushes to `main` run `.github/workflows/ci.yml` and `.github/workflows/security.yml`. A published GitHub Release calls both workflows against the exact resolved release commit; image publishing and automated deployment wait for both to pass. The deployment publishes ARM64 images to GHCR and deploys the five Buildx-produced image digests through the separate production Compose setup. Release and commit-SHA tags remain discoverability aliases, not deployment identity. It does not probe public endpoints or security headers; those checks and browser acceptance are manual operator steps described in [`infrastructure/production/DEPLOYMENT.md`](../infrastructure/production/DEPLOYMENT.md).
 
 Configure runtime secrets on the VM, not in source, GitHub variables, image build arguments, or browser configuration. In particular, `GIPHY_API_KEY` belongs only in the Auth runtime environment. The browser receives it only after an authenticated user explicitly starts GIPHY search; it is public to that browser and cannot be made secret by a short client-side cache lifetime. GIPHY receives search terms and client network metadata directly.
 
