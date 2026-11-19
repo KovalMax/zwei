@@ -158,7 +158,7 @@ services:
     networks: [messenger-network]
 
   traefik:
-    image: traefik:v3.5
+    image: traefik:v3.7.19
     command:
       - --api.dashboard=true
       - --api.insecure=false
@@ -173,31 +173,41 @@ services:
     networks: [messenger-network]
 
   mailpit:
-    image: axllent/mailpit:v1.21
+    image: axllent/mailpit:v1.34.0
     networks: [messenger-network]
 
   coturn:
-    image: coturn/coturn:4.6.3
+    image: coturn/coturn:4.19.1-r0
     command:
       - -n
-      - --log-file=stdout
+      # TURN session logs can expose usernames and peer metadata.
+      - --log-file=/dev/null
+      - --simple-log
+      - --no-stdout-log
       - --fingerprint
       - --use-auth-secret
       - --static-auth-secret=${TURN_SHARED_SECRET}
+      - --no-stun
+      - --unauthorized-ratelimit
+      - --unauthorized-ratelimit-rps=100
       - --realm=turn.chat.localhost
       - --external-ip=${TURN_EXTERNAL_IP}
       - --min-port=49160
       - --max-port=49200
-      - --no-cli
       - --no-tcp-relay
     ports:
       - "3478:3478/tcp"
       - "3478:3478/udp"
       - "49160-49200:49160-49200/udp"
     networks: [messenger-network]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   database:
-    image: postgres:${APP_DB_VERSION:-18.4}-alpine
+    image: postgres:${APP_DB_VERSION:-18.7}-alpine
     environment:
       POSTGRES_DB: ${APP_DB_NAME}
       POSTGRES_USER: ${APP_DB_USER}
@@ -210,7 +220,7 @@ services:
     networks: [messenger-network]
 
   redis:
-    image: redis:${REDIS_VERSION:-8.2.1}-alpine
+    image: redis:${REDIS_VERSION:-8.10.3}-alpine
     command: redis-server --appendonly no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

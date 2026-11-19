@@ -94,12 +94,16 @@ configuration.
 ## Publish and deploy
 
 Publish a GitHub Release for the intended source commit. The release workflow
-runs Go tests and Angular tests/production build against that exact commit
-before publishing the five ARM64 images (Auth, Chat, Realtime, Frontend, and
-Migrator). Full CI and Security workflows remain enabled on pull requests and
-pushes to `main`; the release does not repeat them. It deploys the commit-SHA
-image tag through strict-host-key SSH and the protected
-`production` environment. The deploy is serialized with other release jobs.
+runs Go tests, Angular tests/production build, Go vulnerability scanning, and
+high-severity npm audits against the exact commit resolved from the published
+tag. Publishing is blocked unless both CI and Security pass. The workflow
+publishes five ARM64 images (Auth, Chat, Realtime, Frontend, and Migrator) and
+records each Buildx-produced digest. Production Compose consumes only those
+validated `repository@sha256:...` references; release and commit-SHA tags remain
+aliases for discovery and are not used to select deployment images. Strict
+host-key SSH is limited to the deployment step and uses a temporary key removed
+on completion or interruption. The deployment uses the protected `production`
+environment and is serialized with other release jobs.
 
 The VM must be able to pull the published images. The deployment script stops
 and health-checks the application services, applies migrations, and starts the
@@ -108,6 +112,11 @@ Traefik; route changes are picked up from the watched directory. Public endpoint
 and security-header checks are intentionally manual: after the workflow
 completes, create the initial administrator, then run them from the VM console
 and complete browser acceptance before inviting users.
+
+The release workflow atomically installs a `.deploy.env` containing the five
+digest references. Do not replace these values with a release or commit tag.
+For rollback, use a previously reviewed digest set only after checking schema
+compatibility; digest pinning does not roll back database migrations.
 
 On the first deployment only, bootstrap the administrator after the release
 workflow has completed successfully and the Auth service is healthy. From the
@@ -144,7 +153,19 @@ From the VM console, verify valid HTTPS certificates and these results:
 
 Then use a supported browser to sign in, exercise direct and group messaging
 over `/ws/v4`, and verify calls/TURN and push as configured. Check that no
-secrets or bearer values appear in logs.
+secrets or bearer values appear in logs. Coturn intentionally sends no
+per-session logs to stdout or stderr: its session output can contain TURN
+usernames and peer metadata, even in simple-log mode. The Coturn Compose service
+also caps any container logs at 10 MiB across three files; do not enable verbose
+or stdout TURN logging without a reviewed redaction path. Standalone anonymous
+STUN Binding is disabled; the pinned Coturn version keeps its CLI off by default,
+so do not add unsupported `--cli`/`--no-cli` flags. Authenticated TURN relay
+remains enabled. UDP
+unauthorized (401) responses use a provisional cap of 100 per source IP per
+second to reduce reflection amplification. Coturn applies fixed one-second
+windows; this is not an allocation quota or a general authentication throttle.
+Revisit the provisional threshold against representative shared-NAT traffic
+before treating it as a measured capacity limit.
 
 ## Data protection and failed deployments
 
@@ -152,6 +173,12 @@ The first installation has no previous production backup to restore. Before
 accepting real user data, configure and test a database backup and recovery
 procedure. Before later releases that can modify user data, take and verify a
 backup and review the migration's recovery implications before publishing.
+For PostgreSQL or Redis image upgrades, also verify the effective image tags,
+take backups using each server's supported procedure, and test recovery from
+copies before deployment. Do not roll back by attaching a data volume that has
+been opened and changed by a newer server image to an older image; restore a
+verified pre-upgrade backup instead. If PostgreSQL incremental backups are in
+use, establish a new full backup after an 18.7 update.
 
 If deployment fails, the workflow stops the Zwei application services; the
 independently managed public edge remains running. The workflow does not roll

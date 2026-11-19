@@ -8,6 +8,9 @@ infrastructure/e2e/test-results/
 # Keep project agent roles and skill guidance versioned despite global OpenCode ignores.
 !.opencode/
 .opencode/*
+!.opencode/.gitignore
+!.opencode/package.json
+!.opencode/package-lock.json
 !.opencode/agents/
 !.opencode/agents/**
 !.opencode/skills/

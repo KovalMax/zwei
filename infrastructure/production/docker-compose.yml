@@ -2,18 +2,23 @@ name: zwei
 
 services:
   coturn:
-    image: coturn/coturn:4.6.3
+    image: coturn/coturn:4.19.1-r0
     command:
       - -n
-      - --log-file=stdout
+      # Per-session logs can contain TURN usernames and peer metadata.
+      - --log-file=/dev/null
+      - --simple-log
+      - --no-stdout-log
       - --fingerprint
       - --use-auth-secret
       - --static-auth-secret=${TURN_SHARED_SECRET:?TURN_SHARED_SECRET is required}
+      - --no-stun
+      - --unauthorized-ratelimit
+      - --unauthorized-ratelimit-rps=100
       - --realm=turn.chat.false.tel
       - --external-ip=${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP is required}
       - --min-port=49160
       - --max-port=49200
-      - --no-cli
       - --no-tcp-relay
     ports:
       - "3478:3478/tcp"
@@ -21,9 +26,14 @@ services:
       - "49160-49200:49160-49200/udp"
     networks: [turn]
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   frontend:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-frontend:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: ${IMAGE_FRONTEND:?IMAGE_FRONTEND is required}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/"]
       interval: 10s
@@ -35,7 +45,7 @@ services:
     restart: unless-stopped
 
   auth:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-auth:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: ${IMAGE_AUTH:?IMAGE_AUTH is required}
     environment:
       AUTH_PORT: 8081
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -73,7 +83,7 @@ services:
     restart: unless-stopped
 
   chat:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-chat:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: ${IMAGE_CHAT:?IMAGE_CHAT is required}
     environment:
       CHAT_PORT: 8082
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -98,7 +108,7 @@ services:
     restart: unless-stopped
 
   realtime:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-realtime:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: ${IMAGE_REALTIME:?IMAGE_REALTIME is required}
     environment:
       REALTIME_PORT: 8083
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -137,7 +147,7 @@ services:
         max-file: "3"
 
   migrate:
-    image: ${IMAGE_REPOSITORY:-ghcr.io/kovalmax/zwei}-migrator:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: ${IMAGE_MIGRATOR:?IMAGE_MIGRATOR is required}
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
     depends_on:
@@ -147,7 +157,7 @@ services:
     profiles: [migration]
 
   database:
-    image: postgres:${APP_DB_VERSION:-18.4}-alpine
+    image: postgres:${APP_DB_VERSION:-18.7}-alpine
     environment:
       POSTGRES_DB: ${APP_DB_NAME:?APP_DB_NAME is required}
       POSTGRES_USER: ${APP_DB_USER:?APP_DB_USER is required}
@@ -163,7 +173,7 @@ services:
       - postgres-data:/var/lib/postgresql
 
   redis:
-    image: redis:${REDIS_VERSION:-8.2.1}-alpine
+    image: redis:${REDIS_VERSION:-8.10.3}-alpine
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
